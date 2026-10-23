@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from urllib.parse import quote
 
-from . import __version__, seasons
+from . import __version__, guide, seasons
 from .channels import (
     BREAK_STYLES, HOLIDAY_CHANNEL_NAMES, channel_from_suggestion, describe_content, library_networks,
     network_logo, network_rules, next_free_number, normalize_channel, suggest, sync_auto,
@@ -293,7 +293,7 @@ async def get_settings(app=Depends(signed_in)):
         "encoder": app.ffmpeg.encoder_status, "ffmpeg": app.ffmpeg.version,
         "plex": {"url": d["plex"].get("url"), "name": d["plex"].get("server_name")},
         "auto": {k: v for k, v in d["auto"].items() if k != "dismissed"}, "dismissed": len(d["auto"]["dismissed"]),
-        "festive_logos": d.get("festive_logos", True),
+        "festive_logos": d.get("festive_logos", False),
     }
 
 
@@ -443,7 +443,7 @@ def _now_next(app, ch):
 def _channel_out(app, ch, info=False):
     cur, nxt = _now_next(app, ch)
     out = {**ch, "now": cur, "next": nxt, "live": ch["id"] in app.streams.by_channel,
-           "logo_url": f"/logo/{ch['id']}.png?v={LOGO_V}-{app.festive() or 'x'}", "on_air": app.channel_visible(ch)}
+           "logo_url": guide.logo_url(app, "", ch), "on_air": app.channel_visible(ch)}
     if ch.get("season"):
         conf = app.cfg.data["holidays"].get(ch["season"]) or {}
         out["in_season"] = seasons.in_window(conf, time.time())
@@ -646,7 +646,7 @@ async def holidays(app=Depends(signed_in)):
             "starts_in": 0 if seasons.in_window(conf, now) else (seasons.next_start(conf, now) or now + 400 * 86400) - now,
         })
     out.sort(key=lambda x: (not x["enabled"], x["starts_in"]))  # what's on now, then what's coming up next
-    return {"holidays": out, "festive_logos": app.cfg.data.get("festive_logos", True)}
+    return {"holidays": out, "festive_logos": app.cfg.data.get("festive_logos", False)}
 
 
 @router.put("/holidays/{key}")

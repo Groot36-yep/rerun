@@ -35,6 +35,7 @@ class Guard:
     def __init__(self, asgi, get_app):
         self.asgi = asgi
         self.get_app = get_app
+        self.refused: set[str] = set()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -42,6 +43,10 @@ class Guard:
         app = self.get_app()
         host = (scope.get("client") or ("", 0))[0]
         if app and app.cfg.data["security"].get("lan_only", True) and not ip_allowed(host, app.extra_networks()):
+            if host not in self.refused:
+                self.refused.add(host)
+                log.warning("Refused %s from %s: it isn't on your home network. If that's your Plex server, "
+                            "add its address under Settings → Privacy & security.", scope.get("path"), host)
             resp = PlainTextResponse("Rerun only answers devices on your home network.", status_code=403)
             return await resp(scope, receive, send)
 
@@ -114,18 +119,18 @@ async def health(request: Request):
 
 # ---- what Plex talks to (an HDHomeRun-style tuner) ---------------------------------------
 
-@web.get("/discover.json")
+@web.api_route("/discover.json", methods=["GET", "HEAD"])
 @web.get("/device.json")
 async def discover(request: Request):
     return guide.discover(_app(request), _base(request))
 
 
-@web.get("/lineup_status.json")
+@web.api_route("/lineup_status.json", methods=["GET", "HEAD"])
 async def lineup_status():
     return guide.lineup_status()
 
 
-@web.get("/lineup.json")
+@web.api_route("/lineup.json", methods=["GET", "HEAD"])
 async def lineup(request: Request):
     return guide.lineup(_app(request), _base(request))
 
@@ -135,17 +140,17 @@ async def lineup_post():
     return Response(status_code=200)
 
 
-@web.get("/xmltv.xml")
+@web.api_route("/xmltv.xml", methods=["GET", "HEAD"])
 async def xmltv(request: Request):
     return Response(guide.xmltv(_app(request), _base(request)), media_type="application/xml")
 
 
-@web.get("/iptv.m3u")
+@web.api_route("/iptv.m3u", methods=["GET", "HEAD"])
 async def m3u(request: Request):
     return Response(guide.m3u(_app(request), _base(request)), media_type="audio/x-mpegurl")
 
 
-@web.get("/logo/{cid}.png")
+@web.api_route("/logo/{cid}.png", methods=["GET", "HEAD"])
 async def logo(cid: str, request: Request):
     app = _app(request)
     ch = app.channel(cid)
@@ -155,7 +160,7 @@ async def logo(cid: str, request: Request):
     return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
-@web.get("/netlogo/{name}.png")
+@web.api_route("/netlogo/{name}.png", methods=["GET", "HEAD"])
 async def network_logo_preview(name: str, request: Request):
     """A network's logo, for picking networks before they have a channel."""
     app = _app(request)
@@ -166,7 +171,7 @@ async def network_logo_preview(name: str, request: Request):
     return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
-@web.get("/holidaylogo/{key}.png")
+@web.api_route("/holidaylogo/{key}.png", methods=["GET", "HEAD"])
 async def holiday_logo_preview(key: str, request: Request):
     if key not in seasons.PRESETS:
         raise HTTPException(404)
@@ -175,7 +180,7 @@ async def holiday_logo_preview(key: str, request: Request):
     return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
-@web.get("/img/{media_id}.jpg")
+@web.api_route("/img/{media_id}.jpg", methods=["GET", "HEAD"])
 async def artwork(media_id: str, request: Request):
     data = await images.artwork(_app(request), media_id)
     if not data:

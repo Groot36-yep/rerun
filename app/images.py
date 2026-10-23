@@ -23,7 +23,7 @@ from .store import DATA_DIR
 
 log = logging.getLogger("rerun.images")
 SIZE = 400
-VERSION = "v4"
+VERSION = "v5"
 FONTS = [  # a bold serif, like the lettering on a 1960s station ID card
     "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
     "C:/Windows/Fonts/georgiab.ttf",
@@ -281,7 +281,16 @@ def logo_ref(ch: dict, catalog=None) -> str:
     return network_logo(name, catalog)
 
 
+_logo_locks: dict[str, asyncio.Lock] = {}
+
+
 async def channel_logo(ch: dict, catalog=None, festive: str = "", online: bool = True) -> bytes:
+    # Plex asks for every logo at once; one lock per channel means each is only made once.
+    async with _logo_locks.setdefault(ch["id"], asyncio.Lock()):
+        return await _channel_logo(ch, catalog, festive, online)
+
+
+async def _channel_logo(ch: dict, catalog=None, festive: str = "", online: bool = True) -> bytes:
     holiday = ch.get("season") and not ch.get("logo")
     ref = "" if holiday else logo_ref(ch, catalog)
     badge = festive if festive and not ch.get("season") else ""

@@ -21,7 +21,7 @@ from .seasons import DEFAULT_HOLIDAYS
 log = logging.getLogger("rerun.store")
 
 DATA_DIR = Path(os.environ.get("RERUN_DATA", "data")).resolve()
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 BACKUP_EVERY = 600  # seconds between config backups
 
 
@@ -120,7 +120,7 @@ DEFAULT_CONFIG = {
     "guide_hours": 72,
     # After each scan, add channels for networks (and holidays) that appear in your library.
     "auto": {"networks": True, "holidays": True, "min_shows": 2, "dismissed": []},
-    "festive_logos": True,
+    "festive_logos": False,  # a small holiday badge on every channel logo while a holiday is in season
     "holidays": DEFAULT_HOLIDAYS,
     "channels": [],
 }
@@ -137,7 +137,12 @@ def migrate(data: dict) -> dict:
     v = data.get("version", CONFIG_VERSION)
     if v > CONFIG_VERSION:
         log.warning("config.json was written by a newer Rerun (v%s); keeping unknown settings as-is", v)
-    # Future migrations go here, one `if v < N:` step at a time.
+    # One `if v < N:` step per change, so every older config.json is brought up to date.
+    if v < 2:
+        data["festive_logos"] = False  # the holiday badge on every logo was on by default; now it's opt-in
+        stream = data.get("stream") or {}
+        if stream.get("hwaccel") == "none":
+            stream["hwaccel"] = "auto"  # use Intel Quick Sync / AMD when it works
     data["version"] = max(v, CONFIG_VERSION)
     return data
 
@@ -157,7 +162,10 @@ class JsonDoc:
 
 def load_config() -> JsonDoc:
     doc = JsonDoc("config.json", DEFAULT_CONFIG, backups=10)
+    before = doc.data.get("version")
     doc.data = migrate(doc.data)
+    if before != doc.data["version"] and doc.path.exists():
+        doc.save()
     return doc
 
 

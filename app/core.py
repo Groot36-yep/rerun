@@ -8,7 +8,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from . import seasons
+from . import images, seasons
 from .catalog import Catalog, Scanner
 from .channels import sync_auto
 from .ffmpeg import FFmpeg
@@ -106,6 +106,7 @@ class App:
             asyncio.create_task(self._guard(self.schedules.loop, "scheduler")),
             asyncio.create_task(self._guard(self.streams.reaper, "stream reaper")),
             asyncio.create_task(self._guard(self._daily_rescan, "daily rescan")),
+            asyncio.create_task(self._guard(self._ready_logos, "logo maker")),
         ]
 
     async def stop(self):
@@ -127,6 +128,18 @@ class App:
             except Exception:
                 log.exception("Background job '%s' crashed; restarting it in 30s", name)
                 await asyncio.sleep(30)
+
+    async def _ready_logos(self):
+        """Have every channel's logo made before Plex asks, so it never waits on a slow download."""
+        await asyncio.sleep(5)
+        while True:
+            online = self.cfg.data["metadata"].get("online_lookups", True)
+            for ch in list(self.cfg.data["channels"]):
+                try:
+                    await images.channel_logo(ch, self.catalog, self.festive(), online)
+                except Exception as e:
+                    log.warning("Couldn't make the logo for %s: %s", ch.get("name"), e)
+            await asyncio.sleep(600)
 
     async def _daily_rescan(self):
         last_day = None
@@ -151,7 +164,7 @@ class App:
 
     def festive(self) -> str:
         """The holiday whose badge goes on channel logos right now, if any."""
-        if not self.cfg.data.get("festive_logos", True):
+        if not self.cfg.data.get("festive_logos", False):
             return ""
         on = seasons.active(self.cfg.data.get("holidays"), time.time())
         return on[0] if on else ""

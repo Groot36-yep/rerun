@@ -34,8 +34,10 @@ def enabled_channels(app) -> list[dict]:
 
 
 def logo_url(app, base: str, ch: dict) -> str:
-    # The holiday is part of the address so Plex fetches the festive version when a season starts.
-    return f"{base}/logo/{ch['id']}.png?v={LOGO_V}-{app.festive() or 'x'}"
+    # Plex keeps a logo by its address, so the address only changes when the picture really does:
+    # a new Rerun logo style, or a holiday badge (if festive logos are on) starting or ending.
+    festive = app.festive()
+    return f"{base}/logo/{ch['id']}.png?v={LOGO_V}" + (f"-{festive}" if festive else "")
 
 
 def discover(app, base: str) -> dict:
