@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 196 66" role="img" aria-label="Rerun">
+  <defs>
+    <filter id="glow" x="-15%" y="-40%" width="130%" height="180%">
+      <feGaussianBlur stdDeviation="2.4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- Monoline letters, drawn the way neon tubing is bent. -->
+    <path id="word" d="
+      M12 47 V11 H27 A9 9 0 0 1 27 29 H12 M23 29 L35 47
+      M65 11 H45 V47 H65 M45 29 H60
+      M76 47 V11 H91 A9 9 0 0 1 91 29 H76 M87 29 L99 47
+      M110 11 V36 A11 11 0 0 0 132 36 V11
+      M144 47 V11 L166 47 V11"/>
+    <path id="rule" d="M12 57 H150"/>
+    <path id="spark" d="M178 6 V22 M170 14 H186 M173 9 L183 19 M183 9 L173 19"/>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <use href="#word" stroke="#ff6f4e" stroke-width="4.2" filter="url(#glow)"/>
+    <use href="#word" stroke="#ffe2d6" stroke-width="1.5"/>
+    <use href="#rule" stroke="#2fd2bf" stroke-width="3" filter="url(#glow)"/>
+    <use href="#rule" stroke="#d8fff8" stroke-width="1.1"/>
+    <use href="#spark" stroke="#2fd2bf" stroke-width="2.2" filter="url(#glow)"/>
+    <use href="#spark" stroke="#d8fff8" stroke-width="0.9"/>
+  </g>
+</svg>

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1400">
+  <!-- Concentric rings of studio bulbs, after the BBC TV set backdrops of the 1960s. -->
+  <g fill="none" stroke="#f3c776" stroke-linecap="round" stroke-dasharray="0 17" transform="translate(700 700)">
+    <circle r="60" stroke-width="5" opacity=".55"/>
+    <circle r="112" stroke-width="5" opacity=".5"/>
+    <circle r="170" stroke-width="5" opacity=".44"/>
+    <circle r="234" stroke-width="5" opacity=".38"/>
+    <circle r="304" stroke-width="5" opacity=".32"/>
+    <circle r="380" stroke-width="5" opacity=".26"/>
+    <circle r="462" stroke-width="5" opacity=".2"/>
+    <circle r="550" stroke-width="5" opacity=".15"/>
+    <circle r="644" stroke-width="5" opacity=".1"/>
+  </g>
+</svg>

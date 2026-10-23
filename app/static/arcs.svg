@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 170">
+  <!-- 1970s rainbow arch in burnt oranges and browns -->
+  <g fill="none" stroke-width="13">
+    <path d="M18 170 A142 142 0 0 1 302 170" stroke="#2c2a2e"/>
+    <path d="M31 170 A129 129 0 0 1 289 170" stroke="#5a2f19"/>
+    <path d="M44 170 A116 116 0 0 1 276 170" stroke="#7f3e1a"/>
+    <path d="M57 170 A103 103 0 0 1 263 170" stroke="#a54b1b"/>
+    <path d="M70 170 A90 90 0 0 1 250 170" stroke="#c2521d"/>
+    <path d="M83 170 A77 77 0 0 1 237 170" stroke="#dc6a24"/>
+    <path d="M96 170 A64 64 0 0 1 224 170" stroke="#ea8a2a"/>
+    <path d="M109 170 A51 51 0 0 1 211 170" stroke="#f2a93a"/>
+  </g>
+</svg>
