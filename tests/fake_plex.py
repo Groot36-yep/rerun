@@ -145,3 +145,26 @@ def photo(request: Request):
         "090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495"
         "969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008"
         "010100003f00fbd3ffd9"), media_type="image/jpeg")
+
+
+# What a real Plex reports while someone watches Live TV with transcoding on the processor.
+@app.get("/:/prefs")
+def prefs(request: Request):
+    return mc(Setting=[{"id": "HardwareAcceleratedCodecs", "value": False},
+                       {"id": "HardwareAcceleratedEncoders", "value": False},
+                       {"id": "TranscoderTempDirectory", "value": ""},
+                       {"id": "FriendlyName", "value": "Fake Plex"}])
+
+
+@app.get("/transcode/sessions")
+def transcode_sessions(request: Request):
+    return mc(TranscodeSession=[{"key": "abc", "throttled": False, "speed": 1.1, "sourceVideoCodec": "h264",
+                                 "videoCodec": "h264", "videoDecision": "transcode", "sourceAudioCodec": "aac",
+                                 "audioCodec": "aac", "audioDecision": "copy", "protocol": "hls"}])
+
+
+@app.get("/status/sessions")
+def status_sessions(request: Request):
+    return mc(Metadata=[{"title": "Nickelodeon", "type": "episode", "live": "1",
+                         "Player": {"product": "Plex Web", "state": "playing"},
+                         "TranscodeSession": {"videoDecision": "transcode", "audioDecision": "copy"}}])

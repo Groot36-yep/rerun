@@ -108,6 +108,8 @@ class Diagnostics:
             for name, pct, count in procs[:8]:
                 out.append(f"  {pct:5.0f}%  {name}" + (f" ×{count}" if count > 1 else ""))
 
+        out += ["", "== Plex =="] + await _plex(app)
+
         out += ["", "== Channels =="]
         chans = sorted(app.cfg.data["channels"], key=lambda c: c["number"])
         on = [c for c in chans if app.channel_visible(c)]
@@ -179,6 +181,50 @@ class Diagnostics:
             out.append(f"  {time.strftime('%m-%d %H:%M:%S', time.localtime(l['t']))} {l['level'].upper():<7} "
                        f"{_clean(l['msg'])[:220]}")
         return "\n".join(out) + "\n"
+
+
+_PREFS = re.compile(r"hardware|transcod|dvr|livetv|grab|deinterlac", re.I)
+
+
+async def _plex(app) -> list[str]:
+    """Plex's own side: its transcoding settings, and whether each session copies the video or
+    converts it (and on what). Read-only; nothing here is changed."""
+    plex = app.plex()
+    if not plex:
+        return ["Not connected."]
+    lines = []
+    try:
+        prefs = (await asyncio.wait_for(plex.get("/:/prefs"), 10)).get("Setting", [])
+        shown = [f"{p.get('id')}={p.get('value')}" for p in prefs
+                 if _PREFS.search(str(p.get("id", ""))) and not _SECRET.search(f"{p.get('id')}=")]
+        lines.append("Settings: " + (", ".join(shown) if shown else "none readable"))
+    except Exception as e:
+        lines.append(f"Couldn't read Plex settings ({e.__class__.__name__}).")
+    try:
+        trans = (await asyncio.wait_for(plex.get("/transcode/sessions"), 10)).get("TranscodeSession", [])
+        lines.append(f"Plex Transcoder jobs: {len(trans)}")
+        for t in trans:
+            hw = "/".join(x for x in (t.get("transcodeHwDecoding"), t.get("transcodeHwEncoding")) if x) or "none"
+            lines.append(f"  video {t.get('sourceVideoCodec')}→{t.get('videoCodec')} ({t.get('videoDecision')}), "
+                         f"audio {t.get('sourceAudioCodec')}→{t.get('audioCodec')} ({t.get('audioDecision')}), "
+                         f"hardware: {hw}, speed {t.get('speed')}, {'throttled' if t.get('throttled') else 'running'}, "
+                         f"{t.get('protocol') or t.get('context') or ''}")
+    except Exception as e:
+        lines.append(f"Couldn't read Plex transcoder jobs ({e.__class__.__name__}).")
+    try:
+        sess = (await asyncio.wait_for(plex.get("/status/sessions"), 10)).get("Metadata", [])
+        lines.append(f"Plex playback sessions: {len(sess)}")
+        for m in sess:
+            player = m.get("Player") or {}
+            t = m.get("TranscodeSession") or {}
+            how = (f"video {t.get('videoDecision')}, audio {t.get('audioDecision')}"
+                   + (f", hardware {t.get('transcodeHwEncoding') or t.get('transcodeHwDecoding')}"
+                      if t.get("transcodeHwEncoding") or t.get("transcodeHwDecoding") else "")) if t else "direct play"
+            lines.append(f"  {'Live TV' if m.get('live') else m.get('type')}: {str(m.get('title'))[:40]} on "
+                         f"{player.get('product')} ({player.get('state')}) — {how}")
+    except Exception as e:
+        lines.append(f"Couldn't read Plex sessions ({e.__class__.__name__}).")
+    return lines
 
 
 def _kind(path: str) -> str:

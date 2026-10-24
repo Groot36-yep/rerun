@@ -83,7 +83,7 @@ fi
 
 # ---------------------------------------------------------------- 1. packages
 say "1. Installing what Rerun needs (Python and ffmpeg)…"
-PKGS="python3 python3-venv ffmpeg fonts-dejavu-core ca-certificates"
+PKGS="python3 python3-venv ffmpeg fonts-dejavu-core ca-certificates gnupg"
 [ -d /dev/dri ] && PKGS="$PKGS va-driver-all vainfo"
 # Intel graphics (Quick Sync): the full Intel media driver can encode on every generation;
 # the free one can't on some. It lives in "multiverse", so fall back quietly if that's turned off.
@@ -107,6 +107,53 @@ else
 fi
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
   || die "Rerun needs Python 3.10 or newer (Ubuntu 22.04 or later)."
+
+# A current ffmpeg. Ubuntu 22.04 ships ffmpeg 4.4; Jellyfin's build (jellyfin-ffmpeg7) is current,
+# starts channels faster and brings Intel's Quick Sync drivers with it. If it can't be installed,
+# Rerun uses the system ffmpeg. To keep the system one:  RERUN_SYSTEM_FFMPEG=1 bash install.sh
+JF_DIR=/usr/lib/jellyfin-ffmpeg
+FFMPEG=""
+install_jellyfin_ffmpeg() (  # a subshell, so reading /etc/os-release changes nothing else
+  local distro codename arch
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case " ${ID:-} ${ID_LIKE:-} " in
+    *" ubuntu "*) distro=ubuntu; codename="${UBUNTU_CODENAME:-$VERSION_CODENAME}" ;;
+    *" debian "*) distro=debian; codename="${VERSION_CODENAME:-}" ;;
+    *) return 1 ;;
+  esac
+  arch="$(dpkg --print-architecture)"
+  case "$arch" in amd64|arm64) ;; *) return 1 ;; esac
+  [ -n "$codename" ] || return 1
+  $SUDO mkdir -p /etc/apt/keyrings
+  python3 -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=30).read())' \
+    https://repo.jellyfin.org/jellyfin_team.gpg.key | $SUDO gpg --dearmor --yes -o /etc/apt/keyrings/jellyfin.gpg || return 1
+  $SUDO tee /etc/apt/sources.list.d/jellyfin.sources >/dev/null <<SRC
+Types: deb
+URIs: https://repo.jellyfin.org/$distro
+Suites: $codename
+Components: main
+Architectures: $arch
+Signed-By: /etc/apt/keyrings/jellyfin.gpg
+SRC
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq || return 1
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jellyfin-ffmpeg7
+)
+if [ -z "${RERUN_SYSTEM_FFMPEG:-}" ]; then
+  say "   Getting a current ffmpeg (Jellyfin's build)…"
+  if [ "$GUI" = 1 ]; then
+    install_jellyfin_ffmpeg 2>&1 | zenity --progress --pulsate --auto-close --no-cancel --title="$TITLE" --width=420 \
+      --text="Getting a newer ffmpeg for faster channels and Quick Sync…" 2>/dev/null || true
+  else
+    install_jellyfin_ffmpeg || true
+  fi
+  if "$JF_DIR/ffmpeg" -hide_banner -version >/dev/null 2>&1; then
+    FFMPEG="$JF_DIR/ffmpeg"
+    info "Using $("$FFMPEG" -hide_banner -version | head -n1 | cut -c1-60)"
+  else
+    info "Couldn't get Jellyfin's ffmpeg, so Rerun will use the system one."
+  fi
+fi
 
 # ---------------------------------------------------------------- 2. media folders
 say "2. Your media folders"
@@ -210,6 +257,7 @@ $SUDO tee "$CONF" >/dev/null <<EOF
 PORT=$PORT
 MEDIA_PATHS="$MEDIA_JOINED"
 RUN_USER=$RUN_USER
+FFMPEG=$FFMPEG
 EOF
 $SUDO tee "$UNIT" >/dev/null <<EOF
 [Unit]
@@ -226,6 +274,8 @@ WorkingDirectory=$APP_DIR
 Environment=RERUN_DATA=$DATA_DIR
 Environment=RERUN_PORT=$PORT
 Environment="RERUN_MEDIA_ROOTS=$MEDIA_JOINED"
+${FFMPEG:+Environment=RERUN_FFMPEG=$FFMPEG}
+${FFMPEG:+Environment=RERUN_FFPROBE=$JF_DIR/ffprobe}
 ExecStart=$APP_DIR/venv/bin/python -m app
 # Comes back by itself after crashes; starts when the computer starts.
 Restart=always

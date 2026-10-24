@@ -6,6 +6,7 @@ APP_DIR=/opt/rerun
 DATA_DIR=/var/lib/rerun
 PORT=8410
 RUN_USER=""
+FFMPEG=""
 REPO=Groot36-yep/rerun
 # shellcheck disable=SC1091
 [ -r /etc/rerun.conf ] && . /etc/rerun.conf
@@ -109,7 +110,7 @@ PY
     command -v vainfo >/dev/null && { echo; as_user "$user" vainfo --display drm --device "$dev" 2>&1 | grep -E "Driver version|VAProfileH264.*EncSlice" || echo "vainfo found no H.264 encoder."; }
     echo; echo "Test encode with Quick Sync / VA-API:"
     for lp in 0 1; do
-      if as_user "$user" ffmpeg -hide_banner -loglevel error -init_hw_device "vaapi=va:$dev" -filter_hw_device va \
+      if as_user "$user" "${FFMPEG:-ffmpeg}" -hide_banner -loglevel error -init_hw_device "vaapi=va:$dev" -filter_hw_device va \
           -f lavfi -i testsrc2=s=1280x720:r=30 -t 3 -vf format=nv12,hwupload -c:v h264_vaapi -low_power "$lp" -f null - 2>/tmp/rerun-gpu.$$; then
         [ "$lp" = 1 ] && echo "  Works (low-power mode)." || echo "  Works."
         rm -f /tmp/rerun-gpu.$$; exit 0

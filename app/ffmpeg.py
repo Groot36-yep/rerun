@@ -46,6 +46,13 @@ def render_device(configured: str | None = None) -> str:
     return min(found)[1] if found else DEFAULT_RENDER
 
 
+def _tool(env: str, name: str) -> str:
+    chosen = os.environ.get(env, "")
+    if chosen and os.access(chosen, os.X_OK):
+        return chosen
+    return shutil.which(name) or name
+
+
 def filter_escape(value: str) -> str:
     """Escape a path for a filter option inside -vf (ffmpeg parses two levels of escaping)."""
     v = value.replace("\\", "/")
@@ -58,8 +65,9 @@ def filter_escape(value: str) -> str:
 
 class FFmpeg:
     def __init__(self):
-        self.ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-        self.ffprobe = shutil.which("ffprobe") or "ffprobe"
+        # The installer may point these at a newer ffmpeg (Jellyfin's build on Ubuntu 22.04).
+        self.ffmpeg = _tool("RERUN_FFMPEG", "ffmpeg")
+        self.ffprobe = _tool("RERUN_FFPROBE", "ffprobe")
         self.version = ""
         self.major = 0
         self.encoders: set[str] = set()

@@ -53,6 +53,12 @@ With **Hardware encoding** on *Automatic* (the default), Rerun uses Intel Quick 
 AMD chip) for both decoding and encoding, and falls back to the processor by itself if the
 chip can't do it. On Intel machines the installer also adds Intel's full media driver.
 
+The installer also adds a current ffmpeg: [Jellyfin's build](https://github.com/jellyfin/jellyfin-ffmpeg)
+(`jellyfin-ffmpeg7`, from Jellyfin's own package source). Ubuntu 22.04 only has ffmpeg 4.4, which
+is slower to start channels; Jellyfin's build is current and comes with Intel's Quick Sync drivers.
+If it can't be installed, Rerun uses Ubuntu's ffmpeg. To skip it:
+`RERUN_SYSTEM_FFMPEG=1 bash install.sh`.
+
 To check it's working, run `rerun check-gpu`, or look at Settings → Picture & sound, which
 says "Encoding with Intel Quick Sync". Newer Intel chips that only have the low-power
 encoder are handled too.
