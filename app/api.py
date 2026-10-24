@@ -758,7 +758,7 @@ async def connect_info(request: Request, app=Depends(signed_in)):
 
 @router.get("/report")
 async def report(app=Depends(signed_in)):
-    return PlainTextResponse(app.diag.report(app))
+    return PlainTextResponse(await app.diag.report(app))
 
 
 @router.get("/status")

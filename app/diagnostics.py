@@ -2,16 +2,12 @@
 started, how hard the machine worked, and recent problems. Nothing secret goes in it."""
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 import re
 import time
 from collections import Counter, deque
-
-try:
-    import resource  # not on Windows
-except ImportError:  # pragma: no cover
-    resource = None
 
 from . import __version__, images
 
@@ -25,12 +21,43 @@ def _clean(text: str) -> str:
     return _SECRET.sub(lambda m: m.group(1) + "=…", text)
 
 
-def _cpu_seconds() -> float:
-    """CPU time used by finished child processes (the ffmpegs) so far."""
-    if resource is None:
-        return 0.0
-    r = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return r.ru_utime + r.ru_stime
+def _proc_times() -> tuple[dict, float]:
+    """CPU ticks used so far by every program, and by the whole processor."""
+    procs = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        name = raw[raw.index("(") + 1:raw.rindex(")")]
+        fields = raw[raw.rindex(")") + 2:].split()
+        procs[pid] = (name, int(fields[11]) + int(fields[12]))
+    with open("/proc/stat") as f:
+        cpu = [int(x) for x in f.readline().split()[1:]]
+    return procs, cpu
+
+
+async def _cpu_use():
+    """Overall busy %, and the busiest programs over the next second (Linux only)."""
+    if not os.path.exists("/proc/stat"):
+        return None
+    a, ca = _proc_times()
+    await asyncio.sleep(1.0)
+    b, cb = _proc_times()
+    tick = os.sysconf("SC_CLK_TCK")
+    total, idle = sum(cb) - sum(ca), (cb[3] + cb[4]) - (ca[3] + ca[4])
+    busy = 100 * (total - idle) / total if total else 0
+    use = Counter()
+    count = Counter()
+    for pid, (name, t) in b.items():
+        if pid in a:
+            use[name] += t - a[pid][1]
+            count[name] += 1
+    procs = [(n, 100 * t / tick, count[n]) for n, t in use.most_common() if t > 0]
+    return busy, procs
 
 
 class Diagnostics:
@@ -39,7 +66,6 @@ class Diagnostics:
         self.pieces: deque = deque(maxlen=400)
         self.tunes: deque = deque(maxlen=100)
         self.started = time.time()
-        self.cpu_start = _cpu_seconds()
         self.video_seconds = 0.0
 
     # ---- recording ------------------------------------------------------------------------
@@ -59,7 +85,8 @@ class Diagnostics:
         self.tunes.append((time.time(), number, first_bytes, already_on, agent[:60]))
 
     # ---- the report ----------------------------------------------------------------------
-    def report(self, app) -> str:
+    async def report(self, app) -> str:
+        cpu_now = await _cpu_use()  # takes a second: it watches the processor for a moment
         now = time.time()
         out = [f"Rerun {__version__} diagnostic report — {time.strftime('%Y-%m-%d %H:%M:%S')}",
                f"Up for {_dur(now - app.started)}"]
@@ -70,13 +97,16 @@ class Diagnostics:
                    + (f", device {enc['device']}" if enc.get("device") else "")
                    + (f" — {enc['message']}" if enc.get("message") else ""))
         out.append(f"ffmpeg: {app.ffmpeg.version[:90]}")
+        if not app.ffmpeg.has_burst:
+            out.append("  (older ffmpeg without quick start: Rerun makes each head start as its own quick piece)")
         s = app.cfg.data["stream"]
         out.append(f"Picture: {s.get('resolution')} at {s.get('video_kbps')} kbps, even volume "
                    f"{'on' if s.get('even_volume', True) else 'off'}, {s.get('tuners')} tuners")
-        cpu = _cpu_seconds() - self.cpu_start
-        if resource is not None and self.video_seconds > 30:
-            out.append(f"Encoding work: {100 * cpu / self.video_seconds:.0f}% of one processor core per channel "
-                       f"playing ({_dur(self.video_seconds)} of video made since start)")
+        if cpu_now:
+            busy, procs = cpu_now
+            out.append(f"Processor right now: {busy:.0f}% busy overall. Busiest programs (100% = one core):")
+            for name, pct, count in procs[:8]:
+                out.append(f"  {pct:5.0f}%  {name}" + (f" ×{count}" if count > 1 else ""))
 
         out += ["", "== Channels =="]
         chans = sorted(app.cfg.data["channels"], key=lambda c: c["number"])
@@ -101,7 +131,14 @@ class Diagnostics:
                 out.append(f"Refused or failed: {len(bad)}")
             ips = Counter(r[1] for r in reqs)
             out.append("From: " + ", ".join(f"{ip} ({n})" for ip, n in ips.most_common(5)))
-            for t, ip, method, path, status, ms, agent in reqs[-40:]:
+            logo = [r for r in reqs if _kind(r[3]) == "logos"]
+            if logo:
+                out.append(f"Logos: {len(logo)} asked for, {sum(1 for r in logo if r[4] < 400)} sent; slowest "
+                           f"{max(r[5] for r in logo):.0f}ms; last at {time.strftime('%H:%M:%S', time.localtime(logo[-1][0]))} "
+                           f"by {logo[-1][6] or 'unknown'}")
+            out.append("(Plex checks in every few seconds; those check-ins are counted above but not listed.)")
+            quiet = [r for r in reqs if _kind(r[3]) not in ("tuner info",) and not r[3].startswith("/lineup_status")]
+            for t, ip, method, path, status, ms, agent in quiet[-30:]:
                 out.append(f"  {time.strftime('%H:%M:%S', time.localtime(t))} {ip:<15} {method:<4} {status} "
                            f"{ms:>6.0f}ms {_clean(path)[:70]}  [{agent}]")
 
@@ -122,14 +159,17 @@ class Diagnostics:
                        f"{sum(1 for p in pcs if not p[7])} failed. First data: typical {spin[len(spin) // 2]:.2f}s, "
                        f"slowest {spin[-1]:.2f}s. Close calls (less than 1s of picture to spare): {len(low)}")
             for t, number, kind, spinup, lead, burst, secs, ok in pcs[-25:]:
+                how = "quick start" if burst is None else f"head start {burst:.0f}s" if burst else "play speed"
                 out.append(f"  {time.strftime('%H:%M:%S', time.localtime(t))} ch {number:<4} {kind:<6} "
-                           f"first data {spinup:.2f}s, {lead:+.1f}s ahead, {secs:.0f}s long{'' if ok else '  FAILED'}")
+                           f"first data {spinup:.2f}s, {lead:+.1f}s ahead, {secs:.0f}s long, {how}"
+                           f"{'' if ok else '  FAILED'}")
         else:
             out.append("None yet.")
         live = app.streams.status()
-        if live:
-            out.append("Playing now: " + "; ".join(f"ch {x['number']} ({x['viewers']} watching, "
-                                                    f"{-x['behind_seconds']:+.1f}s ahead)" for x in live))
+        for x in live:
+            ahead = "" if x["ahead_seconds"] is None else f", picture {x['ahead_seconds']:+.1f}s ahead of real time"
+            out.append(f"Playing now: ch {x['number']} for {_dur(x['uptime'])}{ahead}; "
+                       f"watched by {', '.join(x['watchers']) or 'no one (closing soon)'}")
 
         out += ["", "== Recent warnings and errors =="]
         probs = [l for l in app.logs.lines if l["level"] in ("warning", "error", "critical")][-30:]

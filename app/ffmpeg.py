@@ -88,6 +88,8 @@ class FFmpeg:
         self.filters = set(re.findall(r"^\s*\S+\s+(\S+)\s+\S+->\S+", self._run("-filters"), re.M))
         # -readrate_initial_burst arrived in ffmpeg 6.1; it lets each piece start a little ahead of real time.
         self.has_burst = (self.major, minor) >= (6, 1) or "readrate_initial_burst" in self._run("-h", "full")
+        if os.environ.get("RERUN_TEST_OLD_FFMPEG"):  # for testing the ffmpeg 4.4 path on a newer ffmpeg
+            self.has_burst = False
         log.info("Using %s (burst=%s, drawtext=%s)", self.version, self.has_burst, "drawtext" in self.filters)
 
     @property
@@ -160,7 +162,9 @@ class FFmpeg:
         return status
 
     # ---- command lines ----------------------------------------------------------------
-    def _input_pacing(self, burst: float) -> list[str]:
+    def _input_pacing(self, burst: float | None) -> list[str]:
+        if burst is None:  # a quick-start piece: made as fast as the machine can, not at play speed
+            return []
         args = ["-re"]
         if self.has_burst and burst > 0:
             args += ["-readrate_initial_burst", f"{burst:.1f}"]

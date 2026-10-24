@@ -210,7 +210,8 @@ async def stream(number: int, request: Request):
     began = time.time()
     already_on = ch["id"] in app.streams.by_channel
     try:
-        sub, st = await app.streams.subscribe(ch)
+        who = f"{request.client.host if request.client else '?'} since {time.strftime('%H:%M:%S')}"
+        sub, st = await app.streams.subscribe(ch, who)
     except TunersBusy:
         log.warning("Channel %s was asked for, but all %s tuners are in use", number,
                     app.cfg.data["stream"].get("tuners"))
@@ -267,7 +268,7 @@ async def internal_report(request: Request):
     app = _app(request)
     if not hmac.compare_digest(request.headers.get("x-report-key", ""), app.report_key):
         raise HTTPException(403)
-    return PlainTextResponse(app.diag.report(app))
+    return PlainTextResponse(await app.diag.report(app))
 
 
 @web.exception_handler(StarletteHTTPException)

@@ -27,6 +27,7 @@ PMT_PID, VIDEO_PID = 0x1000, 0x100   # fixed by joiner_cmd
 GOP_LIMIT = 8 * 1024 * 1024
 TARGET_LEAD = 5.0      # seconds the stream tries to stay ahead of the clock (a cushion against hiccups)
 FIRST_BURST = 10.0     # fill the player's buffer quickly when a channel starts, so Plex starts sooner
+QUICK_MIN = 2.0        # without ffmpeg's burst option, top up with quick pieces at least this long
 IDLE_GRACE = 20        # keep a channel warm briefly so flipping back is instant
 BAD_FILE_MINUTES = 30
 LIST_ENTRIES = 20000
@@ -67,10 +68,24 @@ async def _kill(proc):
         pass
 
 
+def _pes_pts(data: bytes, off: int) -> int | None:
+    """The presentation time (90 kHz ticks) at the start of a video frame, if this packet has one."""
+    afc = (data[off + 3] >> 4) & 3
+    i = off + 4
+    if afc & 2:
+        i += 1 + data[off + 4]
+    if not afc & 1 or i + 14 > off + TS_PACKET or data[i:i + 3] != b"\x00\x00\x01" or not data[i + 7] & 0x80:
+        return None
+    p = data[i + 9:i + 14]
+    return ((p[0] >> 1) & 7) << 30 | p[1] << 22 | (p[2] >> 1) << 15 | p[3] << 7 | p[4] >> 1
+
+
 class Subscriber:
-    def __init__(self):
+    def __init__(self, who: str = ""):
         self.q: asyncio.Queue = asyncio.Queue(maxsize=512)
         self.dead = False
+        self.who = who
+        self.since = time.time()
 
     def feed(self, chunk: bytes):
         if self.dead:
@@ -118,6 +133,10 @@ class ChannelStream:
         self.pat = self.pmt = b""
         self.gop: list[bytes] = []
         self.gop_bytes = 0
+        # How far ahead of the clock the picture is, read from the stream's own timestamps.
+        self.pts_first: int | None = None
+        self.pts_top = 0
+        self.wall_first = 0.0
         self.text_file = os.path.join(tempfile.gettempdir(), f"rerun-slate-{self.token}.txt")
         self._task: asyncio.Task | None = None
 
@@ -149,8 +168,16 @@ class ChannelStream:
                 self.pat = data[off:off + TS_PACKET]
             elif pid == PMT_PID:
                 self.pmt = data[off:off + TS_PACKET]
-            elif pid == VIDEO_PID and b1 & 0x40 and (data[off + 3] >> 4) & 2 and data[off + 4] and data[off + 5] & 0x40:
-                last_key = off
+            elif pid == VIDEO_PID and b1 & 0x40:
+                if (data[off + 3] >> 4) & 2 and data[off + 4] and data[off + 5] & 0x40:
+                    last_key = off
+                pts = _pes_pts(data, off)
+                if pts is not None:
+                    if self.pts_first is None:
+                        self.pts_first, self.wall_first = pts, time.time()
+                    elif pts < self.pts_first:
+                        pts += 1 << 33  # the 26-hour timestamp wraparound
+                    self.pts_top = max(self.pts_top, pts)
         if last_key >= 0:
             self.gop, self.gop_bytes = [data[last_key:]], len(data) - last_key
         elif self.gop:
@@ -206,8 +233,14 @@ class ChannelStream:
             self.mgr.forget(self)
             log.info("Channel %s %s stopped", self.number, self.name)
 
-    def subscribe(self) -> Subscriber:
-        sub = Subscriber()
+    def ahead(self) -> float | None:
+        """Seconds of picture made beyond what real time has used up since the channel started."""
+        if self.pts_first is None:
+            return None
+        return (self.pts_top - self.pts_first) / 90000 - (time.time() - self.wall_first)
+
+    def subscribe(self, who: str = "") -> Subscriber:
+        sub = Subscriber(who)
         if self.gop and self.pat and self.pmt:
             sub.feed(self.pat + self.pmt + b"".join(self.gop))
         self.subs.add(sub)
@@ -257,8 +290,17 @@ class ChannelStream:
         offset = self.cursor - item["s"]
         block = p.block_at(self.cursor) or {}
         self.now_playing = block.get("title") or item.get("t") or ""
-        return {"item": item, "offset": offset, "dur": item["e"] - self.cursor, "burst": burst, "end": item["e"],
-                "block": block}
+        dur, end = item["e"] - self.cursor, item["e"]
+        if not self.mgr.ffmpeg.has_burst:
+            # Older ffmpeg (4.4 on Ubuntu 22.04) can't start a piece fast and then slow to play speed,
+            # so the head start is made as its own short piece, encoded flat out, and the rest of
+            # the item follows at play speed. The joiner stitches them together seamlessly.
+            if burst >= QUICK_MIN:
+                dur = min(dur, burst)
+                end, burst = self.cursor + dur, None
+            else:
+                burst = 0.0
+        return {"item": item, "offset": offset, "dur": dur, "burst": burst, "end": end, "block": block}
 
 
 class StreamManager:
@@ -271,7 +313,7 @@ class StreamManager:
         self.bad: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
-    async def subscribe(self, ch: dict) -> tuple[Subscriber, ChannelStream]:
+    async def subscribe(self, ch: dict, who: str = "") -> tuple[Subscriber, ChannelStream]:
         async with self._lock:
             st = self.by_channel.get(ch["id"])
             if st is None or st.done or st.stopping:
@@ -282,7 +324,7 @@ class StreamManager:
                 self.by_channel[ch["id"]] = st
                 self.by_token[st.token] = st
                 await st.start()
-            return st.subscribe(), st
+            return st.subscribe(who), st
 
     def forget(self, st: ChannelStream):
         if self.by_channel.get(st.cid) is st:
@@ -312,7 +354,8 @@ class StreamManager:
         return [
             {"channel": st.cid, "number": st.number, "name": st.name, "viewers": len(st.subs),
              "uptime": int(now - st.started), "now_playing": st.now_playing,
-             "behind_seconds": round(now - st.cursor, 1) if st.cursor else 0}
+             "ahead_seconds": round(st.ahead(), 1) if st.ahead() is not None else None,
+             "watchers": [s.who for s in st.subs]}
             for st in self.by_channel.values() if not st.done
         ]
 
@@ -380,6 +423,7 @@ class StreamManager:
                     await _kill(proc)
                 if first:
                     spinup, delivered = time.time() - spawned, True
+                    self.app.diag.piece(st.number, kind, spinup, lead, burst, dur, True)
                     yield first
                     while True:
                         chunk = await proc.stdout.read(65536)
@@ -418,8 +462,8 @@ class StreamManager:
                 break
             st.cursor = plan["end"]
             st.joiner_media += dur
-            if not st.stopping:
-                self.app.diag.piece(st.number, kind, spinup, lead, burst, dur, delivered)
+            if not st.stopping and not delivered:
+                self.app.diag.piece(st.number, kind, spinup, lead, burst, dur, False)
         finally:
             await _kill(proc)
             if st.seg_proc is proc:
