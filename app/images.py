@@ -16,7 +16,7 @@ import math
 import os
 
 import httpx
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .channels import network_logo
 from .store import DATA_DIR
@@ -25,18 +25,21 @@ log = logging.getLogger("rerun.images")
 # Logos are wide (16:9) because that's the shape of the logo space in Plex's guide; a square logo
 # gets shrunk to fit its height and ends up tiny.
 W, H = 640, 360
-VERSION = "v6"
+VERSION = "v7"
 FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
-FONTS = [  # a heavy geometric sans, like 1960s station ID lettering, and readable when small
-    os.path.join(FONT_DIR, "Jost-Bold.ttf"),
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "C:/Windows/Fonts/arialbd.ttf",
-]
+FACES = {  # all SIL Open Font License, shipped with Rerun so every computer draws the same logos
+    "sans": "Jost-Bold.ttf",                # geometric 1960s lettering
+    "serif": "LibreCaslonText-Bold.ttf",    # printed TV Guide headline type
+    "fun": "Shrikhand-Regular.ttf",         # chunky retro display letters for kids' channels
+}
+FALLBACKS = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "C:/Windows/Fonts/arialbd.ttf"]
 WIKI_UA = "Rerun/1.0 (self-hosted personal TV app; https://www.mediawiki.org/wiki/API:Etiquette)"
 CREAM, PAPER, INK, NIGHT = "#f4e7cc", "#fbf7ee", "#231c16", "#15110e"
 GOLD = "#d4a028"
 STRIPE = ["#c2521d", "#d4a028", "#1d6870"]
 PALETTE = ["#1d6870", "#b0461a", "#8a6512", "#5c5a22", "#6c2430", "#2f4f6f", "#4a3a2e"]
+KIDS = ["#f26b1d", "#7b3fb0", "#1f9e5a", "#e23c74", "#1e88c8", "#e5a50a"]
+NEON = ["#ff4f9a", "#3fe0d0", "#ffd23f", "#a78bfa", "#ff7a45"]
 HOLIDAY_COLORS = {
     "christmas": "#7c1d24", "halloween": "#231c16", "thanksgiving": "#6b3a1e", "valentines": "#9e2238",
     "stpatricks": "#245c3a", "easter": "#5c5296", "july4": "#1d3557", "newyear": "#1b2a44",
@@ -44,8 +47,8 @@ HOLIDAY_COLORS = {
 RADIUS = 30
 
 
-def _font(size: int):
-    for f in FONTS:
+def _font(size: int, face: str = "sans"):
+    for f in [os.path.join(FONT_DIR, FACES.get(face, FACES["sans"])), *FALLBACKS]:
         if os.path.exists(f):
             return ImageFont.truetype(f, size)
     return ImageFont.load_default(size=size)
@@ -66,15 +69,32 @@ def _rounded(img: Image.Image) -> Image.Image:
     return out
 
 
+def _stripe(d: ImageDraw.ImageDraw, color: str):
+    """Rerun's thin three-colour stripe along the bottom of a card."""
+    for i, c in enumerate(STRIPE):
+        d.rectangle((0, H - 21 + i * 7, W, H - 15 + i * 7), fill=c if c != color else CREAM)
+
+
 def _tile(color: str, stripe: bool = True) -> Image.Image:
-    """A solid card with Rerun's thin three-colour stripe along the bottom."""
     img = Image.new("RGBA", (W, H), color)
     if stripe:
-        d = ImageDraw.Draw(img)
-        for i, c in enumerate(STRIPE):
-            d.rectangle((0, H - 21 + i * 7, W, H - 15 + i * 7), fill=c if c != color else CREAM)
+        _stripe(ImageDraw.Draw(img), color)
     return img
 
+
+def _pick(name: str, options: list):
+    return options[int(hashlib.md5(name.encode()).hexdigest(), 16) % len(options)]
+
+
+def _shade(color: str, f: float) -> str:
+    """Lighter (f > 0) or darker (f < 0) version of a colour."""
+    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    t = 255 if f > 0 else 0
+    f = abs(f)
+    return "#%02x%02x%02x" % tuple(round(c + (t - c) * f) for c in (r, g, b))
+
+
+# --------------------------------------------------------------------------- lettering
 
 def _splits(words: list[str], lines: int):
     """Every way to break the words into the given number of lines, in order."""
@@ -86,39 +106,199 @@ def _splits(words: list[str], lines: int):
             yield [" ".join(words[:i]), *rest]
 
 
-def _fit_text(d: ImageDraw.ImageDraw, text: str, box: tuple[float, float, float, float], color: str,
-              max_lines: int = 2):
-    """Write text as large as it will go inside box, on the most even line breaks."""
+def _layout(text: str, box, face: str = "sans", max_lines: int = 2, gap: float = 0.14):
+    """The biggest size, and most even line breaks, at which text fits box. Measured on the
+    letters themselves, so capitals really fill the space."""
     x0, y0, x1, y1 = box
-    bw, bh = x1 - x0, y1 - y0
+    probe = _font(200, face)
+    scratch = ImageDraw.Draw(Image.new("L", (1, 1)))
     words = text.split() or [text]
     best = None
     for n in range(1, min(max_lines, len(words)) + 1):
         for lines in _splits(words, n):
-            probe = _font(100)
-            wide = max(d.textlength(line, font=probe) for line in lines) / 100
-            asc, desc = probe.getmetrics()
-            tall = (asc + desc) / 100
-            size = int(min(bw / wide, bh / (tall * n + 0.04 * (n - 1))))
-            if best is None or size > best[0]:
-                best = (size, lines)
-    size, lines = best
-    size = max(14, min(size, int(bh * 0.92)))
-    font = _font(size)
-    asc, desc = font.getmetrics()
-    step = (asc + desc) * 1.04
-    y = y0 + (bh - step * len(lines) + (asc + desc) * 0.04) / 2
+            boxes = [scratch.textbbox((0, 0), line, font=probe, anchor="ls") for line in lines]
+            wide = max(b[2] - b[0] for b in boxes)
+            cap = max(-b[1] for b in boxes)
+            drop = max(0, boxes[-1][3])
+            # Lines sit far enough apart that tails (g, y) never touch the next line's letters.
+            inner = max([max(0, b[3]) for b in boxes[:-1]] or [0])
+            step = cap + inner + gap * cap
+            tall = cap + step * (n - 1) + drop
+            size = 200 * min((x1 - x0) / wide, (y1 - y0) / tall)
+            if best is None or size > best[0] * 1.04:  # fewer lines unless clearly bigger
+                best = (size, lines, cap / 200, drop / 200, step / 200)
+    size, lines, cap, drop, step = best
+    size = max(12, int(size))
+    step *= size
+    total = cap * size + step * (len(lines) - 1) + drop * size
+    y = y0 + ((y1 - y0) - total) / 2 + cap * size
+    spots = []
     for line in lines:
-        d.text(((x0 + x1) / 2, y), line, font=font, fill=color, anchor="ma")
+        spots.append(((x0 + x1) / 2, y, line))
         y += step
+    return _font(size, face), spots, size
 
 
-def draw_logo(name: str) -> bytes:
-    color = PALETTE[int(hashlib.md5(name.encode()).hexdigest(), 16) % len(PALETTE)]
-    img = _tile(color)
-    # Capitals, like a station card, but "80s" stays "80s".
-    caps = " ".join(w if any(c.isdigit() for c in w) else w.upper() for w in name.split())
-    _fit_text(ImageDraw.Draw(img), caps if len(name) <= 24 else name, (40, 34, W - 40, H - 52), CREAM)
+def _letters(img: Image.Image, text: str, box, fill: str, face: str = "sans", max_lines: int = 2,
+             stroke: float = 0, stroke_fill: str | None = None, shadow: tuple | None = None,
+             glow: tuple | None = None, gap: float = 0.14) -> int:
+    """Paint text into box, with an optional outline, a solid drop shadow (dx, dy as a share of
+    the letter size, colour) and a neon glow (colour, radius). Returns the font size used."""
+    font, spots, size = _layout(text, box, face, max_lines, gap)
+    sw = int(size * stroke)
+    if glow:
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        gd = ImageDraw.Draw(layer)
+        for x, y, line in spots:
+            gd.text((x, y), line, font=font, fill=glow[0], anchor="ms", stroke_width=max(sw, int(size * 0.05)),
+                    stroke_fill=glow[0])
+        for r in (glow[1], glow[1] / 3):
+            img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(r)))
+    d = ImageDraw.Draw(img)
+    if shadow:
+        dx, dy, col = shadow
+        for x, y, line in spots:
+            for k in range(1, 4):  # a solid, stepped shadow like a 3D sign letter
+                d.text((x + dx * k / 3 * size, y + dy * k / 3 * size), line, font=font, fill=col, anchor="ms",
+                       stroke_width=sw, stroke_fill=col)
+    for x, y, line in spots:
+        d.text((x, y), line, font=font, fill=fill, anchor="ms", stroke_width=sw, stroke_fill=stroke_fill or fill)
+    return size
+
+
+def _caps(name: str) -> str:
+    """Capitals, like a station card, but "80s" stays "80s"."""
+    return " ".join(w if any(c.isdigit() for c in w) else w.upper() for w in name.split())
+
+
+# --------------------------------------------------------------------------- ornaments
+
+def _twinkle(d: ImageDraw.ImageDraw, cx: float, cy: float, r: float, color: str):
+    """The four-pointed atomic-age sparkle."""
+    k = r * 0.16
+    d.polygon([(cx, cy - r), (cx + k, cy - k), (cx + r, cy), (cx + k, cy + k), (cx, cy + r), (cx - k, cy + k),
+               (cx - r, cy), (cx - k, cy - k)], fill=color)
+
+
+def _bulbs(img: Image.Image, color: str, inset: int = 18, gap: int = 34, r: int = 7):
+    """Glowing light bulbs around the edge, like a game-show set or a theatre marquee."""
+    pts = []
+    x0, y0, x1, y1 = inset, inset, W - inset, H - inset
+    nx, ny = round((x1 - x0) / gap), round((y1 - y0) / gap)
+    for i in range(nx + 1):
+        x = x0 + (x1 - x0) * i / nx
+        pts += [(x, y0), (x, y1)]
+    for j in range(1, ny):
+        y = y0 + (y1 - y0) * j / ny
+        pts += [(x0, y), (x1, y)]
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    for x, y in pts:
+        gd.ellipse((x - r * 2.2, y - r * 2.2, x + r * 2.2, y + r * 2.2), fill=color)
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(r * 1.4)))
+    d = ImageDraw.Draw(img)
+    for x, y in pts:
+        d.ellipse((x - r, y - r, x + r, y + r), fill=_shade(color, 0.55))
+        d.ellipse((x - r * 0.45, y - r * 0.6, x + r * 0.05, y - r * 0.1), fill="#fffbea")
+
+
+# --------------------------------------------------------------------------- the five looks
+
+def _look_bubble(name: str) -> Image.Image:
+    """Kids: a bright card with confetti dots and fat retro letters with a 3D shadow."""
+    bg = _pick(name, KIDS)
+    img = _tile(bg, stripe=False)
+    d = ImageDraw.Draw(img)
+    light = _shade(bg, 0.18)
+    for i in range(14):
+        n = int(hashlib.md5(f"{name}{i}".encode()).hexdigest(), 16)
+        x, y, r = n % W, (n >> 12) % H, 10 + (n >> 24) % 26
+        d.ellipse((x - r, y - r, x + r, y + r), fill=light)
+    _letters(img, name, (34, 26, W - 40, H - 40), "#ffffff", face="fun", stroke=0.035, stroke_fill=INK,
+             shadow=(0.035, 0.05, INK), gap=0.05)
+    return img
+
+
+def _look_neon(name: str) -> Image.Image:
+    """Music: a night-black card, a border of bulbs and neon tube lettering."""
+    tube = _pick(name, NEON)
+    img = _tile("#120d0b", stripe=False)
+    _bulbs(img, GOLD)
+    _letters(img, _caps(name), (64, 58, W - 64, H - 58), _shade(tube, 0.7), stroke=0.012, stroke_fill=tube,
+             glow=(tube, 16))
+    return img
+
+
+def _look_marquee(name: str) -> Image.Image:
+    """Movies: velvet colour, a gold-bulb marquee and cream headline type."""
+    img = _tile(_pick(name, ["#6c1a22", "#1d2f4f", "#3b2418"]), stripe=False)
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((46, 46, W - 46, H - 46), radius=14, outline=GOLD, width=3)
+    _bulbs(img, "#ffcf5a", inset=22, gap=30, r=6)
+    _letters(img, name, (72, 66, W - 72, H - 66), CREAM, face="serif", shadow=(0.0, 0.035, "#00000088"))
+    return img
+
+
+def _look_station(name: str, number) -> Image.Image:
+    """Classic and broadcast TV: a paper station-ID card with the channel number in a starburst."""
+    img = _tile(PAPER, stripe=False)
+    d = ImageDraw.Draw(img)
+    _stripe(d, PAPER)
+    cx, cy, r = 128, (H - 21) / 2, 112
+    d.polygon(_star(cx, cy, r, 16, 0.74), fill=GOLD)
+    d.ellipse((cx - r * 0.66, cy - r * 0.66, cx + r * 0.66, cy + r * 0.66), fill="#c2521d")
+    if number:
+        _letters(img, str(number), (cx - r * 0.5, cy - r * 0.42, cx + r * 0.5, cy + r * 0.42), CREAM, face="serif",
+                 max_lines=1)
+    _letters(img, name, (cx + r + 20, 38, W - 30, H - 52), INK, face="serif", max_lines=3, gap=0.22)
+    return img
+
+
+def _look_atomic(name: str) -> Image.Image:
+    """Everything else: a solid mid-century colour, sparkles and big bold capitals."""
+    bg = _pick(name, PALETTE)
+    img = _tile(bg)
+    d = ImageDraw.Draw(img)
+    spark = _shade(bg, 0.28)
+    for x, y, r in ((44, 46, 24), (W - 50, 60, 16), (W - 34, H - 74, 22), (30, H - 90, 12)):
+        _twinkle(d, x, y, r, spark)
+    _letters(img, _caps(name) if len(name) <= 24 else name, (46, 34, W - 46, H - 50), CREAM,
+             shadow=(0.0, 0.03, _shade(bg, -0.45)))
+    return img
+
+
+LOOKS = {"Kids": "bubble", "Anime": "bubble", "Music": "neon", "Movies": "marquee", "Premium": "marquee",
+         "Classic TV": "station", "Broadcast Networks": "station"}
+
+
+def look_for(name: str, group: str = "") -> str:
+    """Which look a drawn logo gets: from the channel's group, or failing that its name."""
+    if group in LOOKS:
+        return LOOKS[group]
+    low = name.lower()
+    if any(w in low for w in ("music", "video", "hits", "mtv", "vh1", "radio", "rock", "jams")):
+        return "neon"
+    if any(w in low for w in ("movie", "cinema", "film", "flix", "theater", "theatre")):
+        return "marquee"
+    if any(w in low for w in ("kid", "cartoon", "toon", "jr", "junior", "saturday morning")):
+        return "bubble"
+    if any(w in low for w in ("classic", "retro", "vintage", "oldies", "rerun")):
+        return "station"
+    return "atomic"
+
+
+def draw_logo(name: str, group: str = "", number=None) -> bytes:
+    look = look_for(name, group)
+    if look == "bubble":
+        img = _look_bubble(name)
+    elif look == "neon":
+        img = _look_neon(name)
+    elif look == "marquee":
+        img = _look_marquee(name)
+    elif look == "station":
+        img = _look_station(name, number)
+    else:
+        img = _look_atomic(name)
     return _png(_rounded(img))
 
 
@@ -258,9 +438,10 @@ def holiday_icon(d: ImageDraw.ImageDraw, key: str, x: float, y: float, s: float)
 def draw_holiday_logo(name: str, key: str) -> bytes:
     img = _tile(HOLIDAY_COLORS.get(key, "#7c1d24"))
     d = ImageDraw.Draw(img)
-    icon = 176
-    holiday_icon(d, key, 30, (H - 18 - icon) / 2, icon)
-    _fit_text(d, name, (30 + icon + 18, 36, W - 28, H - 54), CREAM, max_lines=2)
+    icon = 150
+    holiday_icon(d, key, 22, (H - 18 - icon) / 2, icon)
+    _letters(img, name, (22 + icon + 14, 26, W - 22, H - 44), CREAM, face="fun", max_lines=2,
+             shadow=(0.0, 0.04, _shade(HOLIDAY_COLORS.get(key, "#7c1d24"), -0.5)), gap=0.08)
     return _png(_rounded(img))
 
 
@@ -319,6 +500,7 @@ def logo_ref(ch: dict, catalog=None) -> str:
 
 
 _logo_locks: dict[str, asyncio.Lock] = {}
+LOGO_STATUS: dict[str, str] = {}  # channel id -> which logo it got, for the diagnostic report
 
 
 async def channel_logo(ch: dict, catalog=None, festive: str = "", online: bool = True) -> bytes:
@@ -334,19 +516,24 @@ async def _channel_logo(ch: dict, catalog=None, festive: str = "", online: bool 
     key = hashlib.sha1(f"{ch['name']}|{ref}|{ch.get('season')}|{badge}|{online}|{VERSION}".encode()).hexdigest()[:12]
     path = DATA_DIR / "logos" / f"{ch['id']}-{key}.png"
     if path.exists():
+        LOGO_STATUS.setdefault(ch["id"], "ready (made earlier)")
         return path.read_bytes()
     data = None
     if holiday:
         data = await asyncio.to_thread(draw_holiday_logo, ch["name"], ch["season"])
+        LOGO_STATUS[ch["id"]] = "holiday card"
     elif ref and online:
         raw = await official_logo(ref)
         if raw:
             try:
                 data = await asyncio.to_thread(frame_logo, raw)
-            except Exception:
+                LOGO_STATUS[ch["id"]] = f"official ({ref.split(':')[0]})"
+            except Exception as e:
+                log.warning("Couldn't use the official logo for %s: %s", ch["name"], e)
                 data = None
     if data is None:
-        data = await asyncio.to_thread(draw_logo, ch["name"])
+        data = await asyncio.to_thread(draw_logo, ch["name"], ch.get("group", ""), ch.get("number"))
+        LOGO_STATUS[ch["id"]] = "drawn" + (" (official logo couldn't be downloaded)" if ref and online else "")
     if badge:
         data = await asyncio.to_thread(add_badge, data, badge)
     path.parent.mkdir(parents=True, exist_ok=True)

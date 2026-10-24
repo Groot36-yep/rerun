@@ -9,7 +9,7 @@ import socket
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from urllib.parse import quote
 
@@ -754,6 +754,11 @@ async def connect_info(request: Request, app=Depends(signed_in)):
                     f"({lan}). If Plex can't reach it, try 127.0.0.1:{app.port} instead.")
     return {"base": base, "tuner": base, "xmltv": f"{base}/xmltv.xml", "m3u": f"{base}/iptv.m3u", "note": note,
             "channels": len([c for c in app.cfg.data["channels"] if c.get("enabled", True)])}
+
+
+@router.get("/report")
+async def report(app=Depends(signed_in)):
+    return PlainTextResponse(app.diag.report(app))
 
 
 @router.get("/status")

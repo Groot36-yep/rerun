@@ -435,3 +435,4 @@ th { font: 600 10.5px var(--caps); letter-spacing: .15em; text-transform: upperc
   .l-actions .icon-btn:last-child { display: none; }
   .save-dock { margin-left: -16px; margin-right: -16px; border-radius: 0; }
 }
+.report { margin-top: 14px; height: 340px; font: 12.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre; }

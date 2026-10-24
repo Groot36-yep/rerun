@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import mimetypes
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -43,6 +45,8 @@ class Guard:
         app = self.get_app()
         host = (scope.get("client") or ("", 0))[0]
         if app and app.cfg.data["security"].get("lan_only", True) and not ip_allowed(host, app.extra_networks()):
+            if app.diag.wants(scope.get("path", "")):
+                app.diag.request(host, scope.get("method", ""), scope.get("path", ""), 403, 0, "refused: not home network")
             if host not in self.refused:
                 self.refused.add(host)
                 log.warning("Refused %s from %s: it isn't on your home network. If that's your Plex server, "
@@ -50,10 +54,17 @@ class Guard:
             resp = PlainTextResponse("Rerun only answers devices on your home network.", status_code=403)
             return await resp(scope, receive, send)
 
-        static = scope.get("path", "").startswith("/static/")
+        path = scope.get("path", "")
+        static = path.startswith("/static/")
+        record = app is not None and app.diag.wants(path)
+        began = time.time()
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
+                if record:
+                    agent = next((v.decode(errors="replace") for k, v in scope.get("headers", []) if k == b"user-agent"), "")
+                    app.diag.request(host, scope.get("method", ""), path, message["status"],
+                                     (time.time() - began) * 1000, agent)
                 h = MutableHeaders(scope=message)
                 if static:
                     h["Cache-Control"] = "no-cache"  # always check for a newer page after an update
@@ -150,8 +161,9 @@ async def m3u(request: Request):
     return Response(guide.m3u(_app(request), _base(request)), media_type="audio/x-mpegurl")
 
 
+@web.api_route("/logo/{ver}/{cid}.png", methods=["GET", "HEAD"])
 @web.api_route("/logo/{cid}.png", methods=["GET", "HEAD"])
-async def logo(cid: str, request: Request):
+async def logo(cid: str, request: Request, ver: str = ""):
     app = _app(request)
     ch = app.channel(cid)
     if not ch:
@@ -195,17 +207,26 @@ async def stream(number: int, request: Request):
     ch = app.channel_by_number(number)
     if not ch:
         raise HTTPException(404, "No such channel")
+    began = time.time()
+    already_on = ch["id"] in app.streams.by_channel
     try:
         sub, st = await app.streams.subscribe(ch)
     except TunersBusy:
+        log.warning("Channel %s was asked for, but all %s tuners are in use", number,
+                    app.cfg.data["stream"].get("tuners"))
         raise HTTPException(503, "All tuners are busy")
+    agent = request.headers.get("user-agent", "")
 
     async def body():
+        first = True
         try:
             while True:
                 chunk = await sub.q.get()
                 if chunk is None:
                     break
+                if first:
+                    first = False
+                    app.diag.tune(number, time.time() - began, already_on, agent)
                 yield chunk
         finally:
             st.unsubscribe(sub)
@@ -237,6 +258,16 @@ async def internal_piece(token: str, n: int, request: Request):
     if token not in app.streams.by_token:
         raise HTTPException(404)
     return StreamingResponse(app.streams.piece(token), media_type="video/mp2t")
+
+
+@web.get("/internal/report", include_in_schema=False)
+async def internal_report(request: Request):
+    """The diagnostic report for "rerun report" on this computer."""
+    _local_only(request)
+    app = _app(request)
+    if not hmac.compare_digest(request.headers.get("x-report-key", ""), app.report_key):
+        raise HTTPException(403)
+    return PlainTextResponse(app.diag.report(app))
 
 
 @web.exception_handler(StarletteHTTPException)

@@ -71,6 +71,23 @@ case "${1:-help}" in
     $SUDO systemctl start rerun
     healthy && echo "Restored." || echo "Not answering yet; check: rerun logs"
     ;;
+  report)
+    key="$(as_user "${RUN_USER:-$USER}" cat "$DATA_DIR/report.key" 2>/dev/null || true)"
+    [ -n "$key" ] || { echo "Rerun isn't running (or hasn't started yet). Try: rerun start"; exit 1; }
+    out="$HOME/rerun-report.txt"
+    python3 - "$PORT" "$key" >"$out" <<'PY' || { echo "Couldn't get the report. Is Rerun running? Try: rerun status"; exit 1; }
+import sys, urllib.request
+req = urllib.request.Request(f"http://127.0.0.1:{sys.argv[1]}/internal/report", headers={"X-Report-Key": sys.argv[2]})
+sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode())
+PY
+    {
+      echo; echo "== Service =="
+      systemctl show rerun -p ActiveState -p NRestarts -p ActiveEnterTimestamp 2>/dev/null
+    } >>"$out"
+    cat "$out"
+    echo
+    echo "Saved to $out — copy everything above, or send that file."
+    ;;
   update)
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
@@ -129,6 +146,7 @@ rerun — commands for your Rerun TV channels
   rerun stop / start    Turn it off (stays off) or back on.
   rerun backup          Save your channels and settings to ~/rerun-backups.
   rerun restore FILE    Put back a backup.
+  rerun report          A report on how Rerun and Plex are getting on, to paste when asking for help.
   rerun update          Download the newest Rerun and install it (keeps your settings).
   rerun check-gpu       Check that Intel Quick Sync (or AMD) video encoding works.
   rerun reset-password  Forgot the web password? Clears it so you can choose a new one.

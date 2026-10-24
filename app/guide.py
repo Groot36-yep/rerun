@@ -36,8 +36,10 @@ def enabled_channels(app) -> list[dict]:
 def logo_url(app, base: str, ch: dict) -> str:
     # Plex keeps a logo by its address, so the address only changes when the picture really does:
     # a new Rerun logo style, or a holiday badge (if festive logos are on) starting or ending.
+    # The version is part of the path, not a ?query, so the address ends in plain ".png": some
+    # image fetchers (Plex's among them) handle that more reliably.
     festive = app.festive()
-    return f"{base}/logo/{ch['id']}.png?v={LOGO_V}" + (f"-{festive}" if festive else "")
+    return f"{base}/logo/{LOGO_V}{'-' + festive if festive else ''}/{ch['id']}.png"
 
 
 def discover(app, base: str) -> dict:

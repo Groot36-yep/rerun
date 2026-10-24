@@ -340,8 +340,10 @@ class StreamManager:
         st = self.by_token.get(token)
         if st is None or st.stopping:
             return
+        lead = (st.cursor - time.time()) if st.cursor is not None else 0.0
         plan = await st.plan()
         item, dur, burst = plan["item"], max(0.5, plan["dur"]), plan["burst"]
+        spinup, delivered = 0.0, False
         s = self.app.cfg.data["stream"]
         src = None
         if item.get("k") in ("c", "f"):
@@ -363,6 +365,7 @@ class StreamManager:
         try:
             hw_decode = True
             for _attempt in range(5):
+                spawned = time.time()
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -376,6 +379,7 @@ class StreamManager:
                     first = b""
                     await _kill(proc)
                 if first:
+                    spinup, delivered = time.time() - spawned, True
                     yield first
                     while True:
                         chunk = await proc.stdout.read(65536)
@@ -414,6 +418,8 @@ class StreamManager:
                 break
             st.cursor = plan["end"]
             st.joiner_media += dur
+            if not st.stopping:
+                self.app.diag.piece(st.number, kind, spinup, lead, burst, dur, delivered)
         finally:
             await _kill(proc)
             if st.seg_proc is proc:

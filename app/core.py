@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import time
 from collections import deque
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from . import images, seasons
 from .catalog import Catalog, Scanner
 from .channels import sync_auto
+from .diagnostics import Diagnostics
 from .ffmpeg import FFmpeg
 from .folders import Prober
 from .plex import PlexClient
@@ -86,6 +88,15 @@ class App:
         self.sessions = Sessions()
         self.limiter = LoginLimiter()
         self.logs = LogBuffer()
+        self.diag = Diagnostics()
+        # "rerun report" on this computer shows the diagnostic report using this key.
+        self.report_key = secrets.token_urlsafe(24)
+        key_file = DATA_DIR / "report.key"
+        key_file.write_text(self.report_key)
+        try:
+            key_file.chmod(0o600)
+        except OSError:
+            pass
         logging.getLogger().addHandler(self.logs)
         self.ffmpeg = FFmpeg()
         self.catalog = Catalog.load()

@@ -1317,7 +1317,23 @@ async function viewHelp() {
   const plexCard = h("section", { class: "panel" }, h("div", { class: "eyebrow" }, "Once only"), h("h2", null, "Add Rerun to Plex"),
     h("p", { class: "lede" }, "Plex sees Rerun as a TV tuner."));
   const health = h("div");
-  add(v, plexCard, health);
+  const reportBox = h("textarea", { class: "report", readonly: true, hidden: true, "aria-label": "Diagnostic report" });
+  const loadReport = async () => {
+    const r = await fetch("/api/report", { headers: { "X-Rerun": "1" } });
+    if (!r.ok) throw new Error("Couldn't make the report");
+    reportBox.value = await r.text();
+    reportBox.hidden = false;
+  };
+  const reportCard = h("section", { class: "panel" }, h("div", { class: "eyebrow" }, "Asking for help"), h("h2", null, "Diagnostic report"),
+    h("p", { class: "lede" }, "What Plex has asked Rerun for, how quickly channels started, how hard the computer is working, and recent problems. It has no passwords or Plex sign-in in it. Watch a channel in Plex for a minute first, then copy this and paste it wherever you're asking for help."),
+    h("div", { class: "row" },
+      h("button", { class: "btn primary", onclick: async () => {
+        try { await loadReport(); copyText(reportBox.value, reportBox); } catch (x) { toast(x.message, true); }
+      } }, "Copy report"),
+      h("button", { class: "btn quiet", onclick: () => loadReport().catch((x) => toast(x.message, true)) }, "Show it")),
+    h("p", { class: "hint" }, "On the server you can also run ", h("code", null, "rerun report"), "."),
+    reportBox);
+  add(v, plexCard, reportCard, health);
   addToPlexContent(plexCard).catch((x) => add(plexCard, h("p", { class: "error" }, x.message)));
   const load = async () => {
     let s;

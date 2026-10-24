@@ -104,7 +104,8 @@ class FFmpeg:
             return ["-c:v", "h264_vaapi", *(["-low_power", "1"] if hw == "vaapi_lp" else []), *rate, "-bf", "0"]
         if hw == "nvenc":
             return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "cbr", *rate, "-bf", "0"]
-        return ["-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-level:v", "4.1", *rate,
+        # superfast: about a quarter less processor than veryfast for a picture that looks the same on TV
+        return ["-c:v", "libx264", "-preset", "superfast", "-profile:v", "high", "-level:v", "4.1", *rate,
                 "-keyint_min", str(GOP), "-sc_threshold", "0", "-bf", "2"]
 
     def _hw_prefix(self, s: dict, hw: str, decode: bool = False) -> list[str]:
@@ -172,7 +173,9 @@ class FFmpeg:
         return ["-af", af, "-c:a", "aac", "-b:a", f"{int(s.get('audio_kbps') or 192)}k", "-ac", "2", "-ar", "48000"]
 
     def _ts_out(self, duration: float) -> list[str]:
-        return ["-t", f"{duration:.3f}", "-max_muxing_queue_size", "4096", "-f", "mpegts", "pipe:1"]
+        # flush_packets: hand each bit of picture on as soon as it's made, rather than in 32 KB lumps.
+        return ["-t", f"{duration:.3f}", "-max_muxing_queue_size", "4096", "-flush_packets", "1",
+                "-f", "mpegts", "pipe:1"]
 
     def media_cmd(self, src: str, offset: float, duration: float, s: dict, burst: float, has_audio: bool,
                   hw_decode: bool = True) -> list[str]:

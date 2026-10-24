@@ -88,7 +88,9 @@ is Plex itself, and these Plex settings help (Plex Web → **Settings**):
   with its official logo; switch it off and it's gone for good. Small sister channels
   (Nicktoons, Boomerang) share their big sister's channel until they have enough shows.
 - About 80 networks have their official logo built in; others come from your TMDB key or
-  Wikipedia, and anything else gets a printed-style card drawn by Rerun.
+  Wikipedia. Anything else gets a logo drawn by Rerun in a 1960s style that suits the channel:
+  bubble letters for kids, neon and light bulbs for music, a theatre marquee for movies, a
+  station-ID starburst for classic TV.
 - **Holidays** covers Valentine's Day, St. Patrick's Day, Easter, the Fourth of July,
   Halloween, Thanksgiving, Christmas and New Year's. Holiday episodes are found by title,
   description and Plex collection name, kept off the air out of season, mixed into your
@@ -117,14 +119,22 @@ the show, or only between shows, and are sized so the next show starts on the ha
 | `rerun backup` / `rerun restore FILE` | Save or restore your channels and settings. |
 | `rerun reset-password` | Forgot the web password. |
 | `rerun stop` / `rerun start` | Turn it off (stays off) or on. |
+| `rerun report` | A diagnostic report to paste when asking for help (also on the Help page). |
 | `rerun update` | Install the newest version, or change media folders or the port. |
 | `rerun check-gpu` | Check that Intel Quick Sync (or AMD) encoding works. |
 | `rerun uninstall` | Remove it (keeps your settings). |
 
 ## Troubleshooting
 
+For anything odd, watch a channel in Plex for a minute, then run `rerun report` (or use **Copy
+report** on the Help page). It shows what Plex asked Rerun for, how fast channels started, how
+hard the computer is working and any recent problems, with no passwords in it.
+
 - **A channel shows "We'll be right back".** A file couldn't be read; "Recent activity" on
   the Help page says which one.
+- **Channel logos don't show in Plex.** In Plex, open Settings → Live TV & DVR → your Rerun DVR →
+  Refresh Guide, then reload Plex. If they still don't appear, the report's "What Plex and
+  players asked for" section shows whether Plex fetched them.
 - **Plex can't find the tuner.** Use the computer's network address, not `localhost`, and
   make sure a firewall isn't blocking port 8410 (the installer offers to allow it).
 - **Video stutters.** Run `rerun check-gpu` to make sure Quick Sync is being used, or lower the
@@ -139,7 +149,7 @@ the show, or only between shows, and are sized so the next show starts on the ha
 
 ## Credits
 
-The page fonts are [Libre Caslon Text](https://fonts.google.com/specimen/Libre+Caslon+Text)
-and [Jost](https://fonts.google.com/specimen/Jost), both under the SIL Open Font License
-(see `app/static/fonts`). Network logos come from TMDB and Wikipedia and belong to their
+The fonts are [Libre Caslon Text](https://fonts.google.com/specimen/Libre+Caslon+Text),
+[Jost](https://fonts.google.com/specimen/Jost) and [Shrikhand](https://fonts.google.com/specimen/Shrikhand),
+all under the SIL Open Font License (see `app/static/fonts` and `app/fonts`). Network logos come from TMDB and Wikipedia and belong to their
 owners. Rerun isn't affiliated with Plex or any TV network.
