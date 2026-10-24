@@ -183,7 +183,10 @@ class Diagnostics:
         return "\n".join(out) + "\n"
 
 
-_PREFS = re.compile(r"hardware|transcod|dvr|livetv|grab|deinterlac", re.I)
+# The Plex settings that decide what live TV costs.
+_PREFS = ("HardwareAcceleratedCodecs", "HardwareAcceleratedEncoders", "TranscoderCanOnlyRemuxVideo",
+          "TranscoderQuality", "TranscoderH264Preset", "TranscoderTempDirectory", "TranscoderLivePruneBuffer",
+          "TranscodeCountLimit")
 
 
 async def _plex(app) -> list[str]:
@@ -195,8 +198,7 @@ async def _plex(app) -> list[str]:
     lines = []
     try:
         prefs = (await asyncio.wait_for(plex.get("/:/prefs"), 10)).get("Setting", [])
-        shown = [f"{p.get('id')}={p.get('value')}" for p in prefs
-                 if _PREFS.search(str(p.get("id", ""))) and not _SECRET.search(f"{p.get('id')}=")]
+        shown = [f"{p.get('id')}={p.get('value')}" for p in prefs if p.get("id") in _PREFS]
         lines.append("Settings: " + (", ".join(shown) if shown else "none readable"))
     except Exception as e:
         lines.append(f"Couldn't read Plex settings ({e.__class__.__name__}).")
@@ -204,10 +206,13 @@ async def _plex(app) -> list[str]:
         trans = (await asyncio.wait_for(plex.get("/transcode/sessions"), 10)).get("TranscodeSession", [])
         lines.append(f"Plex Transcoder jobs: {len(trans)}")
         for t in trans:
+            if t.get("videoDecision") == "copy" and not t.get("sourceVideoCodec"):
+                lines.append(f"  live TV buffer: copying the channel as it arrives (cheap), speed {_speed(t)}")
+                continue
             hw = "/".join(x for x in (t.get("transcodeHwDecoding"), t.get("transcodeHwEncoding")) if x) or "none"
             lines.append(f"  video {t.get('sourceVideoCodec')}→{t.get('videoCodec')} ({t.get('videoDecision')}), "
                          f"audio {t.get('sourceAudioCodec')}→{t.get('audioCodec')} ({t.get('audioDecision')}), "
-                         f"hardware: {hw}, speed {t.get('speed')}, {'throttled' if t.get('throttled') else 'running'}, "
+                         f"hardware: {hw}, speed {_speed(t)}, {'throttled' if t.get('throttled') else 'running'}, "
                          f"{t.get('protocol') or t.get('context') or ''}")
     except Exception as e:
         lines.append(f"Couldn't read Plex transcoder jobs ({e.__class__.__name__}).")
@@ -225,6 +230,13 @@ async def _plex(app) -> list[str]:
     except Exception as e:
         lines.append(f"Couldn't read Plex sessions ({e.__class__.__name__}).")
     return lines
+
+
+def _speed(t: dict) -> str:
+    try:
+        return f"{float(t.get('speed')):.1f}x"
+    except (TypeError, ValueError):
+        return "?"
 
 
 def _kind(path: str) -> str:
