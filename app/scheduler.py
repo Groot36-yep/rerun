@@ -358,7 +358,8 @@ class Builder:
     def _ads(self, items: list, pos: float, seconds: float, *, final: bool) -> tuple[float, float]:
         chosen, left = self._pick_filler(seconds)
         for f in chosen:
-            items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": 0, "t": f.get("title", ""),
+            items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
+                          "t": f.get("title", ""),
                           **_src(f)})
             pos += f["dur"]
         if final and left > 0.05:

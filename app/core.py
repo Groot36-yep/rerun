@@ -12,6 +12,7 @@ from pathlib import Path
 from . import images, seasons
 from .catalog import Catalog, Scanner
 from .channels import sync_auto
+from .archive import OWN as OWN_COMMERCIALS, Finder
 from .diagnostics import Diagnostics
 from .ffmpeg import FFmpeg
 from .folders import Prober
@@ -89,6 +90,7 @@ class App:
         self.limiter = LoginLimiter()
         self.logs = LogBuffer()
         self.diag = Diagnostics()
+        self.finder = Finder(self)
         # "rerun report" on this computer shows the diagnostic report using this key.
         self.report_key = secrets.token_urlsafe(24)
         key_file = DATA_DIR / "report.key"
@@ -214,6 +216,9 @@ class App:
         if not self.media_roots:
             return True
         real = os.path.realpath(path)
+        own = os.path.realpath(OWN_COMMERCIALS)
+        if real == own or real.startswith(own + os.sep):
+            return True  # commercials Rerun downloaded itself
         return any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in self.media_roots)
 
     def map_path(self, path: str) -> str:

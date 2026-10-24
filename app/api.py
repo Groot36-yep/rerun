@@ -770,6 +770,35 @@ async def connect_info(request: Request, app=Depends(signed_in)):
             "channels": len([c for c in app.cfg.data["channels"] if c.get("enabled", True)])}
 
 
+@router.get("/finder")
+async def finder_status(app=Depends(signed_in)):
+    return app.finder.summary()
+
+
+@router.post("/finder")
+async def finder_start(body: dict, app=Depends(signed_in)):
+    try:
+        gb = min(max(float(body.get("budget_gb", 1.5)), 0.2), 50)
+        app.finder.start(list(body.get("networks") or []), list(body.get("eras") or []), int(gb * 1e9))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return app.finder.summary()
+
+
+@router.post("/finder/stop")
+async def finder_stop(app=Depends(signed_in)):
+    app.finder.stop = True
+    return {"ok": True}
+
+
+@router.delete("/finder/{key}")
+async def finder_remove(key: str, app=Depends(signed_in)):
+    if app.finder.task and not app.finder.task.done():
+        raise HTTPException(400, "Wait for the search to finish first")
+    app.finder.remove(key)
+    return app.finder.summary()
+
+
 @router.get("/report")
 async def report(app=Depends(signed_in)):
     return PlainTextResponse(await app.diag.report(app))

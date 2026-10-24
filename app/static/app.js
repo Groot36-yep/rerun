@@ -1201,6 +1201,67 @@ async function viewGuide() {
 
 // ================================================================ settings
 
+// Classic commercials from the Internet Archive (see app/archive.py).
+function commercialFinder() {
+  const box = h("div", { class: "finder" });
+  const picked = new Set();
+  const eras = new Set();
+  let gb = 1.5, first = true;
+  const render = (d) => {
+    if (first) {
+      d.networks.filter((n) => n.have_channel).forEach((n) => picked.add(n.key));
+      (d.channel_eras.length ? d.channel_eras : ["2000s"]).forEach((e) => eras.add(e));
+      first = false;
+    }
+    const st = d.status;
+    const busy = st.running;
+    fill(box,
+      h("div", { class: "finder-nets" }, d.networks.map((n) => h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: picked.has(n.key), disabled: busy,
+          onchange: (e) => { e.target.checked ? picked.add(n.key) : picked.delete(n.key); } }),
+        h("span", null, n.label, h("span", { class: "muted" },
+          n.clips ? Object.entries(n.eras).map(([e, k]) => `${e}: ${k}`).join(" · ") : n.have_channel ? "You have this channel" : ""))))),
+      h("label", null, "Eras"),
+      h("div", { class: "chips" }, d.eras.map((e) => h("span", {
+        class: "chip toggle" + (eras.has(e) ? " on" : ""), role: "button", tabindex: 0,
+        onclick: busy ? null : () => { eras.has(e) ? eras.delete(e) : eras.add(e); render(d); },
+      }, e))),
+      h("div", { class: "row", style: { marginTop: "6px" } },
+        h("span", { class: "plain-label" }, "Space per network"),
+        select([[0.5, "0.5 GB"], [1.5, "1.5 GB"], [3, "3 GB"], [6, "6 GB"]], gb, (v) => { gb = parseFloat(v); }, { class: "inline", disabled: busy })),
+      h("div", { class: "row", style: { marginTop: "14px" } },
+        busy ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this download…"); } }, "Stop")
+          : h("button", { class: "btn primary", onclick: async () => {
+            try { render(await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], budget_gb: gb })); poll(); }
+            catch (x) { toast(x.message, true); }
+          } }, "Find commercials"),
+        busy || !st.step ? null : h("span", { class: "hint" }, st.step)),
+      busy ? h("div", null,
+        h("div", { class: "progress" + (st.total ? "" : " indeterminate") }, h("div", { style: { width: st.total ? `${Math.round((100 * st.done) / st.total)}%` : "" } })),
+        h("p", { class: "hint" }, st.step)) : null,
+      st.error ? h("p", { class: "error" }, st.error) : null,
+      st.found && st.found.length ? h("p", { class: "hint" }, st.found.map((f) => `${f.network}: ${plural(f.matches, "matching tape")}`).join(" · ")) : null,
+      d.networks.filter((n) => n.tapes).map((n) => h("details", { class: "subpanel" },
+        h("summary", null, `${n.label}: ${plural(n.clips, "commercial")} from ${plural(n.tapes, "tape")}, ${(n.bytes / 1e9).toFixed(1)} GB`),
+        h("ul", { class: "finder-tapes" }, n.titles.map((t) => h("li", null, t))),
+        busy ? null : h("button", { class: "btn small quiet", onclick: async () => {
+          if (!confirm(`Delete the ${n.label} commercials Rerun downloaded?`)) return;
+          try { render(await api("DELETE", `/api/finder/${n.key}`)); toast(`${n.label} commercials removed`); } catch (x) { toast(x.message, true); }
+        } }, "Delete these"))));
+  };
+  let timer = null;
+  const poll = async () => {
+    try {
+      const d = await api("GET", "/api/finder");
+      render(d);
+      clearTimeout(timer);
+      if (d.status.running) timer = later(poll, 2000);
+    } catch (x) { fill(box, h("p", { class: "error" }, x.message)); }
+  };
+  poll();
+  return box;
+}
+
 function settingRow(title, about, ...controls) {
   return h("div", { class: "setting" }, h("div", { class: "about" }, h("h2", null, title), about ? h("p", null, about) : null), h("div", null, controls));
 }
@@ -1280,6 +1341,8 @@ async function viewSettings() {
       h("div", { class: "stack" },
         toggle("Add a channel for each new network in my library", auto.networks, (val) => { auto.networks = val; save({ auto }); }),
         toggle("Add Christmas and Halloween channels when I have enough holiday episodes", auto.holidays, (val) => { auto.holidays = val; save({ auto }); }))),
+    settingRow("Classic commercials", "Rerun can find real commercials, promos and bumpers from the eras you pick, taped off TV and saved on the Internet Archive. Each network channel gets its own (Nick ads on Nickelodeon, Disney ads on Disney Channel) and decade channels like “90s Cartoons” get that decade's. They're downloaded to this computer for watching at home.",
+      commercialFinder()),
     settingRow("Picture & sound", "Changes apply to channels started after saving. If hardware encoding doesn't work, Rerun notices and uses the CPU instead.",
       h("div", { class: "grid2" },
         h("div", null, h("label", null, "Picture size"), select([["480p", "480p — lightest"], ["720p", "720p — recommended"], ["1080p", "1080p"]], st.resolution, (val) => { st.resolution = val; })),

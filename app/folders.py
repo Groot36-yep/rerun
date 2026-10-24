@@ -55,6 +55,15 @@ def parse_music_video(stem: str, folder_tags: list[str]) -> dict:
     return out
 
 
+def _clips(path: str) -> dict | None:
+    """The list of commercials in a recorded break, if Rerun found them (see archive.py)."""
+    try:
+        with open(path + ".clips.json", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def list_videos(root: str) -> list[str]:
     files = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -151,6 +160,16 @@ async def scan_folder(root: str, kind: str, prober: Prober, progress=None) -> li
         rel = Path(os.path.relpath(p, root))
         folder_tags = [t.lower() for t in rel.parts[:-1]]
         stem = rel.stem
+        clips = _clips(p)
+        if clips is not None and kind == "commercials":
+            # A recorded commercial break: each commercial plays straight out of the tape.
+            base = clean_title(clips.get("title") or stem)
+            for i, (start, length) in enumerate(clips.get("clips") or []):
+                if start + length <= r["dur"] + 1:
+                    items.append({"id": f"{file_id(p)}c{i}", "dur": length, "in": start, "file": p, "part": "",
+                                  "audio": r["a"], "chapters": [], "tags": folder_tags, "src": src,
+                                  "title": f"{base} ({i + 1})"})
+            continue
         item = {"id": file_id(p), "dur": r["dur"], "file": p, "part": "", "audio": r["a"],
                 "chapters": r["ch"], "tags": folder_tags, "src": src}
         if kind == "music_videos":

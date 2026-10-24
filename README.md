@@ -115,6 +115,24 @@ Put them in folders inside a media folder. Sub-folders become tags each channel 
 Breaks go at chapter marks (where DVD and Blu-ray rips have act breaks), evenly through
 the show, or only between shows, and are sized so the next show starts on the half hour.
 
+## Classic commercials, found for you
+
+Settings → **Classic commercials** finds real commercials, promos and bumpers that people taped off
+TV and saved on the [Internet Archive](https://archive.org). Pick networks (Nickelodeon, Nick Jr.,
+Disney Channel, Playhouse Disney, Cartoon Network, Kids' WB, Fox Kids, MTV, PBS Kids and more), eras
+(70s through 2020s) and how much space to use, and Rerun:
+
+- keeps only tapes whose titles say they're that network's commercials, promos or bumpers from
+  those years, aired in the US, with no full episodes mixed in;
+- downloads them into its own data folder (`/var/lib/rerun/commercials`);
+- finds each commercial in a tape by the black, silent gap between ads, and keeps clips from 5
+  seconds to 2 minutes long, so they play one by one without the tape being cut up;
+- files them by network and era: the Nickelodeon channel plays Nick ads, and channels named for a
+  decade ("90s Cartoons", "2000s Cartoons") play that decade's ads from every network.
+
+These are other people's recordings of broadcast TV, downloaded for watching at home. Delete them
+any time from the same place.
+
 ## Everyday commands
 
 | Command | What it does |
