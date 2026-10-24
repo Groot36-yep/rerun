@@ -121,6 +121,7 @@ DEFAULT_CONFIG = {
     # After each scan, add channels for networks (and holidays) that appear in your library.
     "auto": {"networks": True, "holidays": True, "min_shows": 2, "dismissed": []},
     "festive_logos": False,  # a small holiday badge on every channel logo while a holiday is in season
+    "plex_logos": "through_plex",  # through_plex: Plex apps get pictures via their Plex server | direct
     "holidays": DEFAULT_HOLIDAYS,
     "channels": [],
 }

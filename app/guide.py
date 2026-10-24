@@ -5,6 +5,7 @@ import hashlib
 import re
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 from xml.sax.saxutils import escape, quoteattr
 
 from . import __version__
@@ -81,13 +82,26 @@ def m3u(app, base: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def xmltv(app, base: str) -> str:
+def through_plex(url: str, width: int, height: int) -> str:
+    """A picture address Plex apps fetch from their own Plex server, which fetches it from Rerun.
+
+    Plex apps load guide pictures straight from the address in the guide. Over a secure connection
+    (app.plex.tv, the Apple TV and phone apps) they refuse a plain http address on the home
+    network, so the logos never appear. A Plex-server path works everywhere: the app asks its
+    server over the secure connection it already has, and the server collects the picture."""
+    return "/photo/:/transcode?" + urlencode({"width": width, "height": height, "minSize": 1, "upscale": 1,
+                                              "url": url})
+
+
+def xmltv(app, base: str, for_plex: bool = False) -> str:
     now = time.time()
     out = ['<?xml version="1.0" encoding="UTF-8"?>',
            f'<tv generator-info-name="Rerun {__version__}" source-info-name="Rerun">']
     chans = enabled_channels(app)
     for c in chans:
         logo = logo_url(app, base, c)
+        if for_plex:
+            logo = through_plex(logo, 640, 360)
         out.append(f'  <channel id="{c["number"]}">')
         out.append(f"    <display-name>{_x(c['name'])}</display-name>")
         out.append(f"    <display-name>{c['number']}</display-name>")
@@ -109,6 +123,8 @@ def xmltv(app, base: str) -> str:
                 out.append(f'    <category lang="en">{_x(cat)}</category>')
             if b.get("img"):
                 img = f"{base}/img/{b['img']}.jpg"
+                if for_plex:
+                    img = through_plex(img, 400, 600)
                 out.append(f"    <icon src={_a(img)} />")
             if b.get("sn") or b.get("en"):
                 sn, en = int(b.get("sn") or 0), int(b.get("en") or 0)

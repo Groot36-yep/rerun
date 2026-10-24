@@ -153,7 +153,12 @@ async def lineup_post():
 
 @web.api_route("/xmltv.xml", methods=["GET", "HEAD"])
 async def xmltv(request: Request):
-    return Response(guide.xmltv(_app(request), _base(request)), media_type="application/xml")
+    app = _app(request)
+    # Plex gets picture addresses that go through Plex itself (see guide.through_plex); other
+    # guide readers (Jellyfin, TiviMate…) get the plain addresses.
+    for_plex = (request.headers.get("user-agent", "").startswith("PlexMediaServer")
+                and app.cfg.data.get("plex_logos", "through_plex") == "through_plex")
+    return Response(guide.xmltv(app, _base(request), for_plex), media_type="application/xml")
 
 
 @web.api_route("/iptv.m3u", methods=["GET", "HEAD"])

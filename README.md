@@ -138,9 +138,11 @@ hard the computer is working and any recent problems, with no passwords in it.
 
 - **A channel shows "We'll be right back".** A file couldn't be read; "Recent activity" on
   the Help page says which one.
-- **Channel logos don't show in Plex.** In Plex, open Settings → Live TV & DVR → your Rerun DVR →
-  Refresh Guide, then reload Plex. If they still don't appear, the report's "What Plex and
-  players asked for" section shows whether Plex fetched them.
+- **Channel logos don't show in Plex.** Plex only reads channel logos when a DVR is set up, so
+  after changing anything about logos, delete the Rerun DVR in Plex (Settings → Live TV & DVR)
+  and set it up again, then fully restart the Plex app. Plex apps on a secure connection
+  (app.plex.tv, Apple TV, phones) won't load pictures straight from Rerun, so by default the guide
+  sends them through your Plex server (Settings → Guide → Pictures in Plex).
 - **Plex can't find the tuner.** Use the computer's network address, not `localhost`, and
   make sure a firewall isn't blocking port 8410 (the installer offers to allow it).
 - **Video stutters.** Run `rerun check-gpu` to make sure Quick Sync is being used, or lower the
