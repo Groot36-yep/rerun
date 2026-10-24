@@ -13,7 +13,8 @@ from fastapi.responses import JSONResponse
 
 from urllib.parse import quote
 
-from . import __version__, guide, seasons
+from . import __version__, seasons
+from .guide import logo_url as plex_logo_url
 from .channels import (
     BREAK_STYLES, HOLIDAY_CHANNEL_NAMES, channel_from_suggestion, describe_content, library_networks,
     network_logo, network_rules, next_free_number, normalize_channel, suggest, sync_auto,
@@ -443,7 +444,7 @@ def _now_next(app, ch):
 def _channel_out(app, ch, info=False):
     cur, nxt = _now_next(app, ch)
     out = {**ch, "now": cur, "next": nxt, "live": ch["id"] in app.streams.by_channel,
-           "logo_url": guide.logo_url(app, "", ch), "on_air": app.channel_visible(ch)}
+           "logo_url": plex_logo_url(app, "", ch), "on_air": app.channel_visible(ch)}
     if ch.get("season"):
         conf = app.cfg.data["holidays"].get(ch["season"]) or {}
         out["in_season"] = seasons.in_window(conf, time.time())

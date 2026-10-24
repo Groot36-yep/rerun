@@ -217,6 +217,9 @@ class FFmpeg:
         offset = ["-output_ts_offset", f"{ts_offset:.3f}"] if ts_offset > 0 else []
         return [
             self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+            # Every piece is in the same known format, so there's no need to study the first one for
+            # seconds before starting; this gets the picture to the player sooner.
+            "-probesize", "500000", "-analyzeduration", "500000",
             "-f", "concat", "-safe", "0", "-protocol_whitelist", "file,http,tcp",
             "-i", list_url,
             "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", *offset,

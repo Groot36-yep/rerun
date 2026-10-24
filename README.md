@@ -69,6 +69,19 @@ The last setup step (and the Help page) shows this with copy buttons:
 
 For VLC, Jellyfin, TiviMate and Channels, use `http://YOUR-COMPUTER-IP:8410/iptv.m3u`.
 
+## Making Plex start channels faster
+
+Rerun hands Plex several seconds of picture the moment you tune in. Most of the remaining wait
+is Plex itself, and these Plex settings help (Plex Web → **Settings**):
+
+- **Transcoder → Use hardware acceleration when available**: on. With an Intel processor this
+  lets Plex use Quick Sync too.
+- **Transcoder → Transcoder temporary directory**: `/dev/shm`. Plex then writes live TV to
+  memory instead of the disk.
+- In the Plex app on each TV or phone, set **video quality to Original / Maximum** for your home
+  network. Rerun's channels are already in a format every Plex app can play, so Plex doesn't
+  have to convert them.
+
 ## Networks, logos and holidays
 
 - **Networks** lists every network in your library. Switch one on and it becomes a channel

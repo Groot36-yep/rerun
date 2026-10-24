@@ -1,7 +1,7 @@
 """Channel logos and guide artwork, cached on disk.
 
 Logo order: a logo you picked -> the network's official logo (built-in table from TMDB,
-your library's TMDB data, or Wikipedia) -> a 60s marquee-style card Rerun draws itself.
+your library's TMDB data, or Wikipedia) -> a bold station-ID card Rerun draws itself.
 Holiday channels get a drawn holiday logo, and during a holiday every other channel's
 logo gets a small festive badge. Show and movie posters are fetched from Plex by Rerun,
 so your Plex token never ends up inside the guide.
@@ -16,28 +16,32 @@ import math
 import os
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from .channels import network_logo
 from .store import DATA_DIR
 
 log = logging.getLogger("rerun.images")
-SIZE = 400
-VERSION = "v5"
-FONTS = [  # a bold serif, like the lettering on a 1960s station ID card
-    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
-    "C:/Windows/Fonts/georgiab.ttf",
-    "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+# Logos are wide (16:9) because that's the shape of the logo space in Plex's guide; a square logo
+# gets shrunk to fit its height and ends up tiny.
+W, H = 640, 360
+VERSION = "v6"
+FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+FONTS = [  # a heavy geometric sans, like 1960s station ID lettering, and readable when small
+    os.path.join(FONT_DIR, "Jost-Bold.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
 ]
 WIKI_UA = "Rerun/1.0 (self-hosted personal TV app; https://www.mediawiki.org/wiki/API:Etiquette)"
-CREAM, PAPER, RULE, INK = "#f4e7cc", "#fbf7ee", "#d9cbb0", "#231c16"
+CREAM, PAPER, INK, NIGHT = "#f4e7cc", "#fbf7ee", "#231c16", "#15110e"
 GOLD = "#d4a028"
-PALETTE = ["#1d6870", "#c2521d", "#a97c16", "#6f6c2a", "#6c2430", "#2f4f6f", "#4a3a2e"]
+STRIPE = ["#c2521d", "#d4a028", "#1d6870"]
+PALETTE = ["#1d6870", "#b0461a", "#8a6512", "#5c5a22", "#6c2430", "#2f4f6f", "#4a3a2e"]
 HOLIDAY_COLORS = {
     "christmas": "#7c1d24", "halloween": "#231c16", "thanksgiving": "#6b3a1e", "valentines": "#9e2238",
     "stpatricks": "#245c3a", "easter": "#5c5296", "july4": "#1d3557", "newyear": "#1b2a44",
 }
+RADIUS = 30
 
 
 def _font(size: int):
@@ -47,74 +51,107 @@ def _font(size: int):
     return ImageFont.load_default(size=size)
 
 
-def _wrap(draw, text: str, font, width: int) -> list[str]:
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        test = f"{cur} {w}".strip()
-        if draw.textlength(test, font=font) <= width or not cur:
-            cur = test
-        else:
-            lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
-    return lines
-
-
 def _png(img: Image.Image) -> bytes:
     buf = io.BytesIO()
-    img.save(buf, "PNG")
+    img.save(buf, "PNG", optimize=True)
     return buf.getvalue()
 
 
-def _card(d: ImageDraw.ImageDraw, color: str):
-    """A rounded card with a thin inset frame, like a printed station identification slide."""
-    d.rounded_rectangle((4, 4, SIZE - 4, SIZE - 4), radius=44, fill=color)
-    d.rounded_rectangle((24, 24, SIZE - 24, SIZE - 24), radius=28, outline=CREAM, width=3)
+def _rounded(img: Image.Image) -> Image.Image:
+    """Round the corners of a finished logo."""
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, img.width - 1, img.height - 1), radius=RADIUS, fill=255)
+    out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    out.paste(img, (0, 0), mask)
+    return out
 
 
-def _sparkle(d: ImageDraw.ImageDraw, cx: float, cy: float, r: float, color: str):
-    d.line((cx - r, cy, cx + r, cy), fill=color, width=3)
-    d.line((cx, cy - r, cx, cy + r), fill=color, width=3)
-    k = r * 0.55
-    d.line((cx - k, cy - k, cx + k, cy + k), fill=color, width=2)
-    d.line((cx - k, cy + k, cx + k, cy - k), fill=color, width=2)
+def _tile(color: str, stripe: bool = True) -> Image.Image:
+    """A solid card with Rerun's thin three-colour stripe along the bottom."""
+    img = Image.new("RGBA", (W, H), color)
+    if stripe:
+        d = ImageDraw.Draw(img)
+        for i, c in enumerate(STRIPE):
+            d.rectangle((0, H - 21 + i * 7, W, H - 15 + i * 7), fill=c if c != color else CREAM)
+    return img
 
 
-def _text_block(d, text: str, box: tuple[int, int, int, int], color: str = CREAM, max_lines: int = 3):
+def _splits(words: list[str], lines: int):
+    """Every way to break the words into the given number of lines, in order."""
+    if lines == 1:
+        yield [" ".join(words)]
+        return
+    for i in range(1, len(words) - lines + 2):
+        for rest in _splits(words[i:], lines - 1):
+            yield [" ".join(words[:i]), *rest]
+
+
+def _fit_text(d: ImageDraw.ImageDraw, text: str, box: tuple[float, float, float, float], color: str,
+              max_lines: int = 2):
+    """Write text as large as it will go inside box, on the most even line breaks."""
     x0, y0, x1, y1 = box
-    for size in (96, 84, 72, 62, 54, 46, 40, 34):
-        font = _font(size)
-        lines = _wrap(d, text, font, x1 - x0)
-        h = len(lines) * size * 1.16
-        if len(lines) <= max_lines and h <= y1 - y0 and all(d.textlength(l, font=font) <= x1 - x0 for l in lines):
-            break
-    y = y0 + (y1 - y0 - h) / 2
+    bw, bh = x1 - x0, y1 - y0
+    words = text.split() or [text]
+    best = None
+    for n in range(1, min(max_lines, len(words)) + 1):
+        for lines in _splits(words, n):
+            probe = _font(100)
+            wide = max(d.textlength(line, font=probe) for line in lines) / 100
+            asc, desc = probe.getmetrics()
+            tall = (asc + desc) / 100
+            size = int(min(bw / wide, bh / (tall * n + 0.04 * (n - 1))))
+            if best is None or size > best[0]:
+                best = (size, lines)
+    size, lines = best
+    size = max(14, min(size, int(bh * 0.92)))
+    font = _font(size)
+    asc, desc = font.getmetrics()
+    step = (asc + desc) * 1.04
+    y = y0 + (bh - step * len(lines) + (asc + desc) * 0.04) / 2
     for line in lines:
-        w = d.textlength(line, font=font)
-        d.text((x0 + (x1 - x0 - w) / 2, y), line, font=font, fill=color)
-        y += size * 1.16
+        d.text(((x0 + x1) / 2, y), line, font=font, fill=color, anchor="ma")
+        y += step
 
 
 def draw_logo(name: str) -> bytes:
     color = PALETTE[int(hashlib.md5(name.encode()).hexdigest(), 16) % len(PALETTE)]
-    img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    _card(d, color)
-    _sparkle(d, SIZE / 2, 74, 16, GOLD)
-    _text_block(d, name, (60, 104, SIZE - 60, SIZE - 62))
-    return _png(img)
+    img = _tile(color)
+    # Capitals, like a station card, but "80s" stays "80s".
+    caps = " ".join(w if any(c.isdigit() for c in w) else w.upper() for w in name.split())
+    _fit_text(ImageDraw.Draw(img), caps if len(name) <= 24 else name, (40, 34, W - 40, H - 52), CREAM)
+    return _png(_rounded(img))
+
+
+def _trim(logo: Image.Image) -> Image.Image:
+    """Cut away empty margins, transparent or plain, so the logo itself fills the frame."""
+    alpha = logo.getchannel("A")
+    if alpha.getextrema()[0] < 250:
+        box = alpha.point(lambda a: 255 if a > 12 else 0).getbbox()
+    else:
+        corner = Image.new("RGBA", logo.size, logo.getpixel((0, 0)))
+        diff = ImageChops.difference(logo, corner).convert("L").point(lambda v: 255 if v > 24 else 0)
+        box = diff.getbbox()
+    return logo.crop(box) if box else logo
+
+
+def _is_light(logo: Image.Image) -> bool:
+    """True for a white or very pale logo, which needs a dark card to show up."""
+    small = logo.resize((48, max(1, int(48 * logo.height / max(1, logo.width)))))
+    px = [(r, g, b) for r, g, b, a in small.getdata() if a > 128]
+    if not px:
+        return False
+    lum = sum(0.299 * r + 0.587 * g + 0.114 * b for r, g, b in px) / len(px)
+    return lum > 200
 
 
 def frame_logo(raw: bytes) -> bytes:
-    """Put an official logo on a paper-white card with a thin rule so it reads in any guide."""
-    logo = Image.open(io.BytesIO(raw)).convert("RGBA")
-    logo.thumbnail((SIZE - 110, SIZE - 110))
-    img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((4, 4, SIZE - 4, SIZE - 4), radius=44, fill=PAPER, outline=RULE, width=4)
-    img.alpha_composite(logo, ((SIZE - logo.width) // 2, (SIZE - logo.height) // 2))
-    return _png(img)
+    """Put an official logo, as big as it fits, on a plain card that reads in any guide."""
+    logo = _trim(Image.open(io.BytesIO(raw)).convert("RGBA"))
+    img = _tile(NIGHT if _is_light(logo) else PAPER, stripe=False)
+    scale = min(W * 0.86 / logo.width, H * 0.80 / logo.height)
+    logo = logo.resize((max(1, round(logo.width * scale)), max(1, round(logo.height * scale))), Image.LANCZOS)
+    img.alpha_composite(logo, ((W - logo.width) // 2, (H - logo.height) // 2))
+    return _png(_rounded(img))
 
 
 # --------------------------------------------------------------------------- holiday art
@@ -219,22 +256,22 @@ def holiday_icon(d: ImageDraw.ImageDraw, key: str, x: float, y: float, s: float)
 
 
 def draw_holiday_logo(name: str, key: str) -> bytes:
-    img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
+    img = _tile(HOLIDAY_COLORS.get(key, "#7c1d24"))
     d = ImageDraw.Draw(img)
-    _card(d, HOLIDAY_COLORS.get(key, "#7c1d24"))
-    holiday_icon(d, key, 118, 52, 164)
-    _text_block(d, name, (58, 232, SIZE - 58, SIZE - 52), max_lines=2)
-    return _png(img)
+    icon = 176
+    holiday_icon(d, key, 30, (H - 18 - icon) / 2, icon)
+    _fit_text(d, name, (30 + icon + 18, 36, W - 28, H - 54), CREAM, max_lines=2)
+    return _png(_rounded(img))
 
 
 def add_badge(png: bytes, key: str) -> bytes:
     """A small festive seal in the corner of a logo during a holiday."""
     img = Image.open(io.BytesIO(png)).convert("RGBA")
     d = ImageDraw.Draw(img)
-    r = 70
-    cx, cy = SIZE - r - 6, SIZE - r - 6
-    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=PAPER, outline=RULE, width=4)
-    d.ellipse((cx - r + 10, cy - r + 10, cx + r - 10, cy + r - 10), fill=HOLIDAY_COLORS.get(key, "#7c1d24"))
+    r = 62
+    cx, cy = W - r - 10, H - r - 10
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=PAPER)
+    d.ellipse((cx - r + 8, cy - r + 8, cx + r - 8, cy + r - 8), fill=HOLIDAY_COLORS.get(key, "#7c1d24"))
     holiday_icon(d, key, cx - r * 0.68, cy - r * 0.7, r * 1.36)
     return _png(img)
 
@@ -243,7 +280,7 @@ def add_badge(png: bytes, key: str) -> bytes:
 
 async def _fetch_tmdb(path: str) -> bytes | None:
     async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(f"https://image.tmdb.org/t/p/w300{path}")
+        r = await c.get(f"https://image.tmdb.org/t/p/w500{path}")
     return r.content if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/") else None
 
 
