@@ -486,13 +486,21 @@ _WIKI_SRC: dict[str, str] = {}  # Wikipedia article -> the logo picture's public
 
 
 async def official_logo(ref: str) -> bytes | None:
-    try:
-        if ref.startswith("tmdb:/"):
-            return await _fetch_tmdb(ref[5:])
-        if ref.startswith("wiki:"):
-            return await _fetch_wiki(ref[5:])
-    except Exception as e:
-        log.info("Couldn't fetch logo %s (%s)", ref, e.__class__.__name__)
+    for attempt in range(3):  # a brief network hiccup shouldn't leave a channel with a stand-in logo
+        try:
+            if ref.startswith("tmdb:/"):
+                return await _fetch_tmdb(ref[5:])
+            if ref.startswith("wiki:"):
+                return await _fetch_wiki(ref[5:])
+            return None
+        except (httpx.TransportError, httpx.TimeoutException) as e:
+            if attempt == 2:
+                log.info("Couldn't fetch logo %s (%s)", ref, e.__class__.__name__)
+            else:
+                await asyncio.sleep(1 + attempt)
+        except Exception as e:
+            log.info("Couldn't fetch logo %s (%s)", ref, e.__class__.__name__)
+            return None
     return None
 
 
@@ -523,7 +531,7 @@ async def _channel_logo(ch: dict, catalog=None, festive: str = "", online: bool 
     path = DATA_DIR / "logos" / f"{ch['id']}-{key}.png"
     if path.exists():
         LOGO_STATUS.setdefault(ch["id"], "ready (made earlier)")
-        if ref and online and ref not in _public():
+        if ref and online and needs_public(ref):
             raw = await official_logo(ref)
             if raw:
                 _learn_public(ref, raw)
@@ -580,14 +588,24 @@ async def artwork(app, media_id: str) -> bytes | None:
 # Plex apps load channel logos themselves, straight from the address in the guide. Over a secure
 # connection (the Apple TV and phone apps, app.plex.tv) they only load public https addresses, so
 # a picture served by Rerun on the home network never shows. For those apps the guide points at
-# two free public image services instead:
-#   * wsrv.nl puts a network's official logo (from TMDB or Wikipedia) on a solid card, so dark
-#     logos don't vanish on Plex's dark guide;
-#   * placehold.co letters a card with the channel's name, for channels without an official logo.
+# two free public image services instead, styled like Plex's own channel logos: no box, just the
+# logo on the guide's dark background.
+#   * wsrv.nl trims a network's official logo (from TMDB or Wikipedia) and sizes it to sit inside
+#     Plex's logo space with a margin; black logos are turned white so they show on dark.
+#   * placehold.co letters the name of a channel without an official logo, in the channel's colour,
+#     and wsrv.nl trims and sizes that the same way.
 # They see which logo or channel name is being drawn, nothing else.
 
+PUBLIC_V = 2
 _PUBLIC_FILE = DATA_DIR / "logos" / "public.json"
 _public_cache: dict | None = None
+# Bright versions of each look's colour, for lettering on Plex's dark guide.
+ON_DARK = {"bubble": ["#ff8a3d", "#c08cff", "#4cd98a", "#ff6fa8", "#5cc8ff", "#ffd23f"],
+           "neon": NEON, "marquee": ["#ffcf5a"], "station": [CREAM],
+           "atomic": ["#6fd3d9", "#ff9a5c", "#f2c14e", "#c7c36a", "#ff8fa0", "#8fb8e8", "#e0c9a6"]}
+HOLIDAY_ON_DARK = {"christmas": "#ff6b6b", "halloween": "#ff9a3c", "thanksgiving": "#f2a65a",
+                   "valentines": "#ff7aa8", "stpatricks": "#4cd98a", "easter": "#c3a6ff", "july4": "#7ab8ff",
+                   "newyear": "#ffd23f"}
 
 
 def _public() -> dict:
@@ -597,8 +615,23 @@ def _public() -> dict:
     return _public_cache
 
 
+def needs_public(ref: str) -> bool:
+    return bool(ref) and _public().get(ref, {}).get("v") != PUBLIC_V
+
+
+def _is_dark(logo: Image.Image) -> bool:
+    """True for a black or near-black logo, which would vanish on Plex's dark guide."""
+    small = logo.resize((64, max(1, int(64 * logo.height / max(1, logo.width)))))
+    px = [(r, g, b) for r, g, b, a in small.getdata() if a > 128]
+    if not px:
+        return False
+    dark = sum(1 for r, g, b in px if 0.299 * r + 0.587 * g + 0.114 * b < 80
+               and (max(r, g, b) - min(r, g, b)) < 60)
+    return dark / len(px) > 0.45
+
+
 def _learn_public(ref: str, raw: bytes):
-    """Remember where an official logo lives publicly, and whether it needs a dark card."""
+    """Remember where an official logo lives publicly, its shape, and whether it's black."""
     if ref.startswith("tmdb:/"):
         src = f"image.tmdb.org/t/p/w500{ref[5:]}"
     elif ref.startswith("wiki:") and ref[5:] in _WIKI_SRC:
@@ -606,22 +639,35 @@ def _learn_public(ref: str, raw: bytes):
     else:
         return
     try:
-        light = _is_light(_trim(Image.open(io.BytesIO(raw)).convert("RGBA")))
+        logo = _trim(Image.open(io.BytesIO(raw)).convert("RGBA"))
+        dark, aspect = _is_dark(logo), logo.width / max(1, logo.height)
     except Exception:
-        light = False
-    entry = {"src": src, "light": light}
+        dark, aspect = False, 2.0
+    entry = {"src": src, "dark": dark, "aspect": round(aspect, 2), "v": PUBLIC_V}
     if _public().get(ref) != entry:
         _public()[ref] = entry
         _PUBLIC_FILE.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(_PUBLIC_FILE, _public())
 
 
-def _two_lines(text: str) -> str:
+def _canvas(aspect: float) -> tuple[int, int]:
+    """A picture shape that leaves a margin once Plex fits it into its 16:9 logo space: wide logos
+    get a slightly narrow canvas (space at the sides), the rest a wide one (space above and below)."""
+    return (563, 360) if aspect >= 2.0 else (640, 281)
+
+
+def _fit(url: str, aspect: float, extra: dict | None = None) -> str:
+    w, h = _canvas(aspect)
+    return "https://wsrv.nl/?" + urlencode({"url": url, "w": w, "h": h, "fit": "contain", "cbg": "00000000",
+                                            "tbg": "00000000", "trim": 10, **(extra or {}), "output": "png"})
+
+
+def _two_lines(text: str) -> list[str]:
     words = text.split()
-    if len(words) < 2 or len(text) <= 10:
-        return text
+    if len(words) < 2 or len(text) <= 9:
+        return [text]
     best = min(range(1, len(words)), key=lambda i: max(len(" ".join(words[:i])), len(" ".join(words[i:]))))
-    return " ".join(words[:best]) + "\\n" + " ".join(words[best:])
+    return [" ".join(words[:best]), " ".join(words[best:])]
 
 
 def public_logo_url(ch: dict, catalog=None) -> str:
@@ -629,20 +675,16 @@ def public_logo_url(ch: dict, catalog=None) -> str:
     holiday = ch.get("season") and not ch.get("logo")
     ref = "" if holiday else logo_ref(ch, catalog)
     known = _public().get(ref) if ref else None
-    if known:
-        bg = NIGHT[1:] if known["light"] else PAPER[1:]
-        return "https://wsrv.nl/?" + urlencode({"url": known["src"], "w": 640, "h": 360, "fit": "contain",
-                                                "cbg": bg, "bg": bg, "trim": 8, "output": "png"})
+    if known and known.get("v") == PUBLIC_V:
+        return _fit(known["src"], known["aspect"], {"filt": "negate"} if known["dark"] else None)
     name = ch["name"]
     if holiday:
-        bg, fg = HOLIDAY_COLORS.get(ch["season"], "#7c1d24"), CREAM
+        fg = HOLIDAY_ON_DARK.get(ch["season"], CREAM)
     else:
-        look = look_for(name, ch.get("group", ""))
-        bg, fg = {
-            "bubble": (_pick(name, KIDS), "#ffffff"),
-            "neon": ("#120d0b", _pick(name, NEON)),
-            "marquee": (_pick(name, ["#6c1a22", "#1d2f4f", "#3b2418"]), "#ffcf5a"),
-            "station": (PAPER, INK),
-        }.get(look, (_pick(name, PALETTE), CREAM))
-    return (f"https://placehold.co/640x360/{bg[1:]}/{fg[1:]}/png?"
-            + urlencode({"text": _two_lines(_caps(name)), "font": "oswald"}))
+        fg = _pick(name, ON_DARK.get(look_for(name, ch.get("group", "")), ON_DARK["atomic"]))
+    lines = _two_lines(_caps(name))
+    # Oswald capitals are about half as wide as they are tall; two lines stack about 2.2 high.
+    aspect = 0.5 * max(len(line) for line in lines) / (1 if len(lines) == 1 else 2.2)
+    letters = (f"placehold.co/1200x500/transparent/{fg[1:]}/png?"
+               + urlencode({"text": "\\n".join(lines), "font": "oswald"}))
+    return _fit(letters, aspect)

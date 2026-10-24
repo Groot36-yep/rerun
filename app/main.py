@@ -1,6 +1,7 @@
 """The web server: Plex tuner endpoints, the guide, live streams and the web page."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -158,7 +159,24 @@ async def xmltv(request: Request):
     # guide readers (Jellyfin, TiviMate…) get Rerun's own.
     for_plex = (request.headers.get("user-agent", "").startswith("PlexMediaServer")
                 and app.cfg.data.get("plex_logos", "public") == "public")
+    if for_plex:
+        await _learn_logos(app)
     return Response(guide.xmltv(app, _base(request), for_plex), media_type="application/xml")
+
+
+async def _learn_logos(app):
+    """Plex keeps the logo addresses it reads when a DVR is set up, so before handing them over,
+    make sure every official logo has been measured (else Plex would keep a lettered stand-in)."""
+    online = app.cfg.data["metadata"].get("online_lookups", True)
+    todo = [ch for ch in app.cfg.data["channels"] if online and images.needs_public(images.logo_ref(ch, app.catalog))
+            and not ch.get("season")]
+    if not todo:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*(images.channel_logo(ch, app.catalog, app.festive(), online)
+                                                for ch in todo), return_exceptions=True), 20)
+    except asyncio.TimeoutError:
+        log.warning("Some channel logos took too long to look up; Plex gets lettered ones for now")
 
 
 @web.api_route("/iptv.m3u", methods=["GET", "HEAD"])
