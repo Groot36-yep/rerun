@@ -90,6 +90,55 @@ def check(p, label, slot):
     return kinds, total
 
 
+async def check_matching():
+    """Breaks match the show: its network's ads first, plain ads before another network's, holiday ads
+    only in season."""
+    rnd = random.Random(3)
+    shows, episodes = {}, {}
+    for sid, title, net, year in (("s1", "Sponge", "Nickelodeon", 2003), ("s2", "Dexter", "Cartoon Network", 1997),
+                                  ("s3", "Friends", "NBC", 1995)):
+        shows[sid] = {"id": sid, "title": title, "network": net, "genres": [], "year": year, "thumb": "",
+                      "summary": "", "rating": "", "src": "plex:1"}
+        episodes[sid] = [{"id": f"{sid}e{i}", "show": sid, "title": f"{title} {i}", "season": 1, "episode": i + 1,
+                          "dur": 22 * 60, "file": f"/m/{sid}/{i}.mkv", "part": "", "audio": True,
+                          "chapters": [0, 440, 880]} for i in range(20)]
+    groups = [("nick", ["nick", "2000s"], 30), ("cn", ["cn", "90s"], 30), ("plain", [], 30),
+              ("nickhal", ["nick", "2000s", "halloween"], 15), ("xmas", ["christmas"], 10)]
+    ads = [{"id": f"{g}{i}", "title": f"{g} {i}", "dur": rnd.choice([15, 30, 30]), "file": f"/m/ads/{g}{i}.mp4",
+            "part": "", "audio": True, "tags": tags, "src": "folder:/m/ads"}
+           for g, tags, n in groups for i in range(n)]
+    cat = Catalog({"shows": shows, "episodes": episodes, "movies": {}, "filler": {"folder:/m/ads": ads},
+                   "music_videos": {}, "networks": {}})
+    ch = normalize_channel({"id": "mix", "name": "Mix", "seed": 5, "rules": [{"type": "filter", "media": "shows"}],
+                            "commercials": {"enabled": True, "break_style": "chapters"}})
+    group_of = {a["id"]: a["id"].rstrip("0123456789") for a in ads}
+
+    def ads_by_show(p):
+        out = {}
+        for b in p.blocks:
+            out.setdefault(b["title"], Counter()).update(
+                group_of[x["m"]] for x in p.items if x["k"] == "f" and b["s"] <= x["s"] < b["e"])
+        return out
+
+    october = datetime(2026, 10, 15, 12).timestamp()
+    march = datetime(2027, 3, 10, 12).timestamp()
+    po, _ = await build(ch, cat, 48, when=october)
+    pm, _ = await build(ch, cat, 48, when=march)
+    oct_ads, mar_ads = ads_by_show(po), ads_by_show(pm)
+    for label, by in (("October", oct_ads), ("March", mar_ads)):
+        for show, cnt in sorted(by.items()):
+            total = sum(cnt.values())
+            print(f"  {label:<8} {show:<8} " + "  ".join(f"{g}={cnt[g] / total:.0%}" for g, _t, _n in groups))
+    share = lambda by, show, gs: sum(by[show][g] for g in gs) / max(1, sum(by[show].values()))  # noqa: E731
+    assert share(mar_ads, "Sponge", ["nick"]) > 0.8, "Nick shows should get Nick ads"
+    assert share(mar_ads, "Dexter", ["cn"]) > 0.8, "Cartoon Network shows should get Cartoon Network ads"
+    assert share(mar_ads, "Friends", ["nick", "cn"]) < 0.2, "an NBC show should get plain ads, not another network's"
+    assert all(by[s]["nickhal"] + by[s]["xmas"] == 0 for by in (mar_ads,) for s in by), "holiday ads aired out of season"
+    assert sum(oct_ads[s]["xmas"] for s in oct_ads) == 0, "Christmas ads aired in October"
+    assert share(oct_ads, "Sponge", ["nickhal"]) > 0.2, "Nick's Halloween ads should lead in October"
+    print("matching breaks: OK")
+
+
 async def main():
     cat = make_catalog()
 
@@ -163,6 +212,8 @@ async def main():
     assert share(pjan) == 0, "Christmas episodes shouldn't air in January"
     rug_jan = [x["m"] for x in p7.items if x["m"].startswith("p2e")]
     assert "p2e3" not in rug_jan and "p2e7" not in rug_jan and rug_jan, "in-order channel should skip out-of-season episodes"
+
+    await check_matching()
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])

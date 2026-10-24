@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import ipaddress
 import logging
 import os
@@ -10,12 +11,15 @@ import socket
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from urllib.parse import quote
 
 from . import __version__, seasons
+from . import channels as channels_mod
+from .archive import OWN as OWN_COMMERCIALS
 from .guide import logo_url as plex_logo_url, tuner_id
+from .store import DATA_DIR
 from .channels import (
     BREAK_STYLES, HOLIDAY_CHANNEL_NAMES, channel_from_suggestion, describe_content, library_networks,
     network_logo, network_rules, next_free_number, normalize_channel, suggest, sync_auto,
@@ -648,6 +652,8 @@ async def holidays(app=Depends(signed_in)):
         conf = conf_all.get(key) or seasons.DEFAULT_HOLIDAYS[key]
         found = seasons.matches(app.catalog, key, conf)
         ch = next((c for c in app.cfg.data["channels"] if c.get("season") == key), None)
+        mine = [{"id": c["id"], "name": c["name"], "number": c["number"], "kind": _holiday_kind(c)}
+                for c in app.cfg.data["channels"] if c.get("season") == key]
         samples = sorted({app.catalog.items[e]["title"] for e in list(found["episodes"])[:40] if e in app.catalog.items})
         samples += sorted(app.catalog.movies[m]["title"] for m in list(found["movies"])[:10])
         out.append({
@@ -656,7 +662,7 @@ async def holidays(app=Depends(signed_in)):
             "words": conf.get("words", []), "default_start": p["start"], "default_end": p["end"],
             "when": f"{seasons.friendly_date(conf.get('start', ''))} – {seasons.friendly_date(conf.get('end', ''))}",
             "episodes": len(found["episodes"]), "movies": len(found["movies"]), "samples": samples[:12],
-            "on_now": seasons.in_window(conf, now), "channel": ch["id"] if ch else "",
+            "on_now": seasons.in_window(conf, now), "channel": ch["id"] if ch else "", "channels": mine,
             "logo_url": f"/holidaylogo/{key}.png?v={LOGO_V}",
             "starts_in": 0 if seasons.in_window(conf, now) else (seasons.next_start(conf, now) or now + 400 * 86400) - now,
         })
@@ -684,17 +690,31 @@ async def holiday_update(key: str, body: dict, app=Depends(signed_in)):
     return {"ok": True}
 
 
+def _holiday_kind(ch: dict) -> str:
+    """ "tv", "movies" or "both" — what a holiday channel plays."""
+    kinds = {r.get("media") for r in ch.get("rules", []) if r.get("type") == "holiday"}
+    return "tv" if kinds == {"episodes"} else "movies" if kinds == {"movies"} else "both"
+
+
 @router.post("/holidays/{key}/channel")
-async def holiday_channel(key: str, app=Depends(signed_in)):
+async def holiday_channel(key: str, body: dict | None = None, app=Depends(signed_in)):
+    """A holiday channel: "tv" (episodes only), "movies" (movies only) or "both"."""
     if key not in seasons.PRESETS:
         raise HTTPException(404, "No such holiday")
+    kind = (body or {}).get("kind", "both")
+    if kind not in ("tv", "movies", "both"):
+        raise HTTPException(400, "kind is tv, movies or both")
     d = app.cfg.data
-    existing = next((c for c in d["channels"] if c.get("season") == key), None)
+    existing = next((c for c in d["channels"] if c.get("season") == key and _holiday_kind(c) == kind), None)
     if existing:
-        return {"ok": True, "channel": existing["id"]}
+        return {"ok": True, "channel": existing["id"], "number": existing["number"]}
     p = seasons.PRESETS[key]
-    sugg = {"key": f"holiday:{key}", "name": HOLIDAY_CHANNEL_NAMES.get(key, f"{p['name']} TV"), "group": "Holidays",
-            "rules": [{"type": "holiday", "key": key}], "number_start": HOLIDAY_START, "season": key}
+    name = {"tv": f"{p['name']} TV", "movies": f"{p['name']} Movies"}.get(
+        kind, HOLIDAY_CHANNEL_NAMES.get(key, f"{p['name']} TV"))
+    rule = {"type": "holiday", "key": key, **({"media": "episodes"} if kind == "tv" else
+                                              {"media": "movies"} if kind == "movies" else {})}
+    sugg = {"key": f"holiday:{key}" + ("" if kind == "both" else f":{kind}"), "name": name, "group": "Holidays",
+            "rules": [rule], "number_start": HOLIDAY_START, "season": key}
     ch = channel_from_suggestion(sugg, d["channels"], bool(app.catalog.filler))
     d["channels"].append(ch)
     d["auto"]["dismissed"] = [k for k in d["auto"]["dismissed"] if k != sugg["key"]]
@@ -770,6 +790,95 @@ async def connect_info(request: Request, app=Depends(signed_in)):
             "channels": len([c for c in app.cfg.data["channels"] if c.get("enabled", True)])}
 
 
+# ---- the Commercials page ------------------------------------------------------------------
+
+def _ad_source(app, f: dict) -> str:
+    path = os.path.realpath(f.get("file") or "")
+    own = os.path.realpath(str(OWN_COMMERCIALS))
+    if path.startswith(own + os.sep):
+        return "found"
+    return "folder" if f.get("file") else "plex"
+
+
+@router.get("/commercials")
+async def commercials_list(app=Depends(signed_in)):
+    hidden = set(app.cfg.data.get("hidden_filler") or [])
+    items = [{"id": f["id"], "title": f.get("title", ""), "dur": round(f["dur"], 1),
+              "tags": f.get("tags", []), "source": _ad_source(app, f), "hidden": f["id"] in hidden}
+             for f in app.catalog.all_filler()]
+    items.sort(key=lambda x: (x["title"].lower(), x["id"]))
+    tags = Counter(t for x in items for t in x["tags"])
+    return {"items": items, "tags": [{"name": k, "count": n} for k, n in tags.most_common()],
+            "hidden": len(hidden & {x["id"] for x in items})}
+
+
+def _filler(app, fid: str) -> dict:
+    f = app.catalog.items.get(fid)
+    if not f or fid not in {x["id"] for x in app.catalog.all_filler()}:
+        raise HTTPException(404, "No such commercial")
+    src = app.media_input({"f": f.get("file") or "", "p": f.get("part") or ""})
+    if not src:
+        raise HTTPException(404, "That commercial's file can't be found")
+    return {**f, "_src": src}
+
+
+@router.get("/commercials/{fid}/thumb.jpg")
+async def commercial_thumb(fid: str, app=Depends(signed_in)):
+    f = _filler(app, fid)
+    path = DATA_DIR / "thumbs" / f"c-{''.join(ch for ch in fid if ch.isalnum())}.jpg"
+    if not path.exists():
+        at = float(f.get("in") or 0) + min(1.5, f["dur"] / 2)
+        src = f["_src"] if f["_src"].startswith("http") else "file:" + f["_src"]
+        proc = await asyncio.create_subprocess_exec(
+            app.ffmpeg.ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", src, "-frames:v", "1",
+            "-vf", "scale=320:-2", "-f", "image2", "-c:v", "mjpeg", "-q:v", "5", "pipe:1",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        data, _ = await asyncio.wait_for(proc.communicate(), 30)
+        if not data:
+            raise HTTPException(404, "Couldn't make a picture")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/commercials/{fid}/preview.mp4")
+async def commercial_preview(fid: str, app=Depends(signed_in)):
+    """The commercial, made playable in a web browser."""
+    f = _filler(app, fid)
+    src = f["_src"] if f["_src"].startswith("http") else "file:" + f["_src"]
+    proc = await asyncio.create_subprocess_exec(
+        app.ffmpeg.ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{float(f.get('in') or 0):.2f}", "-i", src,
+        "-t", f"{f['dur']:.2f}", "-vf", "scale=-2:360", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+        "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4", "pipe:1", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+
+    async def body():
+        try:
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+
+    return StreamingResponse(body(), media_type="video/mp4")
+
+
+@router.post("/commercials/hide")
+async def commercials_hide(body: dict, app=Depends(signed_in)):
+    """Take commercials off the air (or put them back). Nothing is deleted."""
+    ids = {str(i) for i in body.get("ids") or []}
+    hidden = set(app.cfg.data.get("hidden_filler") or [])
+    hidden = hidden | ids if body.get("hidden", True) else hidden - ids
+    app.cfg.data["hidden_filler"] = sorted(hidden)
+    app.cfg.save()
+    channels_mod.hidden_filler = hidden
+    return {"ok": True, "hidden": len(hidden)}
+
+
 @router.get("/finder")
 async def finder_status(app=Depends(signed_in)):
     return app.finder.summary()
@@ -779,7 +888,8 @@ async def finder_status(app=Depends(signed_in)):
 async def finder_start(body: dict, app=Depends(signed_in)):
     try:
         gb = min(max(float(body.get("budget_gb", 1.5)), 0.2), 50)
-        app.finder.start(list(body.get("networks") or []), list(body.get("eras") or []), int(gb * 1e9))
+        app.finder.start(list(body.get("networks") or []), list(body.get("eras") or []), int(gb * 1e9),
+                         list(body.get("holidays") or []))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
     return app.finder.summary()

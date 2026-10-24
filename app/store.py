@@ -120,6 +120,7 @@ DEFAULT_CONFIG = {
     "guide_hours": 72,
     # After each scan, add channels for networks (and holidays) that appear in your library.
     "auto": {"networks": True, "holidays": True, "min_shows": 2, "dismissed": []},
+    "hidden_filler": [],  # commercials removed on the Commercials page
     "festive_logos": False,  # a small holiday badge on every channel logo while a holiday is in season
     "plex_logos": "public",  # public: Plex apps get logos from public https image services | direct
     "holidays": DEFAULT_HOLIDAYS,

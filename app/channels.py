@@ -28,6 +28,8 @@ from .networks import CATEGORIES, GENRE_START, HOLIDAY_START, MOVIES_START, fami
 KID_GENRES = ["Animation", "Kids", "Children", "Family"]
 SCIFI_GENRES = ["Science Fiction", "Sci-Fi", "Sci-Fi & Fantasy", "Fantasy"]
 HOLIDAY_CHANNEL_NAMES = {"christmas": "Christmas Channel", "halloween": "Halloween Channel"}
+# Commercials you removed on the Commercials page (ids); set by the app from config.
+hidden_filler: set[str] = set()
 
 CHANNEL_DEFAULTS = {
     "id": "",
@@ -89,7 +91,8 @@ def normalize_channel(ch: dict) -> dict:
 def content_signature(ch: dict, holidays: dict | None = None) -> str:
     """Changes whenever an edit should rebuild the schedule."""
     keys = ("rules", "exclude", "order", "slot_minutes", "commercials", "seed", "season", "holiday_mix")
-    blob = json.dumps({k: ch.get(k) for k in keys}, sort_keys=True) + json.dumps(holidays or {}, sort_keys=True)
+    blob = (json.dumps({k: ch.get(k) for k in keys}, sort_keys=True) + json.dumps(holidays or {}, sort_keys=True)
+            + ",".join(sorted(hidden_filler)))
     return hashlib.sha1(blob.encode()).hexdigest()[:16]
 
 
@@ -135,11 +138,13 @@ def resolve(ch: dict, cat: Catalog, holidays: dict | None = None) -> list[dict]:
         elif t == "holiday" and rule.get("key") in seasons.PRESETS:
             found = seasons.matches(cat, rule["key"], holidays.get(rule["key"]) or {})
             net = str(rule.get("network") or "").lower()
-            for eid in found["episodes"]:
+            kind = rule.get("media")  # "episodes" for a holiday TV channel, "movies" for a movie channel
+            for eid in (found["episodes"] if kind != "movies" else ()):
                 e = cat.items.get(eid)
                 if e and (not net or cat.shows.get(e["show"], {}).get("network", "").lower() == net):
                     episodes.add(eid)
-            movies |= {m for m in found["movies"] if not net or cat.movies[m].get("network", "").lower() == net}
+            if kind != "episodes":
+                movies |= {m for m in found["movies"] if not net or cat.movies[m].get("network", "").lower() == net}
         elif t == "filter":
             media = rule.get("media")
             if media == "shows":
@@ -180,6 +185,8 @@ def filler_pool(ch: dict, cat: Catalog) -> list[dict]:
             continue
         for x in items:
             if want and not (_lower(x.get("tags")) & want):
+                continue
+            if x["id"] in hidden_filler:
                 continue
             if x["dur"] >= 1:
                 pool.append(x)

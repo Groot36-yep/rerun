@@ -20,7 +20,10 @@ from collections import defaultdict
 from datetime import datetime
 
 from . import seasons
+from . import archive
 from .channels import content_signature, filler_pool, resolve
+
+NETWORK_TAGS = set(archive.PROFILES)
 from .store import DATA_DIR, atomic_write_json, read_json
 
 log = logging.getLogger("rerun.scheduler")
@@ -281,12 +284,54 @@ class Builder:
         return []
 
     # ---- commercials --------------------------------------------------------------
-    def _pick_filler(self, seconds: float) -> tuple[list[dict], float]:
+    def _break_context(self, prog: dict, media: list[dict], t: float) -> dict:
+        """What the commercials around this show should match: its network, its era, and the holiday
+        (on a holiday channel, during a holiday episode, or any holiday that's in season)."""
+        first = media[0] if media else {}
+        if prog["kind"] in ("show", "episodes"):
+            show = self.cat.shows.get(first.get("show") or prog.get("show"), {})
+            net, year = show.get("network", ""), (first.get("date") or "")[:4] or show.get("year")
+        else:
+            net, year = first.get("network", ""), first.get("year")
+        active = seasons.active(self.holidays, t)
+        hol = self.ch.get("season") or next(
+            (k for k in active if first.get("id") in self._holiday_ids(k)), None)
+        return {"net": archive.tag_for_network(net), "has_net": bool(net), "era": archive.era_tag(year), "hol": hol,
+                "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower()}
+
+    def _holiday_ids(self, key: str) -> set:
+        found = seasons.matches(self.cat, key, self.holidays.get(key) or {})
+        return found["episodes"] | found["movies"]
+
+    def _ad_score(self, f: dict, ctx: dict) -> float:
+        tags = {str(x).lower() for x in f.get("tags") or []}
+        score = 0.0
+        if ctx.get("net") and ctx["net"] in tags:
+            score += 4  # a Disney episode gets Disney commercials
+        elif ctx.get("has_net") and tags & NETWORK_TAGS:
+            score -= 2  # ...and a Cartoon Network show would rather have plain ads than Nick's
+        hol = tags & set(seasons.PRESETS)
+        if hol and hol & ({ctx["hol"]} if ctx.get("hol") else ctx.get("active", set())):
+            score += 3 if ctx.get("hol") else 2  # Halloween ads around Halloween shows, or just in October
+        if ctx.get("month") and ctx["month"] in tags:
+            score += 1.5  # a tape recorded this time of year
+        if ctx.get("era") and ctx["era"] in tags:
+            score += 1  # 2000s ads around a 2000s episode
+        return score
+
+    def _pick_filler(self, seconds: float, ctx: dict | None = None) -> tuple[list[dict], float]:
         if not self.filler or seconds < self.min_filler:
             return [], seconds
         rng = self._rng()
-        pool = list(self.filler)
+        ctx = ctx or {}
+        # Holiday commercials stay off the air outside their season, like holiday episodes.
+        active = ctx.get("active", set())
+        pool = [f for f in self.filler
+                if not ({str(x).lower() for x in f.get("tags") or []} & set(seasons.PRESETS)) - active
+                or ({str(x).lower() for x in f.get("tags") or []} & active)]
         rng.shuffle(pool)
+        if ctx:  # best matches first; the shuffle keeps equally good ones varied
+            pool.sort(key=lambda f: -self._ad_score(f, ctx))
         recent = set(self.st["recent"])
         chosen, used = [], set()
         remaining = seconds
@@ -355,8 +400,9 @@ class Builder:
                       "t": title, **_src(m)})
         return pos + length
 
-    def _ads(self, items: list, pos: float, seconds: float, *, final: bool) -> tuple[float, float]:
-        chosen, left = self._pick_filler(seconds)
+    def _ads(self, items: list, pos: float, seconds: float, *, final: bool,
+             ctx: dict | None = None) -> tuple[float, float]:
+        chosen, left = self._pick_filler(seconds, ctx)
         for f in chosen:
             items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
                           "t": f.get("title", ""),
@@ -429,6 +475,7 @@ class Builder:
         end = self._plan_end(t, dur)
         ad_time = end - t - dur
         breaks = await self._break_points(media, dur, ad_time)
+        ctx = self._break_context(prog, media, t) if self.filler else None
         n_breaks = len(breaks) + 1
         share = ad_time / n_breaks
         items: list[dict] = []
@@ -438,12 +485,12 @@ class Builder:
             for bp in [b - acc for b in breaks if acc < b <= acc + m["dur"] + 1e-6]:
                 pos = self._content(items, m, seg, bp - seg, pos)
                 seg = bp
-                pos, carry = self._ads(items, pos, share + carry, final=False)
+                pos, carry = self._ads(items, pos, share + carry, final=False, ctx=ctx)
             if m["dur"] - seg > 0.05:
                 pos = self._content(items, m, seg, m["dur"] - seg, pos)
             acc += m["dur"]
         if end - pos > 0.05:
-            pos, _ = self._ads(items, pos, end - pos, final=True)
+            pos, _ = self._ads(items, pos, end - pos, final=True, ctx=ctx)
         items[-1]["e"] = end
         return items, self._describe(prog, media, t, end)
 

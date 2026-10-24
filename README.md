@@ -117,7 +117,7 @@ the show, or only between shows, and are sized so the next show starts on the ha
 
 ## Classic commercials, found for you
 
-Settings → **Classic commercials** finds real commercials, promos and bumpers that people taped off
+The **Commercials** page finds real commercials, promos and bumpers that people taped off
 TV and saved on the [Internet Archive](https://archive.org). Pick networks (Nickelodeon, Nick Jr.,
 Disney Channel, Playhouse Disney, Cartoon Network, Kids' WB, Fox Kids, MTV, PBS Kids and more), eras
 (70s through 2020s) and how much space to use, and Rerun:
@@ -130,8 +130,23 @@ Disney Channel, Playhouse Disney, Cartoon Network, Kids' WB, Fox Kids, MTV, PBS 
 - files them by network and era: the Nickelodeon channel plays Nick ads, and channels named for a
   decade ("90s Cartoons", "2000s Cartoons") play that decade's ads from every network.
 
+Tick **Halloween** or **Christmas** to fetch holiday tapes too. Holiday commercials only air in their
+season, and tapes recorded in October or December are favoured in that month.
+
+The same page shows every commercial Rerun can play, with a picture. Click one to watch it, and
+**Remove** any you don't want on the air (nothing is deleted; "Show removed ones" puts them back).
+
+**Breaks that match the show.** Each break picks commercials that fit what's on: a Disney episode
+gets Disney commercials (Halloween Disney ones in October), a 2004 episode gets 2000s ads, and a
+show from a network you have no ads for gets plain ads rather than another network's.
+
 These are other people's recordings of broadcast TV, downloaded for watching at home. Delete them
 any time from the same place.
+
+## Holiday TV and movie channels
+
+On the **Holidays** page each holiday can have a **TV channel** (holiday episodes only), a **movie
+channel** (holiday movies only), or one mixed channel, e.g. *Halloween TV* and *Halloween Movies*.
 
 ## Everyday commands
 

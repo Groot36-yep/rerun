@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import images, seasons
 from .catalog import Catalog, Scanner
+from . import channels as channels_mod
 from .channels import sync_auto
 from .archive import OWN as OWN_COMMERCIALS, Finder
 from .diagnostics import Diagnostics
@@ -91,6 +92,7 @@ class App:
         self.logs = LogBuffer()
         self.diag = Diagnostics()
         self.finder = Finder(self)
+        channels_mod.hidden_filler = set(self.cfg.data.get("hidden_filler") or [])
         # "rerun report" on this computer shows the diagnostic report using this key.
         self.report_key = secrets.token_urlsafe(24)
         key_file = DATA_DIR / "report.key"

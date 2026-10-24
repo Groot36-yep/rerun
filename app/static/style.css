@@ -441,3 +441,23 @@ th { font: 600 10.5px var(--caps); letter-spacing: .15em; text-transform: upperc
 .finder-nets .check { margin: 8px 0; }
 .finder-tapes { margin: 8px 0 10px; padding-left: 18px; font-size: 13.5px; color: var(--ink-2); }
 .finder details summary { cursor: pointer; font-weight: 600; }
+
+.finder-panel { margin-bottom: 26px; }
+.finder-panel > summary { list-style: none; cursor: pointer; }
+.finder-panel > summary::-webkit-details-marker { display: none; }
+.finder-panel > summary h2 { display: inline; font-size: 21px; margin: 6px 0 0; }
+.finder-panel > summary h2::after { content: "  ▸"; font-size: 14px; color: var(--ink-3); }
+.finder-panel[open] > summary h2::after { content: "  ▾"; }
+.finder-panel > summary .eyebrow { margin-bottom: 4px; }
+.ad-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-top: 18px; }
+.ad-card { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+.ad-card.is-off { opacity: .55; }
+.ad-thumb { position: relative; display: block; padding: 0; border: 0; background: #1b1714; cursor: pointer; aspect-ratio: 4 / 3; }
+.ad-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ad-thumb:hover img { opacity: .85; }
+.ad-dur { position: absolute; right: 8px; bottom: 8px; padding: 2px 7px; border-radius: 4px; background: rgb(0 0 0 / 70%); color: #fff; font: 600 12px var(--sans); }
+.ad-body { padding: 10px 12px 4px; min-width: 0; }
+.ad-body b { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-body span { display: block; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-card > .btn { align-self: flex-start; margin: 4px 6px 8px; }
+.ad-video { width: 100%; max-height: 60vh; background: #000; border-radius: 6px; }

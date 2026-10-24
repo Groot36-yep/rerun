@@ -38,6 +38,48 @@ ERAS = {"70s": (1970, 1979), "80s": (1980, 1989), "90s": (1990, 1999), "2000s": 
 _ERA_IN_NAME = re.compile(r"\b(?:19)?([5-9]0)'?s\b|\b(20[0-2]0)'?s\b", re.I)
 
 
+# A tape whose title names a holiday holds that holiday's ads: they're filed under the holiday and only
+# air in its season. A tape from October or December (no holiday named) is filed under the month:
+# those breaks lean seasonal, so Rerun favours them in that month but plays them all year.
+HOLIDAY_WORDS = {
+    "halloween": re.compile(r"hallowe.?en|spooky|trick.or.treat|halloweentown|haunt", re.I),
+    "christmas": re.compile(r"christmas|x-?mas|holiday|santa|yuletide|winter ?break|december 2[0-5]\b", re.I),
+}
+MONTHS = {"october": re.compile(r"\boct(ober|\.)?\b|\b10/\d{1,2}/", re.I),
+          "december": re.compile(r"\bdec(ember|\.)?\b|\b12/\d{1,2}/", re.I)}
+
+
+def holiday_of(title: str) -> str | None:
+    return next((k for k, rx in HOLIDAY_WORDS.items() if rx.search(title or "")), None)
+
+
+def month_of(title: str) -> str | None:
+    return next((k for k, rx in MONTHS.items() if rx.search(title or "")), None)
+
+
+def era_tag(year) -> str | None:
+    """2004 -> "2000s", 1997 -> "90s"."""
+    try:
+        y = int(str(year)[:4])
+    except (TypeError, ValueError):
+        return None
+    return next((e for e, (a, b) in ERAS.items() if a <= y <= b), None)
+
+
+def tag_for_network(name: str) -> str | None:
+    """The commercials tag for a show's network: "Disney Channel" -> "disney"."""
+    n = (name or "").strip().lower()
+    if not n:
+        return None
+    for key, (label, must, never, chans, _q) in PROFILES.items():
+        if n == label.lower() or n in (c.lower() for c in chans):
+            return key
+    for key, (label, must, never, chans, _q) in PROFILES.items():
+        if re.search(must, n, re.I) and not (never and re.search(never, n, re.I)):
+            return key
+    return None
+
+
 def era_in_name(name: str) -> str | None:
     """ "90s Cartoons" -> "90s", "2000s Hits" -> "2000s"."""
     m = _ERA_IN_NAME.search(name or "")
@@ -130,6 +172,11 @@ def judge(key: str, doc: dict, y0: int, y1: int) -> tuple[float, str]:
     score += 1 if len(years) <= 2 else 0          # a clearly dated tape beats a "1990s and 2000s" mix
     score -= 2 if size > MAX_ITEM else 0
     return score, "match"
+
+
+def _title(doc: dict) -> str:
+    t = doc.get("title") or ""
+    return " ".join(t) if isinstance(t, list) else t
 
 
 def _pick_files(files: list[dict]) -> list[dict]:
@@ -225,13 +272,16 @@ class Finder:
                         "bytes": sum(t.get("bytes", 0) for t in got),
                         "eras": {e: sum(t.get("clips", 0) for t in got if t.get("era") == e) for e in ERAS
                                  if any(t.get("era") == e for t in got)},
+                        "holidays": {h: sum(t.get("clips", 0) for t in got if t.get("holiday") == h)
+                                     for h in HOLIDAY_WORDS if any(t.get("holiday") == h for t in got)},
                         "titles": [t["title"] for t in got][:12]})
         wanted = sorted({e for c in self.app.cfg.data["channels"] if (e := era_in_name(c["name"]))},
                         key=list(ERAS).index)
-        return {"networks": out, "eras": list(ERAS), "channel_eras": wanted, "status": self.progress}
+        return {"networks": out, "eras": list(ERAS), "channel_eras": wanted, "holidays": list(HOLIDAY_WORDS),
+                "status": self.progress}
 
     # ---- a run --------------------------------------------------------------------------
-    def start(self, keys: list[str], eras: list[str], budget: int):
+    def start(self, keys: list[str], eras: list[str], budget: int, holidays: list[str] | None = None):
         if self.task and not self.task.done():
             raise RuntimeError("Already looking for commercials")
         keys = [k for k in keys if k in PROFILES]
@@ -242,12 +292,13 @@ class Finder:
             raise ValueError("Choose at least one era")
         self.stop = False
         self.progress = {"running": True, "step": "Starting…", "done": 0, "total": 0, "found": [], "error": ""}
-        self.task = asyncio.create_task(self._run(keys, eras, budget))
+        holidays = [h for h in (holidays or []) if h in HOLIDAY_WORDS]
+        self.task = asyncio.create_task(self._run(keys, eras, budget, holidays))
 
     def _step(self, text: str, **kw):
         self.progress.update(step=text, **kw)
 
-    async def _run(self, keys, eras, budget):
+    async def _run(self, keys, eras, budget, holidays=()):
         try:
             self._register_folder()
             async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers={"User-Agent": UA}) as c:
@@ -259,6 +310,12 @@ class Finder:
                         if docs is None:
                             docs = await self._search(c, key)
                         await self._network(c, key, era, docs, budget // len(eras))
+                    for hol in holidays:  # holiday tapes get their own share of space
+                        hdocs = await self._search(c, key, hol)
+                        for era in eras:
+                            if self.stop:
+                                break
+                            await self._network(c, key, era, hdocs, budget // len(eras) // 2, hol)
             self._step("Adding them to your channels…")
             self._assign_tags(keys, eras)
             await self._rescan()
@@ -269,28 +326,35 @@ class Finder:
         finally:
             self.progress["running"] = False
 
-    async def _search(self, c, key) -> list[dict]:
+    async def _search(self, c, key, holiday: str | None = None) -> list[dict]:
         label, _m, _n, _ch, words = PROFILES[key]
-        self._step(f"Searching the Internet Archive for {label}…")
-        q = (f"title:({words}) AND title:(commercial* OR promo* OR bumper* OR bumps OR ads OR idents OR break*) "
-             f"AND mediatype:movies")
+        self._step(f"Searching the Internet Archive for {label}{' ' + holiday if holiday else ''}…")
+        extra = {"halloween": " AND title:(halloween OR spooky OR \"trick or treat\" OR october)",
+                 "christmas": " AND title:(christmas OR xmas OR holiday OR santa OR december)"}.get(holiday, "")
+        q = (f"title:({words}) AND title:(commercial* OR promo* OR bumper* OR bumps OR ads OR idents OR break*)"
+             f"{extra} AND mediatype:movies")
         r = await c.get("https://archive.org/advancedsearch.php", params={
             "q": q, "fl[]": ["identifier", "title", "year", "downloads", "item_size", "description"],
             "rows": 500, "output": "json", "sort[]": "downloads desc"})
         r.raise_for_status()
         return r.json()["response"]["docs"]
 
-    async def _network(self, c, key, era, docs, budget):
+    async def _network(self, c, key, era, docs, budget, holiday: str | None = None):
         label = PROFILES[key][0]
         y0, y1 = ERAS[era]
         scored = [(judge(key, d, y0, y1)[0], d) for d in docs]
         matches = [d for sc, d in sorted(scored, key=lambda x: -x[0]) if sc > 0]
+        if holiday:  # a holiday run only wants tapes that are clearly that holiday's
+            matches = [d for d in matches if holiday_of(_title(d)) == holiday
+                       or (holiday == "halloween" and month_of(_title(d)) == "october")
+                       or (holiday == "christmas" and month_of(_title(d)) == "december")]
         idx = self.index()
         have = {t["id"] for t in idx.get(key, [])}
-        used = sum(t.get("bytes", 0) for t in idx.get(key, []) if t.get("era") == era)
-        log.info("Commercial finder: %d %s tapes from the %s", len(matches), label, era)
-        self.progress["found"].append({"network": f"{label} {era}", "matches": len(matches)})
-        folder = OWN / key / era  # both folder names become tags: "nick" and "90s"
+        used = sum(t.get("bytes", 0) for t in idx.get(key, [])
+                   if t.get("era") == era and bool(t.get("holiday")) == bool(holiday))
+        what = f"{label} {holiday + ' ' if holiday else ''}{era}"
+        log.info("Commercial finder: %d %s tapes", len(matches), what)
+        self.progress["found"].append({"network": what, "matches": len(matches)})
         for doc in matches:
             if self.stop or used >= budget:
                 break
@@ -305,9 +369,13 @@ class Finder:
                 self.progress["error"] = "Stopped: the disk is nearly full."
                 self.stop = True
                 break
-            title = doc.get("title") or doc["identifier"]
+            title = _title(doc) or doc["identifier"]
+            # folder names become tags: "nick", "90s", and "halloween" (holiday ads, only in season)
+            # or "october" (an October tape: favoured in October, played all year)
+            season = holiday_of(title) or month_of(title)
+            folder = OWN / key / era / season if season else OWN / key / era
             tape = {"id": doc["identifier"], "title": title, "era": era, "files": [], "clips": 0, "bytes": 0,
-                    "years": sorted(_years(title))}
+                    "years": sorted(_years(title)), "holiday": holiday_of(title) or "", "month": month_of(title) or ""}
             saved = []
             for f in files:
                 if self.stop:
