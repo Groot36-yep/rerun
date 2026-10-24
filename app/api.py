@@ -306,7 +306,7 @@ async def get_settings(app=Depends(signed_in)):
         "plex": {"url": d["plex"].get("url"), "name": d["plex"].get("server_name")},
         "auto": {k: v for k, v in d["auto"].items() if k != "dismissed"}, "dismissed": len(d["auto"]["dismissed"]),
         "festive_logos": d.get("festive_logos", False),
-        "plex_logos": d.get("plex_logos", "through_plex"),
+        "plex_logos": d.get("plex_logos", "public"),
     }
 
 
@@ -363,7 +363,7 @@ async def put_settings(body: dict, app=Depends(signed_in)):
         d["auto"]["min_shows"] = _num(a.get("min_shows", d["auto"]["min_shows"]), 1, 20, 2)
     if "festive_logos" in body:
         d["festive_logos"] = bool(body["festive_logos"])
-    if body.get("plex_logos") in ("through_plex", "direct"):
+    if body.get("plex_logos") in ("public", "direct"):
         d["plex_logos"] = body["plex_logos"]
     app.cfg.save()
     if d["stream"] != old_stream:

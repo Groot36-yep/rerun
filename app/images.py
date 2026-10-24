@@ -14,12 +14,13 @@ import io
 import logging
 import math
 import os
+from urllib.parse import urlencode
 
 import httpx
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .channels import network_logo
-from .store import DATA_DIR
+from .store import DATA_DIR, atomic_write_json, read_json
 
 log = logging.getLogger("rerun.images")
 # Logos are wide (16:9) because that's the shape of the logo space in Plex's guide; a square logo
@@ -476,7 +477,12 @@ async def _fetch_wiki(title: str) -> bytes | None:
         if not thumb or not ("logo" in name or (name.split("?")[0].endswith(".png") and any(w in name for w in words))):
             return None  # the article's picture isn't a logo (e.g. a photo of a building)
         img = await c.get(thumb)
+    if img.status_code == 200:
+        _WIKI_SRC[title] = thumb
     return img.content if img.status_code == 200 else None
+
+
+_WIKI_SRC: dict[str, str] = {}  # Wikipedia article -> the logo picture's public address
 
 
 async def official_logo(ref: str) -> bytes | None:
@@ -517,6 +523,10 @@ async def _channel_logo(ch: dict, catalog=None, festive: str = "", online: bool 
     path = DATA_DIR / "logos" / f"{ch['id']}-{key}.png"
     if path.exists():
         LOGO_STATUS.setdefault(ch["id"], "ready (made earlier)")
+        if ref and online and ref not in _public():
+            raw = await official_logo(ref)
+            if raw:
+                _learn_public(ref, raw)
         return path.read_bytes()
     data = None
     if holiday:
@@ -528,6 +538,7 @@ async def _channel_logo(ch: dict, catalog=None, festive: str = "", online: bool 
             try:
                 data = await asyncio.to_thread(frame_logo, raw)
                 LOGO_STATUS[ch["id"]] = f"official ({ref.split(':')[0]})"
+                _learn_public(ref, raw)
             except Exception as e:
                 log.warning("Couldn't use the official logo for %s: %s", ch["name"], e)
                 data = None
@@ -562,3 +573,76 @@ async def artwork(app, media_id: str) -> bytes | None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     return data
+
+
+# --------------------------------------------------------------------------- logos for Plex apps
+#
+# Plex apps load channel logos themselves, straight from the address in the guide. Over a secure
+# connection (the Apple TV and phone apps, app.plex.tv) they only load public https addresses, so
+# a picture served by Rerun on the home network never shows. For those apps the guide points at
+# two free public image services instead:
+#   * wsrv.nl puts a network's official logo (from TMDB or Wikipedia) on a solid card, so dark
+#     logos don't vanish on Plex's dark guide;
+#   * placehold.co letters a card with the channel's name, for channels without an official logo.
+# They see which logo or channel name is being drawn, nothing else.
+
+_PUBLIC_FILE = DATA_DIR / "logos" / "public.json"
+_public_cache: dict | None = None
+
+
+def _public() -> dict:
+    global _public_cache
+    if _public_cache is None:
+        _public_cache = read_json(_PUBLIC_FILE, {})
+    return _public_cache
+
+
+def _learn_public(ref: str, raw: bytes):
+    """Remember where an official logo lives publicly, and whether it needs a dark card."""
+    if ref.startswith("tmdb:/"):
+        src = f"image.tmdb.org/t/p/w500{ref[5:]}"
+    elif ref.startswith("wiki:") and ref[5:] in _WIKI_SRC:
+        src = _WIKI_SRC[ref[5:]]
+    else:
+        return
+    try:
+        light = _is_light(_trim(Image.open(io.BytesIO(raw)).convert("RGBA")))
+    except Exception:
+        light = False
+    entry = {"src": src, "light": light}
+    if _public().get(ref) != entry:
+        _public()[ref] = entry
+        _PUBLIC_FILE.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(_PUBLIC_FILE, _public())
+
+
+def _two_lines(text: str) -> str:
+    words = text.split()
+    if len(words) < 2 or len(text) <= 10:
+        return text
+    best = min(range(1, len(words)), key=lambda i: max(len(" ".join(words[:i])), len(" ".join(words[i:]))))
+    return " ".join(words[:best]) + "\\n" + " ".join(words[best:])
+
+
+def public_logo_url(ch: dict, catalog=None) -> str:
+    """A public https address for this channel's logo, for Plex apps."""
+    holiday = ch.get("season") and not ch.get("logo")
+    ref = "" if holiday else logo_ref(ch, catalog)
+    known = _public().get(ref) if ref else None
+    if known:
+        bg = NIGHT[1:] if known["light"] else PAPER[1:]
+        return "https://wsrv.nl/?" + urlencode({"url": known["src"], "w": 640, "h": 360, "fit": "contain",
+                                                "cbg": bg, "bg": bg, "trim": 8, "output": "png"})
+    name = ch["name"]
+    if holiday:
+        bg, fg = HOLIDAY_COLORS.get(ch["season"], "#7c1d24"), CREAM
+    else:
+        look = look_for(name, ch.get("group", ""))
+        bg, fg = {
+            "bubble": (_pick(name, KIDS), "#ffffff"),
+            "neon": ("#120d0b", _pick(name, NEON)),
+            "marquee": (_pick(name, ["#6c1a22", "#1d2f4f", "#3b2418"]), "#ffcf5a"),
+            "station": (PAPER, INK),
+        }.get(look, (_pick(name, PALETTE), CREAM))
+    return (f"https://placehold.co/640x360/{bg[1:]}/{fg[1:]}/png?"
+            + urlencode({"text": _two_lines(_caps(name)), "font": "oswald"}))

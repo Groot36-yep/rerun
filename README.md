@@ -141,8 +141,11 @@ hard the computer is working and any recent problems, with no passwords in it.
 - **Channel logos don't show in Plex.** Plex only reads channel logos when a DVR is set up, so
   after changing anything about logos, delete the Rerun DVR in Plex (Settings → Live TV & DVR)
   and set it up again, then fully restart the Plex app. Plex apps on a secure connection
-  (app.plex.tv, Apple TV, phones) won't load pictures straight from Rerun, so by default the guide
-  sends them through your Plex server (Settings → Guide → Pictures in Plex).
+  (Apple TV, phones, app.plex.tv) only load logos from public https addresses, so the guide Plex
+  reads points at two free image services: network logos come from TMDB through wsrv.nl, and
+  other channels get a lettered card from placehold.co. They only see which logo or channel name
+  is being drawn. To keep everything at home instead (logos then only show in Plex Web opened by
+  its IP address): Settings → Guide → Pictures in Plex → Straight from Rerun.
 - **Plex can't find the tuner.** Use the computer's network address, not `localhost`, and
   make sure a firewall isn't blocking port 8410 (the installer offers to allow it).
 - **Video stutters.** Run `rerun check-gpu` to make sure Quick Sync is being used, or lower the

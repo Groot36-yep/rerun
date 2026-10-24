@@ -21,7 +21,7 @@ from .seasons import DEFAULT_HOLIDAYS
 log = logging.getLogger("rerun.store")
 
 DATA_DIR = Path(os.environ.get("RERUN_DATA", "data")).resolve()
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 BACKUP_EVERY = 600  # seconds between config backups
 
 
@@ -121,7 +121,7 @@ DEFAULT_CONFIG = {
     # After each scan, add channels for networks (and holidays) that appear in your library.
     "auto": {"networks": True, "holidays": True, "min_shows": 2, "dismissed": []},
     "festive_logos": False,  # a small holiday badge on every channel logo while a holiday is in season
-    "plex_logos": "through_plex",  # through_plex: Plex apps get pictures via their Plex server | direct
+    "plex_logos": "public",  # public: Plex apps get logos from public https image services | direct
     "holidays": DEFAULT_HOLIDAYS,
     "channels": [],
 }
@@ -144,6 +144,8 @@ def migrate(data: dict) -> dict:
         stream = data.get("stream") or {}
         if stream.get("hwaccel") == "none":
             stream["hwaccel"] = "auto"  # use Intel Quick Sync / AMD when it works
+    if v < 3 and data.get("plex_logos") != "direct":
+        data["plex_logos"] = "public"  # "through_plex" didn't work: Plex won't fetch home-network pictures
     data["version"] = max(v, CONFIG_VERSION)
     return data
 
