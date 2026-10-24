@@ -216,6 +216,7 @@ async def _plex(app) -> list[str]:
                          f"{t.get('protocol') or t.get('context') or ''}")
     except Exception as e:
         lines.append(f"Couldn't read Plex transcoder jobs ({e.__class__.__name__}).")
+    lines += await _plex_logos(plex)
     try:
         sess = (await asyncio.wait_for(plex.get("/status/sessions"), 10)).get("Metadata", [])
         lines.append(f"Plex playback sessions: {len(sess)}")
@@ -229,6 +230,45 @@ async def _plex(app) -> list[str]:
                          f"{player.get('product')} ({player.get('state')}) — {how}")
     except Exception as e:
         lines.append(f"Couldn't read Plex sessions ({e.__class__.__name__}).")
+    return lines
+
+
+def _thumbs(node, found: list):
+    """Collect (number, name, logo address) for every channel in a Plex answer, however it's nested."""
+    if isinstance(node, dict):
+        if "thumb" in node and any(k in node for k in ("channelVcn", "vcn", "number", "channelNumber")):
+            num = next(node[k] for k in ("channelVcn", "vcn", "number", "channelNumber") if k in node)
+            found.append((str(num), str(node.get("title") or node.get("callSign") or ""), str(node["thumb"])))
+        for v in node.values():
+            _thumbs(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            _thumbs(v, found)
+
+
+async def _plex_logos(plex) -> list[str]:
+    """Which logo address Plex has saved for each channel: shows whether Plex kept an old one."""
+    try:
+        dvrs = (await asyncio.wait_for(plex.get("/livetv/dvrs"), 10)).get("Dvr", [])
+    except Exception as e:
+        return [f"Couldn't read Plex's DVR list ({e.__class__.__name__})."]
+    lines = [f"Plex DVRs: {len(dvrs)}"]
+    for dvr in dvrs:
+        lineup = dvr.get("lineup") or ""
+        lines.append(f"  DVR {dvr.get('key')}: guide {_clean(lineup)[:90]}")
+        if not lineup:
+            continue
+        try:
+            got = await asyncio.wait_for(plex.get("/livetv/epg/lineupchannels", lineup=lineup), 15)
+        except Exception as e:
+            lines.append(f"    couldn't read its channels ({e.__class__.__name__})")
+            continue
+        found: list = []
+        _thumbs(got, found)
+        with_logo = [f for f in found if f[2]]
+        lines.append(f"    {len(found)} channels, {len(with_logo)} with a logo saved in Plex")
+        for num, name, thumb in found[:6]:
+            lines.append(f"    {num:>4} {name[:22]:<22} {_clean(thumb)[:80] or '(none)'}")
     return lines
 
 

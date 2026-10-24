@@ -168,3 +168,15 @@ def status_sessions(request: Request):
     return mc(Metadata=[{"title": "Nickelodeon", "type": "episode", "live": "1",
                          "Player": {"product": "Plex Web", "state": "playing"},
                          "TranscodeSession": {"videoDecision": "transcode", "audioDecision": "copy"}}])
+
+
+@app.get("/livetv/dvrs")
+def dvrs(request: Request):
+    return mc(Dvr=[{"key": "7", "lineup": "lineup://tv.plex.providers.epg.xmltv/http://127.0.0.1:8410/xmltv.xml#Rerun"}])
+
+
+@app.get("/livetv/epg/lineupchannels")
+def lineup_channels(request: Request, lineup: str = ""):
+    return mc(Lineup=[{"Channel": [
+        {"channelVcn": "20", "title": "Nickelodeon", "thumb": "http://127.0.0.1:8410/logo/v5/fd695a51.png"},
+        {"channelVcn": "180", "title": "MTV", "thumb": ""}]}])
