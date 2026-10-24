@@ -30,6 +30,14 @@ def device_id(client_id: str) -> str:
     return hashlib.sha1(client_id.encode()).hexdigest()[:8].upper()
 
 
+def tuner_id(app) -> str:
+    """The ID Plex knows this tuner by. "Start fresh in Plex" bumps the generation, so Plex sees a
+    brand-new tuner with nothing remembered from before."""
+    gen = int(app.cfg.data.get("tuner_generation") or 0)
+    client = app.secrets.data["client_id"]
+    return device_id(client if gen == 0 else f"{client}:{gen}")
+
+
 def enabled_channels(app) -> list[dict]:
     return sorted((c for c in app.cfg.data["channels"] if app.channel_visible(c)), key=lambda c: c["number"])
 
@@ -52,7 +60,7 @@ def discover(app, base: str) -> dict:
         "FirmwareName": "hdhomeruntc_atsc",
         "FirmwareVersion": "20240101",
         "TunerCount": int(app.cfg.data["stream"].get("tuners") or 4),
-        "DeviceID": device_id(app.secrets.data["client_id"]),
+        "DeviceID": tuner_id(app),
         "DeviceAuth": "rerun",
         "BaseURL": base,
         "LineupURL": f"{base}/lineup.json",

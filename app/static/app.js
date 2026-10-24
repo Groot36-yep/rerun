@@ -1338,7 +1338,19 @@ async function viewHelp() {
     h("p", { class: "hint" }, "On the server you can also run ", h("code", null, "rerun report"), "."),
     reportBox);
   add(v, plexCard, reportCard, health);
-  addToPlexContent(plexCard).catch((x) => add(plexCard, h("p", { class: "error" }, x.message)));
+  addToPlexContent(plexCard).then(() => add(plexCard,
+    h("div", { class: "subpanel" }, h("h3", null, "Start fresh in Plex"),
+      h("p", { class: "hint" }, "Plex remembers a tuner even after you delete its DVR. This gives Rerun a new tuner ID, so Plex sets it up as a brand-new device. First delete the Rerun DVR in Plex, then press this, then set the DVR up again with the addresses above."),
+      h("button", { class: "btn", onclick: (e) => modal((box, close) => {
+        fill(box, h("div", { class: "eyebrow" }, "Start fresh in Plex"), h("h2", null, "Show Plex a brand-new tuner?"),
+          h("p", { class: "lede" }, "Do this after deleting the Rerun DVR in Plex. Your channels and settings in Rerun don't change."),
+          h("div", { class: "row end" }, h("button", { class: "btn quiet", onclick: close }, "Cancel"),
+            h("button", { class: "btn primary", onclick: async () => {
+              try { const r = await api("POST", "/api/plex/new-tuner"); close(); toast(`Done. Rerun's new tuner ID is ${r.device_id}. Now set the DVR up in Plex.`); }
+              catch (x) { toast(x.message, true); }
+            } }, "Give Rerun a new tuner ID")));
+      }) }, "Give Rerun a new tuner ID"))))
+    .catch((x) => add(plexCard, h("p", { class: "error" }, x.message)));
   const load = async () => {
     let s;
     try { s = await api("GET", "/api/status"); } catch (x) { fill(health, h("p", { class: "error" }, x.message)); return; }

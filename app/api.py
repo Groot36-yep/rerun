@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import os
 import random
 import socket
@@ -14,7 +15,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from urllib.parse import quote
 
 from . import __version__, seasons
-from .guide import logo_url as plex_logo_url
+from .guide import logo_url as plex_logo_url, tuner_id
 from .channels import (
     BREAK_STYLES, HOLIDAY_CHANNEL_NAMES, channel_from_suggestion, describe_content, library_networks,
     network_logo, network_rules, next_free_number, normalize_channel, suggest, sync_auto,
@@ -29,6 +30,7 @@ from .plex import PlexClient, PlexError, check_pin, create_pin, find_servers, pi
 from .security import hash_password, verify_password
 
 COOKIE = "rerun_session"
+log = logging.getLogger("rerun")
 router = APIRouter(prefix="/api")
 _pins: dict[int, dict] = {}
 
@@ -189,6 +191,15 @@ async def plex_use_server(body: dict, app=Depends(signed_in)):
                                  "Use the manual option with the server's address.")
     await _save_plex(app, url, server["token"], server["name"], server["id"])
     return {"ok": True, "url": url, "name": server["name"]}
+
+
+@router.post("/plex/new-tuner")
+async def new_tuner(app=Depends(signed_in)):
+    """Give the tuner a new ID so Plex treats it as a different device, forgetting old logos."""
+    app.cfg.data["tuner_generation"] = int(app.cfg.data.get("tuner_generation") or 0) + 1
+    app.cfg.save()
+    log.info("Rerun now shows Plex a new tuner ID (%s)", tuner_id(app))
+    return {"ok": True, "device_id": tuner_id(app)}
 
 
 @router.post("/plex/manual")
