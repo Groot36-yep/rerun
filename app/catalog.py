@@ -11,6 +11,7 @@ import logging
 import time
 from collections import Counter
 
+from .archive import find_clips
 from .folders import Prober, parse_music_video, scan_folder
 from .metadata import NetworkLookup
 from .networks import family_for, movie_family, parent_of
@@ -232,6 +233,8 @@ class Scanner:
                         media = pick_media(m)
                         if not media or media["dur"] < 1:
                             continue
+                        if kind == "commercials" and media["dur"] > 600:
+                            continue  # a long recording in Plex could never fit in a break
                         item = {"id": "p" + str(m["ratingKey"]), "tags": [], "src": key, **media}
                         if kind == "music_videos":
                             item.update(parse_music_video(m.get("title", ""), []))
@@ -250,9 +253,13 @@ class Scanner:
                     continue
                 label = "music videos" if kind == "music_videos" else "commercials"
                 self._step(f"Checking {label} in {path}")
-                items = await scan_folder(
-                    path, kind, prober, lambda d, t, p=path, l=label: self._step(f"Checking {l} in {p}", d, t)
-                )
+                ff = self.app.ffmpeg.ffmpeg
+
+                def step(d, t, what=None, p=path, l=label):
+                    self._step(what or f"Checking {l} in {p}", d, t)
+
+                items = await scan_folder(path, kind, prober, step,
+                                          splitter=(lambda f: find_clips(ff, f)) if kind == "commercials" else None)
                 (cat.music_videos if kind == "music_videos" else cat.filler)[f"folder:{path}"] = items
             prober.save()
 

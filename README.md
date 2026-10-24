@@ -133,7 +133,17 @@ Disney Channel, Playhouse Disney, Cartoon Network, Kids' WB, Fox Kids, MTV, PBS 
 Tick **Halloween** or **Christmas** to fetch holiday tapes too. Holiday commercials only air in their
 season, and tapes recorded in October or December are favoured in that month.
 
-The same page shows every commercial Rerun can play, with a picture. Click one to watch it, and
+**Quality:** the finder skips tapes below the quality you pick (360p or 480p), downloads each tape
+as it was uploaded rather than the archive's re-compressed copy, and ranks DVD, broadcast, HD and
+smooth 60fps transfers first. Most of these are VHS recordings, so expect standard definition.
+
+**Long files are split for you.** A break lasts a few minutes, so a commercials file longer than
+2½ minutes (a compilation from YouTube, say) is split into its single commercials the first time
+it's scanned, the same way as downloaded tapes. One that can't be split is left out rather than
+filling a break.
+
+The same page shows every commercial Rerun can play, with a picture and its exact quality
+(size, frame rate and bitrate). Click one to watch it, and
 **Remove** any you don't want on the air (nothing is deleted; "Show removed ones" puts them back).
 
 **Breaks that match the show.** Each break picks commercials that fit what's on: a Disney episode

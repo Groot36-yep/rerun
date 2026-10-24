@@ -89,14 +89,26 @@ class Prober:
         except OSError:
             return None
         hit = self.cache.get(path)
-        if hit and hit["m"] == int(st.st_mtime) and hit["s"] == st.st_size:
+        if hit and hit["m"] == int(st.st_mtime) and hit["s"] == st.st_size and "q" in hit["r"]:
             return hit["r"]
         async with self.sem:
             data = await self._run(path, ["-show_format", "-show_streams", "-show_chapters"])
         if data is None:
             return None
         streams = data.get("streams") or []
+        video = next((s for s in streams if s.get("codec_type") == "video"
+                      and not (s.get("disposition") or {}).get("attached_pic")), {})
+        fmt = data.get("format") or {}
+        try:
+            num, den = (video.get("avg_frame_rate") or "0/1").split("/")
+            fps = round(int(num) / int(den), 2) if int(den) else 0
+        except ValueError:
+            fps = 0
         r = {
+            "h": int(video.get("height") or 0),
+            # exact picture quality, shown on the Commercials page
+            "q": {"w": int(video.get("width") or 0), "h": int(video.get("height") or 0), "fps": fps,
+                  "kbps": int(int(fmt.get("bit_rate") or 0) / 1000), "codec": video.get("codec_name", "")},
             "dur": round(float((data.get("format") or {}).get("duration") or 0), 3),
             "v": any(s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")
                      for s in streams),
@@ -135,8 +147,34 @@ class Prober:
         atomic_write_json(self.path, self.cache)
 
 
-async def scan_folder(root: str, kind: str, prober: Prober, progress=None) -> list[dict]:
-    """kind is 'music_videos' or 'commercials'. Sub-folder names become tags."""
+LONG_AD = 150  # a "commercial" file longer than this is a compilation, to be split into single ads
+
+
+def _cached_clips(path: str, size: int, mtime: int) -> list | None:
+    try:
+        with open(DATA_DIR / "clips" / (file_id(path) + ".json"), encoding="utf-8") as f:
+            d = json.load(f)
+        return d["clips"] if d.get("s") == size and d.get("m") == mtime else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+async def split_long(path: str, splitter) -> list:
+    """Where the single commercials sit in a long compilation file; worked out once, then remembered."""
+    st = os.stat(path)
+    clips = _cached_clips(path, st.st_size, int(st.st_mtime))
+    if clips is None:
+        clips = await asyncio.to_thread(splitter, path)
+        (DATA_DIR / "clips").mkdir(parents=True, exist_ok=True)
+        atomic_write_json(DATA_DIR / "clips" / (file_id(path) + ".json"),
+                          {"s": st.st_size, "m": int(st.st_mtime), "clips": clips})
+        log.info("Split %s into %d commercials", os.path.basename(path), len(clips))
+    return clips
+
+
+async def scan_folder(root: str, kind: str, prober: Prober, progress=None, splitter=None) -> list[dict]:
+    """kind is 'music_videos' or 'commercials'. Sub-folder names become tags. With a splitter, long
+    commercial compilations are split into single commercials."""
     if not os.path.isdir(root):
         log.warning("Folder %s is missing or not mounted", root)
         return []
@@ -161,6 +199,15 @@ async def scan_folder(root: str, kind: str, prober: Prober, progress=None) -> li
         folder_tags = [t.lower() for t in rel.parts[:-1]]
         stem = rel.stem
         clips = _clips(p)
+        if clips is None and kind == "commercials" and r["dur"] > LONG_AD and splitter:
+            if progress:
+                progress(0, 0, f"Finding the commercials in {os.path.basename(p)}")
+            found = await split_long(p, splitter)
+            if not found:
+                log.info("Left out %s: it's %d minutes long and has no clear breaks between ads",
+                         os.path.basename(p), r["dur"] // 60)
+                continue
+            clips = {"title": stem, "clips": found}
         if clips is not None and kind == "commercials":
             # A recorded commercial break: each commercial plays straight out of the tape.
             base = clean_title(clips.get("title") or stem)
@@ -168,10 +215,12 @@ async def scan_folder(root: str, kind: str, prober: Prober, progress=None) -> li
                 if start + length <= r["dur"] + 1:
                     items.append({"id": f"{file_id(p)}c{i}", "dur": length, "in": start, "file": p, "part": "",
                                   "audio": r["a"], "chapters": [], "tags": folder_tags, "src": src,
-                                  "title": f"{base} ({i + 1})"})
+                                  "title": f"{base} ({i + 1})", "h": r.get("h", 0), "q": r.get("q")})
             continue
+        if kind == "commercials" and r["dur"] > LONG_AD * 4:
+            continue  # a long recording with no splitter: it could never fit in a break
         item = {"id": file_id(p), "dur": r["dur"], "file": p, "part": "", "audio": r["a"],
-                "chapters": r["ch"], "tags": folder_tags, "src": src}
+                "chapters": r["ch"], "tags": folder_tags, "src": src, "h": r.get("h", 0), "q": r.get("q")}
         if kind == "music_videos":
             item.update(parse_music_video(stem, folder_tags))
         else:

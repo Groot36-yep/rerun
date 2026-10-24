@@ -461,3 +461,11 @@ th { font: 600 10.5px var(--caps); letter-spacing: .15em; text-transform: upperc
 .ad-body span { display: block; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ad-card > .btn { align-self: flex-start; margin: 4px 6px 8px; }
 .ad-video { width: 100%; max-height: 60vh; background: #000; border-radius: 6px; }
+
+.folder-row { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--rule); padding-right: 8px; }
+.folder-row:last-child { border-bottom: 0; }
+.folder-list .folder-row .folder-open { flex: 1; border-bottom: 0; min-width: 0; }
+.folder-open span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-open small { display: block; font-size: 12px; color: var(--ink-3); }
+.folder-list { max-height: 46vh; overflow: auto; }
+.folder-list .folder-row .btn { width: auto; flex: none; border: 1px solid var(--ink); padding: 0 12px; justify-content: center; }

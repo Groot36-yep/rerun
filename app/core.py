@@ -212,6 +212,32 @@ class App:
     def extra_networks(self):
         return parse_networks(self.cfg.data["security"].get("extra_networks"))
 
+    # Folders the folder picker never shows: the system, and Rerun's own settings.
+    SYSTEM_DIRS = ("/proc", "/sys", "/dev", "/run", "/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32",
+                   "/lib64", "/libx32", "/snap", "/var", "/tmp", "/root", "/lost+found", "/opt")
+
+    def browse_ok(self, path: str) -> bool:
+        """Folders you can pick from in Rerun's folder picker: anything but the system's own."""
+        if not path:
+            return False
+        real = os.path.realpath(path)
+        if self.path_allowed(real):
+            return True
+        if os.name == "nt":
+            return os.path.isdir(real)
+        data = os.path.realpath(DATA_DIR)
+        if real == data or real.startswith(data + os.sep) or real == "/":
+            return False
+        return not any(real == d or real.startswith(d + "/") for d in self.SYSTEM_DIRS)
+
+    def places(self) -> list[str]:
+        """Where the folder picker starts: your media folders, your home folder, and drives."""
+        out = list(self.media_roots)
+        for p in (os.path.expanduser("~"), "/mnt", "/media", "/srv", "/home"):
+            if os.path.isdir(p) and os.path.realpath(p) not in out:
+                out.append(os.path.realpath(p))
+        return out
+
     def path_allowed(self, path: str) -> bool:
         if not path:
             return False
@@ -221,6 +247,11 @@ class App:
         own = os.path.realpath(OWN_COMMERCIALS)
         if real == own or real.startswith(own + os.sep):
             return True  # commercials Rerun downloaded itself
+        for lst in self.cfg.data["sources"].values():  # folders you picked in Rerun
+            for src in lst:
+                p = os.path.realpath(src.get("path") or "") if src.get("type") == "folder" else ""
+                if p and (real == p or real.startswith(p.rstrip(os.sep) + os.sep)):
+                    return True
         return any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in self.media_roots)
 
     def map_path(self, path: str) -> str:

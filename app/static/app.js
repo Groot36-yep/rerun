@@ -361,23 +361,29 @@ function pickServer(area, pinId, servers, done) {
 
 function folderPicker(onPick) {
   modal(async (box, close) => {
+    const pick = (path) => { onPick(path); close(); };
     const render = async (path) => {
-      let d;
+      const typed = h("input", { value: path, placeholder: "Type or paste a folder, e.g. /mnt/media/commercials", "aria-label": "Folder path",
+        onkeydown: (e) => { if (e.key === "Enter") render(typed.value); } });
+      let d, err = "";
       try { d = await api("GET", "/api/folders?path=" + encodeURIComponent(path)); }
-      catch (x) { fill(box, h("p", { class: "error" }, x.message)); return; }
+      catch (x) { err = x.message; d = null; }
       fill(box,
         h("div", { class: "eyebrow" }, "Choose a folder"),
-        h("h2", { style: { margin: "6px 0 4px" } }, d.path ? d.path.split(/[\\/]/).filter(Boolean).pop() : "Your media folders"),
-        h("p", { class: "crumb" }, d.path || "These are the folders Rerun is allowed to read."),
-        h("div", { class: "folder-list" },
-          d.parent ? h("button", { onclick: () => render(d.parent) }, icon("up"), "Up a level") : null,
-          d.path && !d.parent ? h("button", { onclick: () => render("") }, icon("up"), "All media folders") : null,
-          d.dirs.map((x) => h("button", { onclick: () => render(x.path) }, icon("folder"), x.name))),
-        !d.dirs.length && !d.path ? h("p", { class: "notice" }, "No media folders are shared with Rerun yet. Run the installer again and add your media folder.") : null,
-        d.path ? h("p", { class: "hint" }, d.videos ? `${plural(d.videos, "video")} in this folder, plus everything in its sub-folders.` : "Everything in its sub-folders is included.") : null,
+        h("h2", { style: { margin: "6px 0 10px" } }, d && d.path ? d.path.split(/[\\/]/).filter(Boolean).pop() || d.path : "Where are they?"),
+        h("div", { class: "copy" }, typed, h("button", { class: "btn", onclick: () => render(typed.value) }, "Go")),
+        err ? h("p", { class: "error" }, err) : null,
+        d ? h("div", { class: "folder-list" },
+          d.parent ? h("div", { class: "folder-row" }, h("button", { class: "folder-open", onclick: () => render(d.parent) }, icon("up"), "Up a level")) : null,
+          d.path && !d.parent ? h("div", { class: "folder-row" }, h("button", { class: "folder-open", onclick: () => render("") }, icon("up"), "All places")) : null,
+          d.dirs.map((x) => h("div", { class: "folder-row" },
+            h("button", { class: "folder-open", onclick: () => render(x.path), title: x.path }, icon("folder"), h("span", null, x.name, x.place && x.name !== x.path ? h("small", null, x.path) : null)),
+            h("button", { class: "btn small", onclick: () => pick(x.path) }, "Use"))),
+          !d.dirs.length ? h("p", { class: "hint", style: { padding: "10px 14px" } }, "No folders in here.") : null) : null,
+        d && d.path ? h("p", { class: "hint" }, d.videos ? `${plural(d.videos, "video")} in this folder, plus everything in its sub-folders.` : "Everything in its sub-folders is included.") : null,
         h("div", { class: "row end", style: { marginTop: "14px" } },
           h("button", { class: "btn quiet", onclick: close }, "Cancel"),
-          d.path ? h("button", { class: "btn primary", onclick: () => { onPick(d.path); close(); } }, "Use this folder") : null));
+          d && d.path ? h("button", { class: "btn primary", onclick: () => pick(d.path) }, "Use this folder") : null));
     };
     render("");
   });
@@ -1212,11 +1218,16 @@ function previewAd(ad) {
     fill(box, h("div", { class: "eyebrow" }, "Preview"), h("h2", { style: { margin: "6px 0 12px" } }, ad.title || "Commercial"),
       h("video", { class: "ad-video", src: `/api/commercials/${ad.id}/preview.mp4`, controls: true, autoplay: true, playsinline: true }),
       h("p", { class: "hint" }, `${fmtDur(ad.dur)} · ${ad.tags.join(" · ") || "no tags"}`),
+      h("p", { class: "hint" }, `Picture: ${qualityText(ad.q)}${ad.q && ad.q.h ? ` (${quality(ad)})` : ""}`),
       h("div", { class: "row end" }, h("button", { class: "btn quiet", onclick: close }, "Close")));
   });
 }
 
 const SOURCE_NAMES = { found: "Found online", folder: "Your folders", plex: "Plex" };
+// "640×480 · 29.97 fps · 1.8 Mbps · h264"
+const qualityText = (q) => !q || !q.h ? "Quality unknown" : [`${q.w}×${q.h}`, q.fps ? `${q.fps} fps` : "",
+  q.kbps ? (q.kbps >= 1000 ? `${(q.kbps / 1000).toFixed(1)} Mbps` : `${q.kbps} kbps`) : "", q.codec].filter(Boolean).join(" · ");
+const quality = (a) => !a.h ? "" : a.h >= 700 ? "HD" : a.h >= 400 ? "Good quality" : a.h >= 300 ? "Watchable" : "Low quality";
 
 async function viewCommercials() {
   const v = shell("#/commercials");
@@ -1232,7 +1243,7 @@ async function viewCommercials() {
   add(v, finderPanel, bar, tagBox, grid, more);
   let all = [], query = "", tag = "", showHidden = false, shown = 60;
   const visible = () => all.filter((a) => (showHidden ? a.hidden : !a.hidden)
-    && (!tag || a.tags.includes(tag) || SOURCE_NAMES[a.source] === tag)
+    && (!tag || a.tags.includes(tag) || SOURCE_NAMES[a.source] === tag || quality(a) === tag)
     && (!query || `${a.title} ${a.tags.join(" ")}`.toLowerCase().includes(query)));
   const setHidden = async (ids, hidden) => {
     try {
@@ -1248,12 +1259,13 @@ async function viewCommercials() {
       h("span", { class: "ad-dur" }, fmtDur(a.dur))),
     h("div", { class: "ad-body" },
       h("b", { title: a.title }, a.title || "Commercial"),
-      h("span", null, [SOURCE_NAMES[a.source], ...a.tags].join(" · "))),
+      h("span", { class: "ad-q", title: qualityText(a.q) }, a.q && a.q.h ? `${a.q.h}p${a.q.fps >= 50 ? a.q.fps >= 59 ? "60" : "50" : ""} · ${quality(a)}${a.q.kbps ? ` · ${(a.q.kbps / 1000).toFixed(1)} Mbps` : ""}` : "Quality unknown"),
+      h("span", null, [SOURCE_NAMES[a.source], ...a.tags].filter(Boolean).join(" · "))),
     h("button", { class: "btn small quiet", onclick: () => setHidden([a.id], !a.hidden) }, a.hidden ? "Put back" : "Remove"));
   const render = () => {
     const list = visible();
     const counts = {};
-    all.filter((a) => !a.hidden).forEach((a) => [...a.tags, SOURCE_NAMES[a.source]].forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
+    all.filter((a) => !a.hidden).forEach((a) => [...a.tags, SOURCE_NAMES[a.source], quality(a)].filter(Boolean).forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
     fill(tagBox, h("span", { class: "chip toggle" + (tag ? "" : " on"), role: "button", tabindex: 0, onclick: () => { tag = ""; shown = 60; render(); } }, `All · ${all.filter((a) => !a.hidden).length}`),
       Object.entries(counts).sort((x, y) => y[1] - x[1]).slice(0, 30).map(([t, n]) => h("span", {
         class: "chip toggle" + (tag === t ? " on" : ""), role: "button", tabindex: 0, onclick: () => { tag = tag === t ? "" : t; shown = 60; render(); },
@@ -1283,7 +1295,7 @@ function commercialFinder() {
   const picked = new Set();
   const eras = new Set();
   const hols = new Set();
-  let gb = 1.5, first = true;
+  let gb = 1.5, minH = 360, first = true;
   const render = (d) => {
     if (first) {
       d.networks.filter((n) => n.have_channel).forEach((n) => picked.add(n.key));
@@ -1310,12 +1322,14 @@ function commercialFinder() {
       }, k[0].toUpperCase() + k.slice(1)))),
       h("p", { class: "hint" }, "Holiday commercials only air in their season, and go around that holiday's shows first."),
       h("div", { class: "row", style: { marginTop: "6px" } },
+        h("span", { class: "plain-label" }, "Quality"),
+        select([[0, "Any"], [360, "Watchable (360p and up)"], [480, "Good (480p and up)"]], minH, (v) => { minH = parseInt(v, 10); }, { class: "inline", disabled: busy }),
         h("span", { class: "plain-label" }, "Space per network"),
         select([[0.5, "0.5 GB"], [1.5, "1.5 GB"], [3, "3 GB"], [6, "6 GB"]], gb, (v) => { gb = parseFloat(v); }, { class: "inline", disabled: busy })),
       h("div", { class: "row", style: { marginTop: "14px" } },
         busy ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this download…"); } }, "Stop")
           : h("button", { class: "btn primary", onclick: async () => {
-            try { render(await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], holidays: [...hols], budget_gb: gb })); poll(); }
+            try { render(await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], holidays: [...hols], budget_gb: gb, min_height: minH })); poll(); }
             catch (x) { toast(x.message, true); }
           } }, "Find commercials"),
         busy || !st.step ? null : h("span", { class: "hint" }, st.step)),

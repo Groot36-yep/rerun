@@ -264,8 +264,8 @@ async def put_sources(body: dict, app=Depends(signed_in)):
                 out.append({"type": "plex", "id": str(s["id"]), "name": str(s.get("name") or "")[:100]})
             elif s.get("type") == "folder" and s.get("path"):
                 path = os.path.realpath(str(s["path"]))
-                if not app.path_allowed(path):
-                    raise HTTPException(400, f"{s['path']} isn't inside your media folders")
+                if not app.browse_ok(path) or not os.path.isdir(path):
+                    raise HTTPException(400, f"Rerun can't use {s['path']}")
                 out.append({"type": "folder", "path": path})
         clean[kind] = out
     app.cfg.data["sources"] = clean
@@ -276,11 +276,15 @@ async def put_sources(body: dict, app=Depends(signed_in)):
 @router.get("/folders")
 async def folders(path: str = "", app=Depends(signed_in)):
     if not path:
+        home = os.path.realpath(os.path.expanduser("~"))
+        names = {home: "Home folder", "/mnt": "Drives (/mnt)", "/media": "Drives (/media)"}
         return {"path": "", "parent": None, "videos": 0,
-                "dirs": [{"name": r, "path": r} for r in app.media_roots if os.path.isdir(r)]}
-    real = os.path.realpath(path)
-    if not app.path_allowed(real) or not os.path.isdir(real):
-        raise HTTPException(403, "That folder isn't available")
+                "dirs": [{"name": names.get(r, r), "path": r, "place": True} for r in app.places()]}
+    real = os.path.realpath(os.path.expanduser(path.strip()))
+    if not os.path.isdir(real):
+        raise HTTPException(404, "There's no folder there")
+    if not app.browse_ok(real):
+        raise HTTPException(403, "That's a system folder; Rerun leaves those alone")
     dirs, videos = [], 0
     try:
         for e in sorted(os.scandir(real), key=lambda e: e.name.lower()):
@@ -293,7 +297,7 @@ async def folders(path: str = "", app=Depends(signed_in)):
     except OSError:
         raise HTTPException(403, "Rerun can't read that folder")
     parent = os.path.dirname(real)
-    return {"path": real, "parent": parent if app.path_allowed(parent) and real not in app.media_roots else "",
+    return {"path": real, "parent": parent if parent != real and app.browse_ok(parent) else "",
             "dirs": dirs, "videos": videos}
 
 
@@ -804,7 +808,8 @@ def _ad_source(app, f: dict) -> str:
 async def commercials_list(app=Depends(signed_in)):
     hidden = set(app.cfg.data.get("hidden_filler") or [])
     items = [{"id": f["id"], "title": f.get("title", ""), "dur": round(f["dur"], 1),
-              "tags": f.get("tags", []), "source": _ad_source(app, f), "hidden": f["id"] in hidden}
+              "tags": f.get("tags", []), "source": _ad_source(app, f), "hidden": f["id"] in hidden,
+              "h": int(f.get("h") or 0), "q": f.get("q") or None}
              for f in app.catalog.all_filler()]
     items.sort(key=lambda x: (x["title"].lower(), x["id"]))
     tags = Counter(t for x in items for t in x["tags"])
@@ -889,7 +894,7 @@ async def finder_start(body: dict, app=Depends(signed_in)):
     try:
         gb = min(max(float(body.get("budget_gb", 1.5)), 0.2), 50)
         app.finder.start(list(body.get("networks") or []), list(body.get("eras") or []), int(gb * 1e9),
-                         list(body.get("holidays") or []))
+                         list(body.get("holidays") or []), int(body.get("min_height") or 0))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
     return app.finder.summary()

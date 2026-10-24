@@ -120,6 +120,10 @@ _SURE = re.compile(r"commercials? only|commercial collection|commercial breaks?|
 _SHOWS = re.compile(r"\bepisodes?\b|programming|\bmovie\b|\bmarathon\b", re.I)  # fine if clearly ads-only
 _NEVER = re.compile(r"with commercials|w/ ?commercials|original airing|full episodes?|vhs recording|full tape|"
                     r"soap opera|whole (show|episode)", re.I)  # always has the show in it
+_BETTER = re.compile(r"\b(60 ?fps|50 ?fps|dvd|broadcast|master|hd\b|720p|1080p|betacam|digital|"
+                     r"high quality|remaster|s-?vhs|direct feed)", re.I)
+_WORSE = re.compile(r"\b(low quality|bad quality|poor quality|messed up|incomplete|partial|240p|144p|"
+                    r"damaged|tracking)", re.I)
 _RIPS = ("youtube-", "yt-", "dailymotion-", "videoplayback", "youcut", "capture-", "stream")
 VIDEO_FORMATS = ("h.264", "h.264 ia", "mpeg4", "512kb mpeg4", "matroska", "quicktime", "mpeg2", "mpeg1",
                  "windows media", "avi", "ogg video", "webm")
@@ -170,6 +174,10 @@ def judge(key: str, doc: dict, y0: int, y1: int) -> tuple[float, str]:
     score += 4 if _SURE.search(title) else 0
     score += 1 if re.search(r"bump|promo|ident", title, re.I) else 0
     score += 1 if len(years) <= 2 else 0          # a clearly dated tape beats a "1990s and 2000s" mix
+    if _BETTER.search(title):
+        score += 3                                  # DVD, broadcast or HD captures, smooth 60fps transfers
+    if _WORSE.search(title):
+        score -= 3
     score -= 2 if size > MAX_ITEM else 0
     return score, "match"
 
@@ -180,8 +188,8 @@ def _title(doc: dict) -> str:
 
 
 def _pick_files(files: list[dict]) -> list[dict]:
-    """The video files to download from an item: the archive's own MP4 copy where there is one
-    (smaller, plays everywhere), otherwise the uploaded file."""
+    """The video files to download from an item: the file as uploaded (best quality; the archive's own
+    MP4 copy is re-compressed and softer), unless it's huge, then the archive's copy."""
     videos = [f for f in files if str(f.get("format", "")).lower() in VIDEO_FORMATS]
     by_original = {}
     for f in videos:
@@ -193,10 +201,25 @@ def _pick_files(files: list[dict]) -> list[dict]:
             continue
         derived = [d for d in by_original.get(f["name"], []) if str(d.get("format", "")).lower() in ("h.264", "mpeg4",
                                                                                                     "h.264 ia")]
-        best = min(derived, key=lambda d: int(d.get("size") or 0)) if derived else f
+        best = f if 0 < int(f.get("size") or 0) <= MAX_ITEM or not derived else \
+            min(derived, key=lambda d: int(d.get("size") or 0))
         if 0 < int(best.get("size") or 0) <= MAX_ITEM:
             out.append(best)
     return out
+
+
+def video_height(ffmpeg: str, path: str) -> int:
+    """The picture height of a video (480 for 480p), or 0 if it can't be told."""
+    import subprocess
+    probe = os.path.join(os.path.dirname(ffmpeg), "ffprobe") if os.path.dirname(ffmpeg) else "ffprobe"
+    if not shutil.which(probe) and not os.path.exists(probe):
+        probe = "ffprobe"
+    out = subprocess.run([probe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height",
+                          "-of", "csv=p=0", path], capture_output=True, text=True).stdout.split()
+    try:
+        return int(out[0])
+    except (IndexError, ValueError):
+        return 0
 
 
 def find_clips(ffmpeg: str, path: str) -> list[tuple[float, float]]:
@@ -246,6 +269,7 @@ class Finder:
         self.task: asyncio.Task | None = None
         self.stop = False
         self.progress = {"running": False, "step": "", "done": 0, "total": 0, "found": [], "error": ""}
+        self.min_height = 0
 
     # ---- what's here --------------------------------------------------------------------
     def index(self) -> dict:
@@ -281,7 +305,8 @@ class Finder:
                 "status": self.progress}
 
     # ---- a run --------------------------------------------------------------------------
-    def start(self, keys: list[str], eras: list[str], budget: int, holidays: list[str] | None = None):
+    def start(self, keys: list[str], eras: list[str], budget: int, holidays: list[str] | None = None,
+              min_height: int = 0):
         if self.task and not self.task.done():
             raise RuntimeError("Already looking for commercials")
         keys = [k for k in keys if k in PROFILES]
@@ -293,6 +318,7 @@ class Finder:
         self.stop = False
         self.progress = {"running": True, "step": "Starting…", "done": 0, "total": 0, "found": [], "error": ""}
         holidays = [h for h in (holidays or []) if h in HOLIDAY_WORDS]
+        self.min_height = int(min_height or 0)
         self.task = asyncio.create_task(self._run(keys, eras, budget, holidays))
 
     def _step(self, text: str, **kw):
@@ -362,6 +388,9 @@ class Finder:
                 continue
             meta = (await c.get(f"https://archive.org/metadata/{doc['identifier']}")).json()
             files = _pick_files(meta.get("files", []))
+            known = [int(f.get("height") or 0) for f in files if f.get("height")]
+            if self.min_height and known and max(known) < self.min_height:
+                continue  # the archive already says this tape is too blurry
             size = sum(int(f.get("size") or 0) for f in files)
             if not files or used + size > budget * 1.15:
                 continue
@@ -383,6 +412,12 @@ class Finder:
                 dest = folder / f"{doc['identifier'][:60]}--{os.path.basename(f['name'])}"
                 self._step(f"{label}: downloading “{title[:60]}”", done=0, total=int(f.get("size") or 0))
                 await self._download(c, f"https://archive.org/download/{doc['identifier']}/{f['name']}", dest)
+                if self.min_height:
+                    tall = await asyncio.to_thread(video_height, self.app.ffmpeg.ffmpeg, str(dest))
+                    if tall and tall < self.min_height:
+                        log.info("Skipped %s: only %dp", dest.name, tall)
+                        dest.unlink(missing_ok=True)
+                        continue
                 self._step(f"{label}: finding the commercials in “{title[:60]}”", done=0, total=0)
                 clips = await asyncio.to_thread(find_clips, self.app.ffmpeg.ffmpeg, str(dest))
                 if not clips:
