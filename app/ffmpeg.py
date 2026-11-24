@@ -218,7 +218,10 @@ class FFmpeg:
         banner = ov.get("banner") if can and os.path.isfile(ov.get("banner") or "") else None
         fit = f"bwdif=mode=send_frame:parity=auto:deint=interlaced,scale={W}:{H}:force_original_aspect_ratio=decrease"
         tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS},{self._vf_tail(hw)}"
-        if not (logo or banner):
+        tpl = ov.get("template") if can and os.path.isfile((ov.get("template") or {}).get("file") or "") else None
+        if tpl:
+            banner = None  # your own template takes the banner's place
+        if not (logo or banner or tpl):
             args += ["-map", "0:v:0", "-vf", f"{fit},{tail}"]
         else:
             graph, cur = [f"[0:v:0]{fit}[pic]"], "pic"
@@ -234,20 +237,76 @@ class FFmpeg:
                              f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban]")
                 rest = f"max(0,1-(t-{a:.2f})/0.45)"  # 1 when the banner appears, 0 once it's in place
                 x, y = "main_w*0.055", "main_h*0.73"
-                motion = ov.get("motion") or "left"
+                if ov.get("place") == "bottom":  # along the bottom edge of the picture
+                    x, y = "main_w*0.012", "main_h-overlay_h"
+                motion = ov.get("motion") or "left"  # each style comes on its own way, ending where it sits
                 if motion == "left":
-                    x = f"main_w*0.055-main_w*0.035*{rest}"
+                    x = f"{x}-main_w*0.035*{rest}"
                 elif motion == "right":
-                    x = f"main_w*0.055+main_w*0.05*{rest}"
+                    x = f"{x}+main_w*0.05*{rest}"
                 elif motion == "up":
-                    y = f"main_h*0.73+main_h*0.06*{rest}"
+                    y = f"{y}+main_h*0.06*{rest}"
+                elif motion == "rise":  # comes up from below the picture
+                    y = f"{y}+overlay_h*{rest}"
                 graph.append(f"[{cur}][ban]overlay=x='{x}':y='{y}':eval=frame:"
                              f"enable='between(t,{a:.2f},{b:.2f})'[pn]")
                 cur = "pn"
-            graph.append(f"[{cur}]{tail}[v]")
+            if tpl:
+                n, cur = self._template(args, graph, tpl, cur, n, W, H, duration)
+                graph.append(f"[{cur}]{self._vf_tail(hw)}[v]")
+            else:
+                graph.append(f"[{cur}]{tail}[v]")
             args += ["-filter_complex", ";".join(graph), "-map", "[v]"]
         args += ["-map", audio, "-sn", "-dn", *self._video_codec(s, hw), *self._audio_out(s), *self._ts_out(duration)]
         return args
+
+    def _template(self, args: list, graph: list, tpl: dict, cur: str, n: int, W: int, H: int,
+                  duration: float) -> tuple[int, str]:
+        """Your own "Up next" template, laid over the whole picture (after the side bars), its green or
+        black made see-through. With a window, the show squeezes into it while the template plays."""
+        a, b = float(tpl["t0"]), float(tpl["t1"])
+        pad_tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS}"
+        if tpl.get("window"):  # the picture itself (no side bars) is what squeezes into the window
+            graph.append(f"[{cur}]split=3[p1][p2][p3]")
+            graph.append(f"[p1]{pad_tail}[full]")
+        else:
+            graph.append(f"[{cur}]{pad_tail}[full]")
+        if tpl.get("video"):
+            args += ["-i", "file:" + tpl["file"]]
+            src = f"[{n}:v:0]setpts=PTS+{a:.3f}/TB,"
+        else:
+            args += ["-loop", "1", "-framerate", "15", "-t", f"{duration + 1:.3f}", "-i", "file:" + tpl["file"]]
+            src = f"[{n}:v:0]"
+        n += 1
+        key = tpl.get("key") or "0x00ff00"
+        keyer = (f"colorkey={key}:0.08:0.05" if tpl.get("how") == "black"
+                 else f"format=yuva420p,chromakey={key}:0.14:0.06")  # tight: yellows (SpongeBob) sit close to green
+        tw, th = int(tpl.get("w") or W), int(tpl.get("h") or H)
+        sc = min(W / tw, H / th)
+        fw, fh = int(tw * sc) // 2 * 2, int(th * sc) // 2 * 2
+        ox, oy = (W - fw) // 2, (H - fh) // 2
+        graph.append(f"{src}{keyer},scale={fw}:{fh},format=rgba,pad={W}:{H}:{ox}:{oy}:color=0x00000000[tk]")
+        on = f"enable='between(t,{a:.2f},{b:.2f})'"
+        if tpl.get("window"):
+            wx, wy, ww, wh = tpl["window"]
+            sw, shh = int(fw * ww) // 2 * 2, int(fh * wh) // 2 * 2
+            sx, sy = ox + int(fw * wx), oy + int(fh * wy)
+            # the show fills the window (trimmed a little if the shapes differ); the black behind it is
+            # made from the show's own frames, so it ends when the show does
+            graph.append(f"[p2]scale={sw}:{shh}:force_original_aspect_ratio=increase,crop={sw}:{shh}[sq]")
+            graph.append(f"[p3]{pad_tail},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[bg]")
+            graph.append(f"[bg][sq]overlay=x={sx}:y={sy}[bs]")
+            graph.append(f"[bs][tk]overlay=0:0:eof_action=pass[sqc]")
+            graph.append(f"[full][sqc]overlay=0:0:{on}[tp]")
+        else:
+            graph.append(f"[full][tk]overlay=0:0:eof_action=pass:{on}[tp]")
+        cur = "tp"
+        if tpl.get("title_png"):
+            args += ["-loop", "1", "-framerate", "5", "-i", "file:" + tpl["title_png"]]
+            tx, ty = ox + int(fw * tpl["title_x"]), oy + int(fh * tpl["title_y"])
+            graph.append(f"[{cur}][{n}:v:0]overlay=x={tx}:y={ty}:eof_action=repeat:{on}[tt]")
+            n, cur = n + 1, "tt"
+        return n, cur
 
     def slate_cmd(self, text_file: str | None, duration: float, s: dict, burst: float) -> list[str]:
         hw = self.encoder_status.get("using") or "none"

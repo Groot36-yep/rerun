@@ -451,6 +451,95 @@ def _run(cmd: list[str], on_progress=None) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, proc.returncode, "", err.read().decode("utf-8", "replace"))
 
 
+# ---- telling the show from the commercials by the network's logo -------------------------------
+# Networks kept their logo in a corner during shows and took it off for commercials. Each break Rerun
+# saves from a broadcast starts and ends with a few seconds of the show, so those frames teach it what
+# (and where) the logo is; a "commercial" that carries it was really a piece of the show between fades.
+
+# The top corners start a little down: the very top of a taped picture carries the closed-caption
+# signal (a dotted line) in every frame, ads included.
+CORNERS = {"br": (0.62, 0.70), "bl": (0.0, 0.70), "tr": (0.62, 0.06), "tl": (0.0, 0.06)}
+_CW, _CH = 0.38, 0.30  # corner size, as a share of the picture: wide enough for a logo set in from the edge
+
+
+def _frame(ffmpeg: str, path: str, t: float):
+    from PIL import Image
+    import io as _io
+    out = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, t):.2f}", "-i", path,
+                          "-frames:v", "1", "-vf", "scale=320:240,format=gray", "-f", "image2", "-c:v", "png", "pipe:1"],
+                         capture_output=True).stdout
+    return Image.open(_io.BytesIO(out)).convert("L") if out else None
+
+
+def _corner(img, key):
+    from PIL import ImageFilter
+    x, y = CORNERS[key]
+    w, h = img.size
+    return img.crop((round(x * w), round(y * h), round((x + _CW) * w), round((y + _CH) * h))).resize((96, 56)) \
+        .filter(ImageFilter.FIND_EDGES)
+
+
+def _presence(crop, model) -> float:
+    """How much of the logo's outline is in this corner: near 1 when the logo is there, low when not."""
+    got = sum(min(crop.getpixel(xy), v) for xy, v in model["edges"])
+    return got / model["weight"]
+
+
+def _steady(crops, share: float, floor: int = 45) -> dict:
+    """Edge pixels that are strong in at least `share` of the crops: {(x, y): strength}."""
+    w, h = crops[0].size
+    out = {}
+    for y in range(h):
+        for x in range(w):
+            vals = sorted(c.getpixel((x, y)) for c in crops)
+            v = vals[int(len(vals) * (1 - share))]
+            if v >= floor:
+                out[(x, y)] = v
+    return out
+
+
+def logo_model(ffmpeg: str, breaks: list[str], ad_samples: list[tuple[str, float]] | None = None) -> dict | None:
+    """Learn the network's logo from the show frames at the start of each saved break. The logo's
+    outline sits in the same place in most of them (the odd frame that's already an ad is outvoted).
+    Anything that's just as steady in the commercials (`ad_samples`: file and time) is the tape, not
+    the logo, and is left out."""
+    from PIL import Image
+    frames = [f for f in (_frame(ffmpeg, b, 0.6) for b in breaks[:48]) if f is not None]
+    if len(frames) < 6:
+        return None
+    ads = [f for f in (_frame(ffmpeg, p, t) for p, t in (ad_samples or [])[:40]) if f is not None]
+    best = None
+    for key in CORNERS:
+        crops = [_corner(f, key) for f in frames]
+        show = _steady(crops, 0.5, 30)                  # strong in half the show frames...
+        ad_crops = [_corner(f, key) for f in ads]
+        tape = _steady(ad_crops, 0.35, 35) if len(ads) >= 6 else {}  # ...and not steady in the ads too
+        edges = [(xy, v) for xy, v in show.items() if xy not in tape]
+        if len(edges) < 25:
+            continue
+        model = {"corner": key, "edges": edges, "weight": sum(v for _xy, v in edges)}
+        scores = sorted(_presence(c, model) for c in crops)
+        model["typical"] = scores[len(scores) // 2]
+        ad_scores = sorted(_presence(c, model) for c in ad_crops) or [0.0]
+        gap = model["typical"] - ad_scores[len(ad_scores) // 2]   # how well it tells the show from the ads
+        if model["typical"] > 0.55 and gap > 0.35 and (best is None or gap > best["gap"]):
+            model["gap"] = gap
+            best = model
+    return best
+
+
+def shows_logo(ffmpeg: str, path: str, clip: dict, model: dict | None) -> bool:
+    """True when two of three frames from a clip carry the network's logo: it's the show, not an ad."""
+    if not model:
+        return False
+    limit = model["typical"] * 0.6
+    hits = 0
+    for f in (0.25, 0.5, 0.75):
+        img = _frame(ffmpeg, path, clip["s"] + clip["d"] * f)
+        if img is not None and _presence(_corner(img, model["corner"]), model) >= limit:
+            hits += 1
+    return hits >= 2
+
 def _merge(cuts: list[float]) -> list[float]:
     merged = []
     for c in sorted(cuts):
@@ -883,11 +972,13 @@ class Finder:
         return tape["bytes"]
 
     async def _file_clips(self, dest, title: str, cand: dict, names: list[str], tape: dict,
-                          airing: dict | None = None) -> bool:
-        """Find the commercials in a downloaded file, check its picture and write its clips list."""
+                          airing: dict | None = None, clips: list[dict] | None = None) -> bool:
+        """Find the commercials in a downloaded file (or use `clips` already found), check its picture
+        and write its clips list."""
         ff = self.app.ffmpeg.ffmpeg
-        self._step(f"Finding the commercials in “{title[:60]}”", done=0, total=0)
-        clips = await asyncio.to_thread(find_clips_ex, ff, str(dest))
+        if clips is None:
+            self._step(f"Finding the commercials in “{title[:60]}”", done=0, total=0)
+            clips = await asyncio.to_thread(find_clips_ex, ff, str(dest))
         if not clips:
             return False
         q = await asyncio.to_thread(probe_video, ff, str(dest))
@@ -948,10 +1039,33 @@ class Finder:
             return dest
 
         dests = await asyncio.gather(*(save(i, b) for i, b in enumerate(found)))
+        # the commercials in each break, then the network's logo (learned from the show at the edges of
+        # the breaks) to tell pieces of the show between fades from real commercials
+        found_clips = {}
+        for i, dest in enumerate(dests):
+            if dest is not None and not self.stop:
+                self._step(f"Finding the commercials in break {i + 1} of {len(found)}", done=i, total=len(found))
+                found_clips[i] = await asyncio.to_thread(find_clips_ex, ff, str(dest))
+        samples = [(str(dests[i]), c["s"] + c["d"] / 2) for i, cl in found_clips.items() for c in cl]
+        samples = samples[::max(1, len(samples) // 40)]
+        self._step(f"Learning the network's logo from “{title[:50]}”", done=0, total=0)
+        model = await asyncio.to_thread(logo_model, ff, [str(d) for d in dests if d is not None], samples)
+        shows = 0
+        if model:
+            for i, cl in found_clips.items():
+                keep = []
+                for c in cl:
+                    if await asyncio.to_thread(shows_logo, ff, str(dests[i]), c, model):
+                        shows += 1
+                    else:
+                        keep.append(c)
+                found_clips[i] = keep
+            self._note(f"Left out {shows} pieces of the show (they carry the network's logo) from “{title[:50]}”")
         for i, (b, dest) in enumerate(zip(found, dests)):
-            if dest is None or self.stop:
+            if dest is None or self.stop or i not in found_clips:
                 continue
-            if await self._file_clips(dest, title, cand, [], tape, airing={"at": b["at"], "n": i + 1}):
+            if await self._file_clips(dest, title, cand, [], tape, airing={"at": b["at"], "n": i + 1},
+                                      clips=found_clips[i]):
                 kept.append(dest)
                 record["breaks"].append({"at": b["at"], "file": str(dest)})
             else:
@@ -1169,8 +1283,8 @@ def judge_25days(doc: dict, years: list[int], hints: list[str]) -> tuple[float, 
     title = _title(doc)
     desc = _text(doc.get("description"))
     text = f"{title} {desc[:1500]}"
-    if not re.search(r"abc family|25 days of christmas", text, re.I):
-        return 0, "", 0
+    if not re.search(r"abc family|25 days of christmas", title, re.I):
+        return 0, "", 0  # a tape whose description only mentions ABC Family is usually another channel's
     if re.search(r"freeform|fox family|family channel|fox kids", title, re.I) and not re.search(r"abc family", title,
                                                                                                 re.I):
         return 0, "", 0

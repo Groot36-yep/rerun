@@ -675,16 +675,18 @@ def make_banner(title: str, height: int, accent: str | None = None) -> bytes:
     return _png(out)
 
 
-def up_next_banner(title: str, height: int, accent: str | None = None, theme: str = "") -> str | None:
-    """The banner's file, made once per title, size, colour and style."""
+def up_next_banner(title: str, height: int, accent: str | None = None, theme: str = "", art: bytes | None = None,
+                   art_key: str = "", logo: str | None = None) -> str | None:
+    """The banner's file, made once per title, size, colour, style, artwork and logo."""
     if not title:
         return None
     folder = BUG_DIR / "banners"
-    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}"
+    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}:{art_key if art else ''}:{logo or ''}"
     path = folder / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.png"
     if not path.exists():
         folder.mkdir(parents=True, exist_ok=True)
-        png = make_themed_banner(title, height, theme) if theme in THEME_DRAW else make_banner(title, height, accent)
+        png = (make_themed_banner(title, height, theme, art, logo) if theme in THEME_DRAW
+               else make_banner(title, height, accent))
         path.write_bytes(png)
     return str(path)
 
@@ -886,8 +888,11 @@ def theme_for(tag: str | None, plan: bool = False) -> str:
             "playhouse": "disney", "boomerang": "boomerang"}.get(tag or "", "")
 
 
+# where each style sits: "bottom" runs along the bottom edge of the picture, the rest sit low on the left
+PLACE = {"nick": "bottom", "disney": "bottom"}
+
 # how each style comes on screen: from where it slides
-MOTION = {"nick": "up", "cn": "left", "disney": "fade", "boomerang": "right", "25days": "up", "": "left"}
+MOTION = {"nick": "rise", "cn": "left", "disney": "left", "boomerang": "right", "25days": "up", "": "left"}
 
 
 def _splat(cx, cy, r, seed=7, bumps=7):
@@ -923,7 +928,7 @@ def _shadowed(img, pad, blur, alpha=120, dy=0.0):
     return out
 
 
-def _banner_nick(title, bh, k):
+def _banner_nick(title, bh, k, art=None, logo=None):
     big = _font(round(bh * 0.5), "fun")
     tfont = _font(round(bh * 0.5), "fun")
     t = _fit(title, tfont, bh * 7.2)
@@ -954,7 +959,7 @@ def _banner_nick(title, bh, k):
     return _shadowed(img, 20 * k, bh * 0.08, 140, bh * 0.05)
 
 
-def _banner_cn(title, bh, k):
+def _banner_cn(title, bh, k, art=None, logo=None):
     lab = _font(round(bh * 0.3), "sans")
     tfont = _font(round(bh * 0.5), "sans")
     t = _fit(title.upper(), tfont, bh * 7.5)
@@ -979,7 +984,7 @@ def _banner_cn(title, bh, k):
     return img
 
 
-def _banner_disney(title, bh, k):
+def _banner_disney(title, bh, k, art=None, logo=None):
     lab = _font(round(bh * 0.32), "serif")
     tfont = _font(round(bh * 0.5), "sans")
     t = _fit(title, tfont, bh * 7.5)
@@ -1009,7 +1014,7 @@ def _banner_disney(title, bh, k):
     return img
 
 
-def _banner_boomerang(title, bh, k):
+def _banner_boomerang(title, bh, k, art=None, logo=None):
     lab = _font(round(bh * 0.36), "fun")
     tfont = _font(round(bh * 0.46), "serif")
     t = _fit(title, tfont, bh * 7.2)
@@ -1041,7 +1046,7 @@ def _banner_boomerang(title, bh, k):
     return _shadowed(img, pad, bh * 0.07, 110, bh * 0.05)
 
 
-def _banner_25days(title, bh, k):
+def _banner_25days(title, bh, k, art=None, logo=None):
     lab = _font(round(bh * 0.3), "serif")
     tfont = _font(round(bh * 0.48), "serif")
     t = _fit(title, tfont, bh * 7.5)
@@ -1066,13 +1071,241 @@ def _banner_25days(title, bh, k):
     return _shadowed(img, pad, bh * 0.07, 110, bh * 0.05)
 
 
-THEME_DRAW = {"nick": _banner_nick, "cn": _banner_cn, "disney": _banner_disney, "boomerang": _banner_boomerang,
+
+def _banner_nick_bar(title, bh, k, art=None, logo=None):
+    """Nickelodeon in the 2000s: a full-width orange plaid bar along the bottom with a big white UP NEXT,
+    the show's name under it, and the show's own artwork popping up out of the bar where Nick put its
+    characters. As wide as a widescreen picture; a 4:3 picture just shows the left part."""
+    H = round(bh / 0.1)                     # the picture height this is drawn for
+    W43, W = round(H * 4 / 3), round(H * 16 / 9)
+    bar_h = round(H * 0.2)
+    lift = round(bar_h * 0.75) if art else 0  # room for the artwork to stick up out of the bar
+    img = Image.new("RGBA", (W, bar_h + lift), (0, 0, 0, 0))
+    bar = Image.new("RGBA", (W, bar_h), "#f26a12")
+    plaid = Image.new("RGBA", (W, bar_h), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(plaid)
+    band = round(bar_h * 0.28)
+    for x in range(-bar_h, W + bar_h, band * 2):  # diagonal gingham, like the 2000s on-air graphics
+        pd.polygon([(x, 0), (x + band, 0), (x + band - bar_h, bar_h), (x - bar_h, bar_h)], fill=(255, 176, 92, 70))
+        pd.polygon([(x, bar_h), (x + band, bar_h), (x + band - bar_h, 0), (x - bar_h, 0)], fill=(255, 176, 92, 70))
+    for x in range(-bar_h, W + bar_h, band):
+        pd.line((x, 0, x - bar_h, bar_h), fill=(255, 240, 220, 60), width=k)
+    bar.alpha_composite(plaid)
+    bd = ImageDraw.Draw(bar)
+    bd.rectangle((0, 0, W, k * 3), fill=(255, 255, 255, 235))           # a white edge on top
+    bd.rectangle((0, bar_h - k * 4, W, bar_h), fill=(160, 60, 0, 255))   # and a darker one below
+    img.alpha_composite(bar, (0, lift))
+    d = ImageDraw.Draw(img)
+    big = _font(round(bar_h * 0.42), "sans")
+    small = _font(round(bar_h * 0.2), "sans")
+    x0 = round(W43 * 0.07)
+    art_w = 0
+    if art:
+        try:
+            poster = Image.open(io.BytesIO(art)).convert("RGBA")
+            ph = round((bar_h + lift) * 0.92)
+            poster = poster.resize((round(ph * poster.width / poster.height), ph), Image.LANCZOS)
+            card = Image.new("RGBA", (poster.width + k * 8, poster.height + k * 8), "white")
+            card.alpha_composite(poster, (k * 4, k * 4))
+            card = card.rotate(4, resample=Image.BICUBIC, expand=True)
+            card = _shadowed(card, 0, bh * 0.06, 150, bh * 0.03)
+            art_w = card.width
+            img.alpha_composite(card, (W43 - card.width - round(W43 * 0.05), img.height - card.height - k * 4))
+        except Exception:
+            art_w = 0
+    label_y = lift + bar_h * 0.12
+    d.text((x0 + k * 3, label_y + k * 3), "UP NEXT", font=big, fill=(150, 55, 0, 255))   # a hard drop shadow
+    d.text((x0, label_y), "UP NEXT", font=big, fill="white")
+    t = _fit(title, small, W43 - x0 - art_w - W43 * 0.1)
+    d.text((x0 + k, lift + bar_h * 0.62), t, font=small, fill=(255, 248, 236, 255))
+    return img
+
+
+def _ears(d, cx, cy, r, width, fill, outline):
+    """Three circles: a head and two ears, drawn as one outlined shape."""
+    er = r * 0.62
+    shapes = [(cx, cy, r), (cx - r * 0.92, cy - r * 0.92, er), (cx + r * 0.92, cy - r * 0.92, er)]
+    for x, y, rr in shapes:  # the outline first, all three, then the fill over it
+        d.ellipse((x - rr - width, y - rr - width, x + rr + width, y + rr + width), fill=outline)
+    for x, y, rr in shapes:
+        d.ellipse((x - rr, y - rr, x + rr, y + rr), fill=fill)
+
+
+def _banner_disney_2000s(title, bh, k, art=None, logo=None):
+    """Disney Channel in the 2000s: the channel's logo inside an outline of Mickey ears at the bottom
+    left, and a royal-blue bar with light blue edges running out to the right: "Coming next  Show"."""
+    H = round(bh / 0.1)
+    r = round(H * 0.118)                          # the head circle
+    ring = max(3, round(r * 0.11))
+    bar_h = round(H * 0.085)
+    font = _font(round(bar_h * 0.52), "sans")
+    label, gap = "Coming next", bar_h * 0.6
+    bar_x0 = round(r * 1.55)
+    text_x = round(r * 1.05) + r * 1.15 + bar_h * 0.6        # where the words start, just right of the ears
+    room = H * 4 / 3 * 0.96 - text_x - font.getlength(label) - gap - bar_h * 0.9  # the bar fits a 4:3 picture
+    t = _fit(title, font, room)
+    text_w = font.getlength(label) + gap + font.getlength(t)
+    w = round(text_x + text_w + bar_h * 0.9)
+    head_cx, head_cy = round(r * 1.05), round(r * 1.95)
+    hgt = round(head_cy + r + ring + k * 2)
+    img = Image.new("RGBA", (w, hgt), (0, 0, 0, 0))
+    # the bar, behind the ears: dark royal blue with light blue edges
+    by0 = round(head_cy - bar_h * 0.15)
+    bar = Image.new("RGBA", (w - bar_x0, bar_h), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(bar)
+    for y in range(bar_h):  # a little lighter at the top, like a lit plastic bar
+        f = y / max(1, bar_h - 1)
+        bd.line((0, y, w, y), fill=(round(40 - 14 * f), round(36 - 12 * f), round(190 - 30 * f), 238))
+    edge = max(2, round(bar_h * 0.09))
+    bd.rectangle((0, 0, w, edge), fill=(120, 170, 255, 255))
+    bd.rectangle((0, bar_h - edge, w, bar_h), fill=(70, 140, 235, 255))
+    img.alpha_composite(bar, (bar_x0, by0))
+    d = ImageDraw.Draw(img)
+    # the ears: a teal outline, the inside a soft see-through cream
+    _ears(d, head_cx, head_cy, r, ring, (236, 226, 196, 120), (78, 196, 214, 255))
+    inner = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    _ears(ImageDraw.Draw(inner), head_cx, head_cy, r - ring * 1.6, max(2, ring // 2), (0, 0, 0, 0), (40, 150, 175, 200))
+    img.alpha_composite(inner)
+    # the channel's logo inside the head, in warm cream
+    if logo and os.path.isfile(logo):
+        try:
+            mark = Image.open(logo).convert("RGBA")
+            a = mark.getchannel("A").point(lambda v: min(255, v * 2))
+            box = r * 1.45
+            sc = min(box / mark.width, box * 0.62 / mark.height)
+            size = (max(1, round(mark.width * sc)), max(1, round(mark.height * sc)))
+            tint = Image.new("RGBA", size, (246, 232, 190, 255))
+            tint.putalpha(a.resize(size, Image.LANCZOS))
+            img.alpha_composite(tint, (round(head_cx - size[0] / 2), round(head_cy - size[1] / 2 + r * 0.1)))
+        except Exception:
+            pass
+    # "Coming next   The Proud Family", in lavender
+    tb = font.getbbox("Hg")
+    ty = by0 + (bar_h - (tb[3] - tb[1])) / 2 - tb[1]
+    x = text_x
+    d.text((x, ty), label, font=font, fill=(214, 206, 255, 255))
+    d.text((x + font.getlength(label) + gap, ty), t, font=font, fill=(236, 232, 255, 255))
+    return img
+
+THEME_DRAW = {"nick": _banner_nick_bar, "nick_splat": _banner_nick, "cn": _banner_cn, "disney": _banner_disney_2000s, "disney_glow": _banner_disney, "boomerang": _banner_boomerang,
               "25days": _banner_25days}
 
 
-def make_themed_banner(title: str, height: int, theme: str) -> bytes:
+def make_themed_banner(title: str, height: int, theme: str, art: bytes | None = None, logo: str | None = None) -> bytes:
     k = 2
     bh = round(height * 0.1) * k
-    img = THEME_DRAW[theme](title, bh, k)
+    img = THEME_DRAW[theme](title, bh, k, art, logo)
     img = img.crop(img.getbbox() or (0, 0, 1, 1))
     return _png(img.resize((max(1, img.width // k), max(1, img.height // k)), Image.LANCZOS))
+
+
+# ---- your own "Up next" templates ---------------------------------------------------------------
+# A green-screen picture or video in Rerun's data folder under bugs/custom/upnext/, named after a show
+# ("SpongeBob SquarePants.png", used whenever it's up next) or a network ("Nickelodeon.mp4"). The green
+# (or black, for templates on black) is see-through. When the green is a window rather than the whole
+# background, the show squeezes into it, the way networks squeezed the credits for a promo.
+
+TEMPLATE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".mkv", ".m4v")
+VIDEO_EXT_T = (".mp4", ".mov", ".webm", ".mkv", ".m4v")
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+
+def find_template(names: list[str]) -> str | None:
+    """The first template named after one of `names` (show first, then network), ignoring case and
+    punctuation: "spongebob squarepants.PNG" is SpongeBob SquarePants's."""
+    folder = BUG_DIR / "custom" / "upnext"
+    if not folder.is_dir():
+        return None
+    files = {}
+    for f in folder.iterdir():
+        if f.suffix.lower() in TEMPLATE_EXT and f.is_file():
+            files.setdefault(_slug(f.stem), str(f))
+    for n in names:
+        if n and _slug(n) in files:
+            return files[_slug(n)]
+    return None
+
+
+def analyse_template(path: str, ffmpeg: str = "ffmpeg") -> dict | None:
+    """How to use a template: its size and length, the colour to make see-through, and the window the
+    show squeezes into (as fractions of the picture), if the see-through part is a window. Remembered
+    until the file changes."""
+    import json
+    import subprocess
+    cache = path + ".rerun.json"
+    mtime = int(os.path.getmtime(path))
+    try:
+        info = json.load(open(cache, encoding="utf-8"))
+        if info.get("m") == mtime:
+            return info
+    except (OSError, ValueError):
+        pass
+    video = path.lower().endswith(VIDEO_EXT_T)
+    dur = 0.0
+    if video:
+        probe = os.path.join(os.path.dirname(ffmpeg), "ffprobe") if os.path.dirname(ffmpeg) else "ffprobe"
+        out = subprocess.run([probe if os.path.exists(probe) or os.path.exists(probe + ".exe") else "ffprobe",
+                              "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                             capture_output=True, text=True).stdout.strip()
+        try:
+            dur = float(out)
+        except ValueError:
+            return None
+        raw = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{min(dur * 0.4, 3):.2f}", "-i", path,
+                              "-frames:v", "1", "-f", "image2", "-c:v", "png", "pipe:1"], capture_output=True).stdout
+        if not raw:
+            return None
+        frame = Image.open(io.BytesIO(raw)).convert("RGB")
+    else:
+        frame = Image.open(path).convert("RGB")
+    w, h = frame.size
+    small = frame.resize((160, max(1, round(160 * h / w))))
+    sw, sh = small.size
+    px = list(small.getdata())
+    green = [(i, c) for i, c in enumerate(px) if c[1] > 90 and c[1] > c[0] * 1.35 and c[1] > c[2] * 1.35]
+    black = [i for i, c in enumerate(px) if max(c) < 28]
+    info = {"m": mtime, "video": video, "dur": round(dur, 2), "w": w, "h": h, "window": None}
+    if len(green) > len(px) * 0.12:
+        cols = sorted(c for _i, c in green)
+        r, g, b = (sorted(c[k] for c in cols)[len(cols) // 2] for k in range(3))
+        info.update(key=f"0x{r:02x}{g:02x}{b:02x}", how="green")
+        xs = [i % sw for i, _c in green]
+        ys = [i // sw for i, _c in green]
+        x0, x1, y0, y1 = min(xs), max(xs) + 1, min(ys), max(ys) + 1
+        if (x1 - x0) < sw * 0.92 and (y1 - y0) < sh * 0.92 and (x1 - x0) * (y1 - y0) > sw * sh * 0.2:
+            info["window"] = [x0 / sw, y0 / sh, (x1 - x0) / sw, (y1 - y0) / sh]  # the show squeezes in here
+    elif len(black) > len(px) * 0.4:
+        info.update(key="0x000000", how="black")
+    else:
+        return None  # nothing to see through
+    try:
+        json.dump(info, open(cache, "w", encoding="utf-8"))
+    except OSError:
+        pass
+    return info
+
+
+def template_title(title: str, path: str, height: int) -> tuple[str, dict] | None:
+    """The next show's name for a template, if its settings file (same name, ending .json) asks for it:
+    {"title": {"x": 0.42, "y": 0.9, "size": 0.05, "color": "#ffffff"}}, in fractions of the picture."""
+    import json
+    try:
+        spec = json.load(open(os.path.splitext(path)[0] + ".json", encoding="utf-8")).get("title")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not spec or not title:
+        return None
+    size = max(12, round(height * float(spec.get("size", 0.05))))
+    font = _font(size, "sans")
+    w = round(font.getlength(title)) + 8
+    img = Image.new("RGBA", (w, round(size * 1.4)), (0, 0, 0, 0))
+    ImageDraw.Draw(img).text((4, 0), title, font=font, fill=spec.get("color", "#ffffff"))
+    folder = BUG_DIR / "banners"
+    folder.mkdir(parents=True, exist_ok=True)
+    out = folder / f"t-{hashlib.sha1(f'{title}:{height}:{json.dumps(spec)}'.encode()).hexdigest()[:16]}.png"
+    if not out.exists():
+        out.write_bytes(_png(img))
+    return str(out), {"x": float(spec.get("x", 0.1)), "y": float(spec.get("y", 0.85))}

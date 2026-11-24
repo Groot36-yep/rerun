@@ -207,7 +207,21 @@ and goes into its breaks with a Boomerang bumper, whatever network the show firs
   network. Rerun uses today's official logos; to use the logo a network had in your era, put a picture
   in Rerun's data folder under `bugs/custom/`, named after the network or its tag (`Nickelodeon.png`,
   `boomerang.png`).
-- **"Up next" banner.** Near the end of a show, before its last break, a banner says what's on next.
+- **"Up next" banner.** Near the end of a show, before its last break, a banner says what's on next,
+  in the style of the network the show is on: Nickelodeon's 2000s orange plaid bar along the bottom
+  with the next show's poster popping up out of it, Cartoon Network's checkerboard, Disney Channel's
+  blue glow, Boomerang's retro starburst, and red and gold with snowflakes on the 25 Days channel. Each
+  comes on its own way (rising up, sliding in, fading in). Other networks get a plain banner in the
+  colour of their logo. These are drawn in the spirit of each channel's look, not its actual artwork.
+- **Your own "Up next" templates.** For the real thing, put a green-screen template (a picture or a
+  video, like the "Nick Up Next" templates people share) in Rerun's data folder under
+  `bugs/custom/upnext/`, named after a show (`SpongeBob SquarePants.png`, used whenever it's up next) or a
+  network (`Nickelodeon.mp4`). The green is see-through (templates on black work too). When the green is
+  a window rather than the whole background, the show squeezes into it while the template plays, the
+  way networks squeezed the end credits for a promo. Videos play for their own length, pictures for 10
+  seconds. To have Rerun write the next show's name on a template, add a file with the same name ending
+  in `.json`, e.g. `{"title": {"x": 0.42, "y": 0.9, "size": 0.05, "color": "#ffffff"}}` (positions as
+  fractions of the picture).
 
 Both can be switched off in Settings → Picture & sound.
 

@@ -335,14 +335,31 @@ class ChannelStream:
                 t0, t1 = item["e"] - 45 - self.cursor, item["e"] - 15 - self.cursor
                 t0, t1 = max(0.5, t0), min(t1, end - self.cursor - 1)
                 if t1 - t0 >= 6:
+                    net = self._bug_network(ch, item)
+                    tpl_file = images.find_template([nxt["title"], net, archive.tag_for_network(net) or ""] if net
+                                                    else [nxt["title"]])
+                    tpl = await asyncio.to_thread(images.analyse_template, tpl_file, self.mgr.ffmpeg.ffmpeg) \
+                        if tpl_file else None
+                    if tpl:  # your own template: it plays for its own length (pictures for 10 seconds)
+                        a = max(0.5, item["e"] - 32 - self.cursor)
+                        b = min(a + (tpl["dur"] or 10.0), end - self.cursor - 1)
+                        if b - a >= 3:
+                            out["template"] = {**tpl, "file": tpl_file, "t0": a, "t1": b}
+                            titled = images.template_title(nxt["title"], tpl_file, H)
+                            if titled:
+                                out["template"].update(title_png=titled[0], title_x=titled[1]["x"],
+                                                       title_y=titled[1]["y"])
+                        return out or None
                     try:  # in the network's 2000s style, or in the colour of its logo
-                        net = self._bug_network(ch, item)
                         theme = images.theme_for(archive.tag_for_network(net) if net else None,
                                                  plan=bool(ch.get("plan")))
+                        art = await images.artwork(app, nxt["img"]) if nxt.get("img") and theme == "nick" else None
                         banner = await asyncio.to_thread(images.up_next_banner, nxt["title"], H,
-                                                         images.bug_accent(out.get("logo")), theme)
+                                                         images.bug_accent(out.get("logo")), theme, art,
+                                                         nxt.get("img") or "", out.get("logo"))
                         if banner:
-                            out.update(banner=banner, t0=t0, t1=t1, motion=images.MOTION.get(theme, "left"))
+                            out.update(banner=banner, t0=t0, t1=t1, motion=images.MOTION.get(theme, "left"),
+                                       place=images.PLACE.get(theme, ""))
                     except Exception as e:
                         log.info("No Up next banner (%s)", e.__class__.__name__)
         return out or None
