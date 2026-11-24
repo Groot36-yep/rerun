@@ -1198,6 +1198,119 @@ class Finder:
             await asyncio.sleep(5)
         self.app.scanner.start(manual=True)
 
+    # ---- YouTube -------------------------------------------------------------------------------
+    def start_youtube(self, items: list[dict], kind: str, network: str = "", era: str = "", holiday: str = "",
+                      name: str = ""):
+        """Download YouTube videos (see youtube.py) as commercials or as an "Up next" template.
+        items: [{"url", "title", "id"}]. network/era/holiday: "" works it out from each title."""
+        if kind not in ("ads", "template"):
+            raise ValueError("Choose commercials or an Up next template")
+        items = [i for i in items or [] if str(i.get("url", "")).startswith("http")][:100]
+        if not items:
+            raise ValueError("Pick at least one video")
+        if kind == "template" and not name.strip():
+            raise ValueError("Say which show or network the template is for")
+        if network and network not in PROFILES:
+            raise ValueError("Unknown network")
+        if era and era not in ERAS:
+            raise ValueError("Unknown decade")
+        self.min_height = 0
+        self._begin(self._run_youtube, items, kind, network, era, holiday, name.strip())
+
+    async def _run_youtube(self, items, kind, network, era, holiday, name):
+        from . import images, youtube
+        from .folders import LONG_AD
+        ff = self.app.ffmpeg.ffmpeg
+        keys, eras_seen = set(), set()
+        try:
+            self._register_folder()
+            for n, it in enumerate(items, 1):
+                if self.stop:
+                    break
+                title = (it.get("title") or it["url"])[:120]
+                self._step(f"YouTube {n} of {len(items)}: downloading “{title[:60]}”", done=0, total=0)
+
+                def progress(done, total):
+                    self.progress.update(done=done, total=total)
+
+                try:
+                    if kind == "template":
+                        folder = images.BUG_DIR / "custom" / "upnext"
+                        base = (_safe_name(name) or "template") + ("" if len(items) == 1 else f" {n}")
+                        path, _info = await asyncio.to_thread(youtube.download, it["url"], str(folder), base, ff,
+                                                              progress, lambda: self.stop)
+                        ok = await asyncio.to_thread(images.analyse_template, path, ff)
+                        self._note(f"Saved “{title[:60]}” as the Up next template for {name}" if ok else
+                                   f"Saved “{title[:60]}”, but it has no green (or black) to see through, so it "
+                                   "won't be used as a template")
+                        continue
+                    vid = re.sub(r"[^A-Za-z0-9_-]", "", it.get("id") or "") or hashlib_name(it["url"])
+                    staging = OWN / "_youtube"
+                    path, info = await asyncio.to_thread(youtube.download, it["url"], str(staging),
+                                                         f"{_safe_name(title)[:80]} [{vid}]", ff, progress,
+                                                         lambda: self.stop)
+                except Exception as e:
+                    self._note(f"Couldn't download “{title[:60]}”: {str(e)[:160]}")
+                    continue
+                title = (info.get("title") or title)[:120]
+                desc = info.get("description") or ""
+                key = network or network_in(title) or "youtube"
+                years = tape_years({"identifier": "x", "title": title, "description": desc})
+                tape_era = era or (era_tag(min(years)) if years else "") or ""
+                hol = "" if holiday == "none" else (holiday or holiday_of(title) or "")
+                folder = OWN / key
+                for part in (tape_era, hol):
+                    if part:
+                        folder = folder / part
+                folder.mkdir(parents=True, exist_ok=True)
+                dest = folder / os.path.basename(path)
+                os.replace(path, dest)
+                length = (await asyncio.to_thread(probe_video, ff, str(dest)))["len"]
+                cand = {"doc": {"identifier": f"yt-{vid}", "title": title}, "kind": "ads", "desc": desc}
+                tape = {"id": f"yt-{vid}", "title": title, "era": tape_era, "kind": "youtube", "files": [], "clips": 0,
+                        "dupes": 0, "bytes": 0, "years": sorted(years), "holiday": hol, "month": month_of(title) or "",
+                        "q": None, "source": it["url"]}
+                kept = []
+                if length <= LONG_AD:  # one commercial, bumper or ident: kept as it is
+                    q = await asyncio.to_thread(probe_video, ff, str(dest))
+                    q["eh"] = await asyncio.to_thread(effective_height, ff, str(dest), q["h"], 0, min(20.0, length))
+                    tape.update(clips=1, q=q)
+                    kept = [dest]
+                elif _AIRING.search(title) and length > 1200:  # a whole show with its commercials: just the breaks
+                    cand["kind"] = "airing"
+                    kept = await self._take_airing(cand, {"name": dest.name, "length": length}, str(dest), folder,
+                                                   dest.stem[:100], title, tape)
+                    dest.unlink(missing_ok=True)
+                elif await self._file_clips(dest, title, cand, ad_names(desc), tape):  # a compilation, split up
+                    kept = [dest]
+                else:
+                    dest.unlink(missing_ok=True)
+                if not tape["clips"]:
+                    self._note(f"Skipped “{title[:60]}”: no clear commercials in it")
+                    continue
+                tape["files"] = [d.name for d in kept]
+                tape["bytes"] = sum(d.stat().st_size for d in kept if d.exists())
+                idx = self.index()
+                idx.setdefault(key, []).append(tape)
+                self._save_index(idx)
+                keys.add(key)
+                if tape_era:
+                    eras_seen.add(tape_era)
+                label = PROFILES[key][0] if key in PROFILES else "YouTube"
+                self._note(f"Added {tape['clips']} from “{title[:60]}” to {label} ({quality_label(tape['q'])} picture)")
+            if keys:
+                self._step("Adding them to your channels…")
+                self._assign_tags([k for k in keys if k in PROFILES], sorted(eras_seen))
+                await self._rescan()
+            self._step("Done." + (" Your library is being rescanned so channels pick them up." if keys else ""),
+                       running=False)
+        except Exception as e:
+            log.exception("YouTube download failed")
+            self.progress.update(running=False, error=f"Something went wrong: {e}", step="")
+        finally:
+            self.progress["running"] = False
+            shutil.rmtree(OWN / "_youtube", ignore_errors=True)
+
     # ---- ABC Family's 25 Days of Christmas --------------------------------------------------
     def start_25days(self, year: int, budget: int, min_height: int = 0, nearby: bool = True):
         self.min_height = int(min_height or 0)
@@ -1275,6 +1388,23 @@ class Finder:
                 "by_year": by_year, "status": self.progress,
                 "airings": [{"title": a["title"], "breaks": len(a["breaks"]), "date": a.get("date", "")}
                             for a in self.airings() if "/25days/" in a["breaks"][0]["file"].replace("\\", "/")]}
+
+
+def network_in(title: str) -> str | None:
+    """The network a video title names ("Nickelodeon Commercials (2003)" -> "nick"), if one."""
+    for key, (_label, must, never, _chans, _q) in PROFILES.items():
+        if re.search(must, title or "", re.I) and not (never and re.search(never, title or "", re.I)):
+            return key
+    return None
+
+
+def _safe_name(name: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", name or "")).strip(" .")
+
+
+def hashlib_name(url: str) -> str:
+    import hashlib
+    return hashlib.sha1(url.encode()).hexdigest()[:11]
 
 
 def judge_25days(doc: dict, years: list[int], hints: list[str]) -> tuple[float, str, int]:

@@ -8,6 +8,8 @@ import logging
 import os
 import random
 import socket
+import httpx
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -18,6 +20,7 @@ from urllib.parse import quote
 from . import __version__, seasons, xmas, xmasdata
 from . import archive as archive_mod
 from . import lineups as lineups_mod
+from . import youtube as youtube_mod
 from . import channels as channels_mod
 from .archive import OWN as OWN_COMMERCIALS
 from .guide import logo_url as plex_logo_url, tuner_id
@@ -1113,6 +1116,78 @@ async def commercials_hide(body: dict, app=Depends(signed_in)):
     app.cfg.save()
     channels_mod.hidden_filler = hidden
     return {"ok": True, "hidden": len(hidden)}
+
+
+# ---- YouTube ----------------------------------------------------------------------------------
+
+@router.get("/youtube")
+async def youtube_status(app=Depends(signed_in)):
+    return {"available": youtube_mod.available(), "version": youtube_mod.version(), "js": youtube_mod.js_runtime(),
+            "networks": [{"key": k, "label": v[0].replace(" / Fox Family", "")} for k, v in archive_mod.PROFILES.items()],
+            "eras": list(archive_mod.ERAS)}
+
+
+def _need_youtube():
+    if not youtube_mod.available():
+        raise HTTPException(400, "The YouTube downloader isn't installed. Run “rerun update” on the server.")
+
+
+@router.get("/youtube/search")
+async def youtube_search(q: str = "", app=Depends(signed_in)):
+    _need_youtube()
+    q = q.strip()[:200]
+    if len(q) < 2:
+        return {"results": []}
+    try:
+        return {"results": await asyncio.to_thread(youtube_mod.search, q, 24)}
+    except Exception as e:
+        raise HTTPException(502, f"YouTube search didn't work: {str(e)[:200]}")
+
+
+@router.get("/youtube/thumb/{vid}.jpg")
+async def youtube_thumb(vid: str, app=Depends(signed_in)):
+    """A video's thumbnail, fetched by Rerun (the page only loads pictures from Rerun itself)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", vid):
+        raise HTTPException(404, "No such video")
+    path = DATA_DIR / "thumbs" / f"yt-{vid}.jpg"
+    if not path.exists():
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg")
+        except httpx.HTTPError:
+            raise HTTPException(404, "No thumbnail")
+        if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
+            raise HTTPException(404, "No thumbnail")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(r.content)
+    return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/youtube/links")
+async def youtube_links(body: dict, app=Depends(signed_in)):
+    """The videos behind pasted links (a playlist becomes its videos)."""
+    _need_youtube()
+    out, bad = [], []
+    for url in [u.strip() for u in str(body.get("text") or "").split() if u.strip()][:20]:
+        if not url.startswith("http"):
+            continue
+        try:
+            out += await asyncio.to_thread(youtube_mod.expand, url, 200)
+        except Exception as e:
+            bad.append(f"{url[:60]}: {str(e)[:120]}")
+    return {"results": out[:200], "problems": bad}
+
+
+@router.post("/youtube")
+async def youtube_download(body: dict, app=Depends(signed_in)):
+    _need_youtube()
+    try:
+        app.finder.start_youtube(list(body.get("items") or []), str(body.get("kind") or ""),
+                                 str(body.get("network") or ""), str(body.get("era") or ""),
+                                 str(body.get("holiday") or ""), str(body.get("name") or ""))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @router.get("/finder")

@@ -236,7 +236,11 @@ $SUDO cp -r "$SRC/app" "$APP_DIR/app.new"
 $SUDO cp "$SRC/requirements.txt" "$APP_DIR/requirements.txt"
 $SUDO find "$APP_DIR/app.new" -name __pycache__ -prune -exec rm -rf {} +
 [ -d "$APP_DIR/venv" ] || $SUDO python3 -m venv "$APP_DIR/venv"
-install_reqs() { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check -r "$APP_DIR/requirements.txt"; }
+install_reqs() {
+  $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check -r "$APP_DIR/requirements.txt" &&
+  # YouTube changes often and old copies of yt-dlp stop working, so every install and update gets the newest
+  { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check --upgrade yt-dlp || true; }
+}
 if [ "$GUI" = 1 ]; then
   install_reqs 2>&1 | zenity --progress --pulsate --auto-close --no-cancel --title="$TITLE" --width=420 --text="Setting up Rerun…" 2>/dev/null || true
   $SUDO "$APP_DIR/venv/bin/python" -c "import fastapi, uvicorn, httpx, PIL" || die "Couldn't install Rerun's parts. Check your internet connection and try again."

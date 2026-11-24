@@ -537,6 +537,35 @@ def check_logo_filter():
     print(f"network logo filter: OK (logo found {m['corner']}, show {m['typical']:.2f}, gap {m['gap']:.2f})")
 
 
+def check_youtube_rules():
+    """The YouTube downloader's checks and naming (no internet needed)."""
+    from app import youtube
+    assert archive.network_in("Nickelodeon Commercials Summer 2003") == "nick"
+    assert archive.network_in("Nick Jr. Bumpers 2004") == "nickjr"
+    assert archive.network_in("Boomerang Channel Bumpers") == "boomerang"
+    assert archive.network_in("my vacation video") is None
+    assert archive._safe_name('Up Next: "SpongeBob" / 2009?') == "Up Next SpongeBob 2009"
+
+    class FakeApp:
+        class cfg:
+            data = {"channels": [], "sources": {"commercials": []}}
+    f = archive.Finder(FakeApp())
+    for args, msg in ((([], "ads"), "Pick at least one video"),
+                      (([{"url": "https://youtu.be/x"}], "template"), "Say which show"),
+                      (([{"url": "https://youtu.be/x"}], "ads", "hbo"), "Unknown network"),
+                      (([{"url": "https://youtu.be/x"}], "ads", "", "1950s"), "Unknown decade"),
+                      (([{"url": "file:///etc/passwd"}], "ads"), "Pick at least one video"),
+                      (([{"url": "https://youtu.be/x"}], "music"), "Choose commercials")):
+        try:
+            f.start_youtube(*args)
+            raise AssertionError(f"{args} should have been refused")
+        except ValueError as e:
+            assert msg in str(e), (args, e)
+    entry = youtube._entry({"id": "abc123XYZ", "title": "T", "duration": 61.4, "url": "abc123XYZ"})
+    assert entry["url"] == "https://www.youtube.com/watch?v=abc123XYZ" and entry["duration"] == 61
+    print(f"YouTube rules: OK (yt-dlp {'installed ' + youtube.version() if youtube.available() else 'not installed'})")
+
+
 async def main():
     check_data()
     cat = make_catalog()
@@ -549,6 +578,7 @@ async def main():
     check_overlay_filters()
     check_templates()
     check_finder_logic()
+    check_youtube_rules()
     check_detection()
     check_logo_filter()
     print("ALL CHRISTMAS CHECKS PASSED")

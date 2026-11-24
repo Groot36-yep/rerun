@@ -1569,6 +1569,7 @@ async function viewCommercials() {
         }, h("i", { class: cls }), `${n} ${counts[n]}`)))) : null,
       h("div", { class: "ad-hero-acts" },
         h("button", { class: "btn primary", onclick: () => openFinder(onFinderStart) }, "Find more commercials"),
+        h("button", { class: "btn quiet", onclick: () => openYouTube(onFinderStart) }, "Add from YouTube"),
         h("a", { class: "btn quiet", href: "#/setup/libraries/settings" }, "Add a folder")));
   };
 
@@ -1639,6 +1640,69 @@ async function viewCommercials() {
   const onFinderStart = () => { wasRunning = true; watch(); };
   await load();
   watch();
+}
+
+// YouTube: search or paste links, pick videos, say what they are (see app/youtube.py).
+async function openYouTube(onStart) {
+  let st;
+  try { st = await api("GET", "/api/youtube"); } catch (x) { toast(x.message, true); return; }
+  if (!st.available) { toast("The YouTube downloader isn't installed yet. Run “rerun update” on the server.", true); return; }
+  const picked = new Map();
+  let results = [], kind = "ads", network = "", era = "", holiday = "", name = "", busy = false, note = "";
+  modal((box, close) => {
+    box.classList.add("wide", "yt-dialog");
+    const resultsBox = h("div", { class: "yt-results" });
+    const query = h("input", { type: "search", placeholder: "Search YouTube, e.g. Nickelodeon commercials 2003", "aria-label": "Search YouTube" });
+    const links = h("textarea", { placeholder: "…or paste YouTube links, one per line (videos or playlists)", rows: 2, "aria-label": "YouTube links" });
+    const fmt = (s) => !s ? "" : s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : fmtDur(s);
+    const showResults = () => fill(resultsBox,
+      busy ? h("p", { class: "hint" }, "Looking…") : null,
+      note ? h("p", { class: "hint" }, note) : null,
+      results.map((r) => h("label", { class: "yt-item" + (picked.has(r.url) ? " on" : "") },
+        h("input", { type: "checkbox", checked: picked.has(r.url), onchange: (e) => { e.target.checked ? picked.set(r.url, r) : picked.delete(r.url); render(); } }),
+        r.id ? h("img", { src: `/api/youtube/thumb/${encodeURIComponent(r.id)}.jpg`, alt: "", loading: "lazy" }) : h("span", { class: "yt-noimg" }),
+        h("span", null, h("b", null, r.title), h("small", null, [r.uploader, fmt(r.duration)].filter(Boolean).join(" · "))))));
+    const look = async (fn) => {
+      busy = true; note = ""; showResults();
+      try { const r = await fn(); results = r.results; note = r.problems && r.problems.length ? `Couldn't open: ${r.problems.join("; ")}` : (results.length ? "" : "Nothing found."); }
+      catch (x) { results = []; note = x.message; }
+      busy = false; showResults();
+    };
+    const sel = (opts, value, set, label) => select(opts, value, (v) => { set(v); }, { "aria-label": label });
+    const kindBox = h("div");
+    const renderKind = () => fill(kindBox,
+      radioCards("yt-kind", [["ads", "Commercials, promos & bumpers", "Split into single commercials and filed by network, decade and holiday, like the ones from the Internet Archive."],
+        ["template", "An “Up next” template", "A green-screen “Up next” picture or video, played near the end of a show."]], kind, (v) => { kind = v; renderKind(); }),
+      kind === "ads" ? h("div", { class: "finder-opts" },
+        h("label", null, "Network", sel([["", "From each video's title"], ...st.networks.map((n) => [n.key, n.label])], network, (v) => { network = v; }, "Network")),
+        h("label", null, "Decade", sel([["", "From each video's title"], ...st.eras.map((e) => [e, e])], era, (v) => { era = v; }, "Decade")),
+        h("label", null, "Holiday", sel([["", "From each video's title"], ["none", "Not a holiday"], ["christmas", "Christmas"], ["halloween", "Halloween"]], holiday, (v) => { holiday = v; }, "Holiday")))
+        : h("label", { class: "yt-name" }, "Use it when this is up next (a show or a network)",
+          h("input", { type: "text", value: name, placeholder: "e.g. SpongeBob SquarePants, or Nickelodeon", oninput: (e) => { name = e.target.value; render(); } })));
+    const foot = h("div", { class: "row end modal-foot" });
+    const render = () => fill(foot,
+      h("span", { class: "hint", style: { marginRight: "auto" } }, picked.size ? `${plural(picked.size, "video")} picked` : "Pick the videos to add"),
+      h("button", { class: "btn quiet", onclick: close }, "Cancel"),
+      h("button", { class: "btn primary", disabled: !picked.size || (kind === "template" && !name.trim()), onclick: async () => {
+        try {
+          await api("POST", "/api/youtube", { items: [...picked.values()], kind, network, era, holiday, name });
+          close(); toast(kind === "template" ? "Downloading the template" : "Downloading in the background"); onStart();
+        } catch (x) { toast(x.message, true); }
+      } }, kind === "template" ? "Download the template" : picked.size > 1 ? `Download ${picked.size} videos` : "Download"));
+    fill(box,
+      h("h2", null, "Add from YouTube"),
+      h("p", { class: "lede" }, "Commercial breaks, bumper collections and “Up next” templates people have shared on YouTube. Downloaded to your server for watching at home."),
+      h("form", { class: "row yt-search", onsubmit: (e) => { e.preventDefault(); if (query.value.trim()) look(() => api("GET", `/api/youtube/search?q=${encodeURIComponent(query.value.trim())}`)); } },
+        query, h("button", { class: "btn", type: "submit" }, "Search")),
+      h("div", { class: "row yt-links" }, links, h("button", { class: "btn", onclick: () => { if (links.value.trim()) look(() => api("POST", "/api/youtube/links", { text: links.value })); } }, "Open links")),
+      resultsBox,
+      h("h3", null, "What are they?"),
+      kindBox,
+      st.js ? null : h("p", { class: "hint" }, "Tip: some YouTube videos need a JavaScript runtime on the server (deno or Node). Without one, a few may not download; see the README."),
+      foot);
+    renderKind(); render(); showResults();
+    query.focus();
+  });
 }
 
 // Classic commercials from the Internet Archive (see app/archive.py), in a dialog.

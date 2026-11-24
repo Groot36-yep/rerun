@@ -184,6 +184,25 @@ To add your own, put them in a commercials folder under the network's name and a
 These are other people's recordings of broadcast TV, downloaded for watching at home. Delete them
 any time from the same place.
 
+## Add from YouTube
+
+**Add from YouTube** on the Commercials page searches YouTube or opens links you paste (single videos or
+whole playlists). Tick the videos you want and say what they are:
+
+- **Commercials, promos & bumpers.** Rerun works out the network, decade and holiday from each title
+  ("Nickelodeon Commercials (05/26/2003)" goes to Nickelodeon, 2000s), or you choose them. A
+  compilation is split into single commercials, a short clip is kept as one, and a whole episode
+  recorded "with commercials" keeps only its breaks, exactly like tapes from the Internet Archive:
+  the same picture-quality checks, duplicate checks and network-logo check apply.
+- **An "Up next" template.** Saved under `bugs/custom/upnext/` with the show or network name you give,
+  ready to play.
+
+Downloads run in the background, shown at the top of the Commercials page. Rerun uses
+[yt-dlp](https://github.com/yt-dlp/yt-dlp), which the installer keeps up to date (`rerun update` gets the
+newest; YouTube changes often and old copies stop working). Some YouTube videos need a JavaScript
+runtime: if [deno](https://deno.com) or Node.js is installed on the server, Rerun uses it. Downloads are
+for watching at home.
+
 ## Holiday TV and movie channels
 
 On the **Holidays** page each holiday can have a **TV channel** (holiday episodes only), a **movie
