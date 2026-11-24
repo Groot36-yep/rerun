@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 import httpx
 
@@ -338,7 +339,7 @@ def _http_args(src: str) -> list[str]:
 SHIFT = 1_000_000
 
 
-def detect(ffmpeg: str, src: str) -> tuple[list[float], list[float], float]:
+def detect(ffmpeg: str, src: str, on_progress=None) -> tuple[list[float], list[float], float]:
     """Cut points in a recording: (black-and-silent cuts, every black cut, length).
 
     Two black detectors run at once. Clearly black frames are a cut by themselves. On worn tapes the
@@ -356,7 +357,7 @@ def detect(ffmpeg: str, src: str) -> tuple[list[float], list[float], float]:
         cmd = [ffmpeg, "-hide_banner", "-nostats", *_http_args(src), "-i", src, "-filter_complex", graph, *outs]
         if shutil.which("nice"):
             cmd = ["nice", "-n", "15", *cmd]
-        return subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        return _run(cmd, on_progress)
 
     res = run(True)
     if res.returncode != 0 and re.search(r"0:a:0|matches no streams|Stream specifier", res.stderr):
@@ -389,6 +390,30 @@ def detect(ffmpeg: str, src: str) -> tuple[list[float], list[float], float]:
     strong = [(a + b) / 2 for a, b in strict + hushed if quiet(a, b)]
     every = [(a + b) / 2 for a, b in strict + hushed]
     return strong, every, total
+
+
+def _run(cmd: list[str], on_progress=None) -> subprocess.CompletedProcess:
+    """Run ffmpeg; with `on_progress`, call it with how many seconds of the recording are done so far
+    (an airing tape can take an hour to read, and the page should say how far along it is)."""
+    if not on_progress:
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    i = cmd.index("-nostats") + 1
+    cmd = [*cmd[:i], "-progress", "pipe:1", *cmd[i:]]
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True, errors="replace")
+        last = 0.0
+        for line in proc.stdout:
+            if line.startswith("out_time_us=") and line[12:].strip().isdigit():
+                done = int(line[12:]) / 1e6
+                if done - last >= 5:
+                    last = done
+                    try:
+                        on_progress(done)
+                    except Exception:
+                        pass
+        proc.wait()
+        err.seek(0)
+        return subprocess.CompletedProcess(cmd, proc.returncode, "", err.read().decode("utf-8", "replace"))
 
 
 def _merge(cuts: list[float]) -> list[float]:
@@ -479,8 +504,8 @@ def breaks_in(segs: list[tuple[float, float]]) -> list[dict]:
     return out
 
 
-def find_breaks(ffmpeg: str, src: str) -> list[dict]:
-    strong, every, total = detect(ffmpeg, src)
+def find_breaks(ffmpeg: str, src: str, on_progress=None) -> list[dict]:
+    strong, every, total = detect(ffmpeg, src, on_progress)
     if not total or not every:
         return []
     found = breaks_in(_pieces(strong, total, ends=True))
@@ -857,7 +882,12 @@ class Finder:
         mins = int(file_quality(f)["len"] // 60)
         self._step(f"Looking for the breaks in “{title[:60]}” ({mins} min, read straight from the archive)",
                    done=0, total=0)
-        found = await asyncio.to_thread(find_breaks, ff, url)
+        total = int(file_quality(f)["len"]) or 0
+
+        def progress(done, t=title[:60]):
+            self._step(f"Looking for the breaks in “{t}”: minute {int(done // 60)} of {total // 60 or '?'}, read "
+                       f"straight from the archive", done=int(done), total=total)
+        found = await asyncio.to_thread(find_breaks, ff, url, progress)
         if not found:
             self._note(f"No commercial breaks found in “{title[:60]}”")
             return []
