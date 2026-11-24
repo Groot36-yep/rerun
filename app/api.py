@@ -825,7 +825,7 @@ async def twentyfive_finder(body: dict | None = None, app=Depends(signed_in)):
     try:
         gb = min(max(float(body.get("budget_gb", 4)), 0.2), 50)
         app.finder.start_25days(_year(body.get("year")), int(gb * 1e9), int(body.get("min_height") or 0),
-                                bool(body.get("nearby", True)))
+                                bool(body.get("nearby", True)), bool(body.get("youtube", True)))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
     return app.finder.summary_25days()
@@ -1201,7 +1201,7 @@ async def finder_start(body: dict, app=Depends(signed_in)):
         gb = min(max(float(body.get("budget_gb", 1.5)), 0.2), 50)
         app.finder.start(list(body.get("networks") or []), list(body.get("eras") or []), int(gb * 1e9),
                          list(body.get("holidays") or []), int(body.get("min_height") or 0),
-                         bool(body.get("airings", True)))
+                         bool(body.get("airings", True)), bool(body.get("youtube", False)))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
     return app.finder.summary()

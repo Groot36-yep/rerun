@@ -545,6 +545,14 @@ def check_youtube_rules():
     assert archive.network_in("Boomerang Channel Bumpers") == "boomerang"
     assert archive.network_in("my vacation video") is None
     assert archive._safe_name('Up Next: "SpongeBob" / 2009?') == "Up Next SpongeBob 2009"
+    # fan-made imitations aren't what aired; real uploads are kept
+    fan = {"identifier": "yt-1", "title": "ABC Family's 25 Days of Christmas (2008) Promo (TheCartoonMan12 Style)"}
+    assert archive.judge_25days(fan, [2008], [])[0] == 0
+    assert archive.judge_25days({**fan, "title": "ABC Family 25 Days Of Christmas 2008 Promo"}, [2008], [])[0] > 0
+    assert archive.judge("nick", {"identifier": "yt-2", "title": "Nickelodeon commercials 2003 (recreation)"}, 2000, 2009)[0] == 0
+    assert archive.judge("nick", {"identifier": "yt-3", "title": "Nickelodeon Commercial Breaks (November 5, 2007)"},
+                         2000, 2009)[0] > 0
+    assert not archive._FANMADE.search("Lifestyle Commercials 2004")
 
     class FakeApp:
         class cfg:

@@ -197,6 +197,13 @@ whole playlists). Tick the videos you want and say what they are:
 - **An "Up next" template.** Saved under `bugs/custom/upnext/` with the show or network name you give,
   ready to play.
 
+**Search YouTube automatically.** In **Find more commercials** (and on the 25 Days page), "Search YouTube
+too" makes the finder also search YouTube for each network and decade you pick ("Nickelodeon
+commercials 2003", "ABC Family commercials December 2008"…), judge the results by the same rules as
+archive tapes (right network and years, US airings, no fan-made imitations), and download the best
+within your space limit, shared with the archive. Copies of an ad you already have are skipped unless
+they're sharper.
+
 Downloads run in the background, shown at the top of the Commercials page. Rerun uses
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), which the installer keeps up to date (`rerun update` gets the
 newest; YouTube changes often and old copies stop working). Some YouTube videos need a JavaScript

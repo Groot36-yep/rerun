@@ -151,6 +151,9 @@ _BETTER = re.compile(r"\b(60 ?fps|50 ?fps|dvd|broadcast master|master|hd\b|720p|
                      r"high quality|remaster|s-?vhs|direct feed|first generation|1st gen)", re.I)
 _WORSE = re.compile(r"\b(low quality|bad quality|poor quality|messed up|incomplete|partial|240p|144p|"
                     r"damaged|tracking|ep mode|slp)", re.I)
+# Fan-made imitations of on-air graphics are common on YouTube; they aren't what aired.
+_FANMADE = re.compile(r"\bstyle\)|\(.*\bstyle\b.*\)|\bremake\b|\brecreat|\bfan[- ]?made\b|\bconcept\b|\bparody\b|"
+                      r"\bcustom\b|\bmy version\b|\bif\b.{0,40}\bexisted\b|\bfake\b|\bmock[- ]?up\b", re.I)
 _RIPS = ("youtube-", "yt-", "dailymotion-", "videoplayback", "youcut", "capture-", "stream")
 VIDEO_FORMATS = ("h.264", "h.264 ia", "mpeg4", "512kb mpeg4", "matroska", "quicktime", "mpeg2", "mpeg1",
                  "windows media", "avi", "ogg video", "webm")
@@ -206,6 +209,8 @@ def judge(key: str, doc: dict, y0: int, y1: int, undated_bumpers: bool = False) 
         return 0, "not the US channel", ""
     if _NEVER.search(title) or _NEVER.search(desc[:2000]):
         return 0, "has no commercials in it", ""
+    if _FANMADE.search(title):
+        return 0, "fan-made, not what aired", ""
     if _AIRING.search(title):
         kind = "airing"
     elif _ADS.search(title) and (not _SHOWS.search(title) or _SURE.search(title)):
@@ -752,8 +757,9 @@ class Finder:
                         "titles": [f"{t['title']} — {quality_label(t.get('q'))}" for t in got][:12]})
         wanted = sorted({e for c in self.app.cfg.data["channels"] if (e := era_in_name(c["name"]))},
                         key=list(ERAS).index)
+        from . import youtube as yt
         return {"networks": out, "eras": list(ERAS), "channel_eras": wanted, "holidays": list(HOLIDAY_WORDS),
-                "status": self.progress}
+                "status": self.progress, "youtube": yt.available()}
 
     # ---- a run --------------------------------------------------------------------------
     def _begin(self, coro_fn, *args):
@@ -765,7 +771,7 @@ class Finder:
         self.task = asyncio.create_task(coro_fn(*args))
 
     def start(self, keys: list[str], eras: list[str], budget: int, holidays: list[str] | None = None,
-              min_height: int = 0, airings: bool = True):
+              min_height: int = 0, airings: bool = True, youtube: bool = False):
         keys = [k for k in keys if k in PROFILES]
         eras = [e for e in eras if e in ERAS]
         if not keys:
@@ -774,7 +780,7 @@ class Finder:
             raise ValueError("Choose at least one era")
         holidays = [h for h in (holidays or []) if h in HOLIDAY_WORDS]
         self.min_height = int(min_height or 0)
-        self._begin(self._run, keys, eras, budget, holidays, airings)
+        self._begin(self._run, keys, eras, budget, holidays, airings, youtube)
 
     def _step(self, text: str, **kw):
         self.progress.update(step=text, **kw)
@@ -783,7 +789,10 @@ class Finder:
         log.info("Commercial finder: %s", text)
         self.progress["log"] = (self.progress.get("log", []) + [text])[-40:]
 
-    async def _run(self, keys, eras, budget, holidays=(), airings=True):
+    async def _run(self, keys, eras, budget, holidays=(), airings=True, youtube=False):
+        from . import youtube as yt
+        youtube = youtube and yt.available()
+        share = 2 if youtube else 1  # with YouTube too, each gets half the space
         try:
             self._register_folder()
             async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers={"User-Agent": UA}) as c:
@@ -794,7 +803,9 @@ class Finder:
                             break
                         if docs is None:
                             docs = await self._search(c, key)
-                        await self._network(c, key, era, docs, budget // len(eras), None, airings)
+                        await self._network(c, key, era, docs, budget // len(eras) // share, None, airings)
+                        if youtube and not self.stop:
+                            await self._youtube_network(key, era, budget // len(eras) // share)
                     if not self.stop:  # bumper and ident collections, which often carry no date
                         await self._bumpers(c, key, docs or await self._search(c, key), budget // 4)
                     for hol in holidays:  # holiday tapes get their own share of space
@@ -802,7 +813,9 @@ class Finder:
                         for era in eras:
                             if self.stop:
                                 break
-                            await self._network(c, key, era, hdocs, budget // len(eras) // 2, hol, airings)
+                            await self._network(c, key, era, hdocs, budget // len(eras) // 2 // share, hol, airings)
+                            if youtube and not self.stop:
+                                await self._youtube_network(key, era, budget // len(eras) // 2 // share, hol)
             self._step("Adding them to your channels…")
             self._assign_tags(keys, eras)
             await self._rescan()
@@ -1219,7 +1232,6 @@ class Finder:
 
     async def _run_youtube(self, items, kind, network, era, holiday, name):
         from . import images, youtube
-        from .folders import LONG_AD
         ff = self.app.ffmpeg.ffmpeg
         keys, eras_seen = set(), set()
         try:
@@ -1229,75 +1241,25 @@ class Finder:
                     break
                 title = (it.get("title") or it["url"])[:120]
                 self._step(f"YouTube {n} of {len(items)}: downloading “{title[:60]}”", done=0, total=0)
-
-                def progress(done, total):
-                    self.progress.update(done=done, total=total)
-
-                try:
-                    if kind == "template":
+                if kind == "template":
+                    try:
                         folder = images.BUG_DIR / "custom" / "upnext"
                         base = (_safe_name(name) or "template") + ("" if len(items) == 1 else f" {n}")
                         path, _info = await asyncio.to_thread(youtube.download, it["url"], str(folder), base, ff,
-                                                              progress, lambda: self.stop)
-                        ok = await asyncio.to_thread(images.analyse_template, path, ff)
-                        self._note(f"Saved “{title[:60]}” as the Up next template for {name}" if ok else
-                                   f"Saved “{title[:60]}”, but it has no green (or black) to see through, so it "
-                                   "won't be used as a template")
+                                                              self._dl_progress, lambda: self.stop)
+                    except Exception as e:
+                        self._note(f"Couldn't download “{title[:60]}”: {str(e)[:160]}")
                         continue
-                    vid = re.sub(r"[^A-Za-z0-9_-]", "", it.get("id") or "") or hashlib_name(it["url"])
-                    staging = OWN / "_youtube"
-                    path, info = await asyncio.to_thread(youtube.download, it["url"], str(staging),
-                                                         f"{_safe_name(title)[:80]} [{vid}]", ff, progress,
-                                                         lambda: self.stop)
-                except Exception as e:
-                    self._note(f"Couldn't download “{title[:60]}”: {str(e)[:160]}")
+                    ok = await asyncio.to_thread(images.analyse_template, path, ff)
+                    self._note(f"Saved “{title[:60]}” as the Up next template for {name}" if ok else
+                               f"Saved “{title[:60]}”, but it has no green (or black) to see through, so it "
+                               "won't be used as a template")
                     continue
-                title = (info.get("title") or title)[:120]
-                desc = info.get("description") or ""
-                key = network or network_in(title) or "youtube"
-                years = tape_years({"identifier": "x", "title": title, "description": desc})
-                tape_era = era or (era_tag(min(years)) if years else "") or ""
-                hol = "" if holiday == "none" else (holiday or holiday_of(title) or "")
-                folder = OWN / key
-                for part in (tape_era, hol):
-                    if part:
-                        folder = folder / part
-                folder.mkdir(parents=True, exist_ok=True)
-                dest = folder / os.path.basename(path)
-                os.replace(path, dest)
-                length = (await asyncio.to_thread(probe_video, ff, str(dest)))["len"]
-                cand = {"doc": {"identifier": f"yt-{vid}", "title": title}, "kind": "ads", "desc": desc}
-                tape = {"id": f"yt-{vid}", "title": title, "era": tape_era, "kind": "youtube", "files": [], "clips": 0,
-                        "dupes": 0, "bytes": 0, "years": sorted(years), "holiday": hol, "month": month_of(title) or "",
-                        "q": None, "source": it["url"]}
-                kept = []
-                if length <= LONG_AD:  # one commercial, bumper or ident: kept as it is
-                    q = await asyncio.to_thread(probe_video, ff, str(dest))
-                    q["eh"] = await asyncio.to_thread(effective_height, ff, str(dest), q["h"], 0, min(20.0, length))
-                    tape.update(clips=1, q=q)
-                    kept = [dest]
-                elif _AIRING.search(title) and length > 1200:  # a whole show with its commercials: just the breaks
-                    cand["kind"] = "airing"
-                    kept = await self._take_airing(cand, {"name": dest.name, "length": length}, str(dest), folder,
-                                                   dest.stem[:100], title, tape)
-                    dest.unlink(missing_ok=True)
-                elif await self._file_clips(dest, title, cand, ad_names(desc), tape):  # a compilation, split up
-                    kept = [dest]
-                else:
-                    dest.unlink(missing_ok=True)
-                if not tape["clips"]:
-                    self._note(f"Skipped “{title[:60]}”: no clear commercials in it")
-                    continue
-                tape["files"] = [d.name for d in kept]
-                tape["bytes"] = sum(d.stat().st_size for d in kept if d.exists())
-                idx = self.index()
-                idx.setdefault(key, []).append(tape)
-                self._save_index(idx)
-                keys.add(key)
-                if tape_era:
-                    eras_seen.add(tape_era)
-                label = PROFILES[key][0] if key in PROFILES else "YouTube"
-                self._note(f"Added {tape['clips']} from “{title[:60]}” to {label} ({quality_label(tape['q'])} picture)")
+                got, key, tape_era = await self._take_youtube(it, network, era, holiday)
+                if got:
+                    keys.add(key)
+                    if tape_era:
+                        eras_seen.add(tape_era)
             if keys:
                 self._step("Adding them to your channels…")
                 self._assign_tags([k for k in keys if k in PROFILES], sorted(eras_seen))
@@ -1311,12 +1273,139 @@ class Finder:
             self.progress["running"] = False
             shutil.rmtree(OWN / "_youtube", ignore_errors=True)
 
-    # ---- ABC Family's 25 Days of Christmas --------------------------------------------------
-    def start_25days(self, year: int, budget: int, min_height: int = 0, nearby: bool = True):
-        self.min_height = int(min_height or 0)
-        self._begin(self._run_25days, int(year), budget, nearby)
+    def _dl_progress(self, done, total):
+        self.progress.update(done=done, total=total)
 
-    async def _run_25days(self, year: int, budget: int, nearby: bool):
+    async def _take_youtube(self, it: dict, network: str = "", era: str = "", holiday: str = "",
+                            key: str | None = None, folder=None, extra: dict | None = None) -> tuple[int, str, str]:
+        """Download one YouTube video of commercials and file it like an archive tape: a short clip kept as
+        one commercial, a compilation split up, a whole show "with commercials" cut down to its breaks.
+        Returns (bytes kept, the index key it went under, its decade)."""
+        from . import youtube
+        from .folders import LONG_AD
+        ff = self.app.ffmpeg.ffmpeg
+        title = (it.get("title") or it["url"])[:120]
+        vid = re.sub(r"[^A-Za-z0-9_-]", "", it.get("id") or "") or hashlib_name(it["url"])
+        try:
+            path, info = await asyncio.to_thread(youtube.download, it["url"], str(OWN / "_youtube"),
+                                                 f"{_safe_name(title)[:80]} [{vid}]", ff, self._dl_progress,
+                                                 lambda: self.stop)
+        except Exception as e:
+            self._note(f"Couldn't download “{title[:60]}”: {str(e)[:160]}")
+            return 0, "", ""
+        title = (info.get("title") or title)[:120]
+        desc = info.get("description") or ""
+        key = key or network or network_in(title) or "youtube"
+        years = tape_years({"identifier": "x", "title": title, "description": desc})
+        tape_era = era or (era_tag(min(years)) if years else "") or ""
+        hol = "" if holiday == "none" else (holiday or holiday_of(title) or "")
+        if folder is None:
+            folder = OWN / key
+            for part in (tape_era, hol):
+                if part:
+                    folder = folder / part
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / os.path.basename(path)
+        os.replace(path, dest)
+        length = (await asyncio.to_thread(probe_video, ff, str(dest)))["len"]
+        cand = {"doc": {"identifier": f"yt-{vid}", "title": title}, "kind": "ads", "desc": desc}
+        tape = {"id": f"yt-{vid}", "title": title, "era": tape_era, "kind": "youtube", "files": [], "clips": 0,
+                "dupes": 0, "bytes": 0, "years": sorted(years), "holiday": hol, "month": month_of(title) or "",
+                "q": None, "source": it["url"], **(extra or {})}
+        kept = []
+        if length <= LONG_AD:  # one commercial, bumper or ident: kept whole, checked like the rest
+            whole = [{"s": 0.0, "d": round(length, 2), "std": is_standard(length), "n": title}]
+            if await self._file_clips(dest, title, cand, [], tape, clips=whole):
+                kept = [dest]
+            else:
+                dest.unlink(missing_ok=True)
+            if tape["dupes"] and not tape["clips"]:  # the same ad from another upload, no sharper: not kept
+                dest.unlink(missing_ok=True)
+                (dest.parent / (dest.name + ".clips.json")).unlink(missing_ok=True)
+                self._note(f"Skipped “{title[:60]}”: you already have it in as good a picture")
+                return 0, key, tape_era
+        elif _AIRING.search(title) and length > 1200:  # a whole show with its commercials: just the breaks
+            cand["kind"] = "airing"
+            kept = await self._take_airing(cand, {"name": dest.name, "length": length}, str(dest), folder,
+                                           dest.stem[:100], title, tape)
+            dest.unlink(missing_ok=True)
+        elif await self._file_clips(dest, title, cand, ad_names(desc), tape):  # a compilation, split up
+            kept = [dest]
+        else:
+            dest.unlink(missing_ok=True)
+        if not tape["clips"]:
+            self._note(f"Skipped “{title[:60]}”: no clear commercials in it")
+            return 0, key, tape_era
+        tape["files"] = [d.name for d in kept]
+        tape["bytes"] = sum(d.stat().st_size for d in kept if d.exists())
+        idx = self.index()
+        idx.setdefault(key, []).append(tape)
+        self._save_index(idx)
+        label = PROFILES[key][0] if key in PROFILES else ("25 Days" if key == "25days" else "YouTube")
+        self._note(f"Added {tape['clips']} from YouTube “{title[:60]}” to {label} ({quality_label(tape['q'])} picture)")
+        return tape["bytes"], key, tape_era
+
+    async def _youtube_search(self, queries: list[str], per_query: int = 20) -> list[dict]:
+        """YouTube search results for several searches, each video once."""
+        from . import youtube
+        seen, out = set(), []
+        for q in queries:
+            if self.stop:
+                break
+            try:
+                res = await asyncio.to_thread(youtube.search, q, per_query)
+            except Exception as e:
+                log.info("YouTube search failed (%s): %s", q, e)
+                continue
+            for r in res:
+                if r["id"] and r["id"] not in seen:
+                    seen.add(r["id"])
+                    out.append(r)
+        return out
+
+    async def _youtube_network(self, key: str, era: str, budget: int, holiday: str | None = None) -> int:
+        """Search YouTube for a network's commercials from one decade (and holiday), judge the results like
+        archive tapes, and download the best until `budget` bytes are used. Returns the bytes kept."""
+        label = PROFILES[key][0].replace(" / Fox Family", "")
+        y0, y1 = ERAS[era]
+        what = {"christmas": "christmas commercials", "halloween": "halloween commercials"}.get(holiday or "",
+                                                                                                "commercials")
+        self._step(f"Searching YouTube for {label} {what} from the {era}…", done=0, total=0)
+        queries = [f"{label} {what} {y}" for y in range(y0, y1 + 1)]
+        if not holiday:
+            queries += [f"{label} commercial break {era}", f"{label} bumpers {era}"]
+        results = await self._youtube_search(queries)
+        idx = self.index()
+        have = {t["id"] for tapes in idx.values() for t in tapes}
+        scored = []
+        for r in results:
+            if f"yt-{r['id']}" in have or not (20 <= r["duration"] <= 4 * 3600):
+                continue
+            sc, _why, kind = judge(key, {"identifier": "yt-" + r["id"], "title": r["title"], "downloads": r["views"]},
+                                   y0, y1)
+            if sc <= 0 or (holiday and holiday_of(r["title"]) != holiday):
+                continue
+            if kind == "airing" and r["duration"] < 1200:
+                kind = "ads"
+            scored.append((sc + (1 if re.search(r"60 ?fps|hd\b|dvd|broadcast", r["title"], re.I) else 0), r))
+        scored.sort(key=lambda x: -x[0])
+        self.progress["found"].append({"network": f"{label} {holiday + ' ' if holiday else ''}{era} on YouTube",
+                                       "matches": len(scored)})
+        used = 0
+        for _sc, r in scored[:25]:
+            if self.stop or used >= budget:
+                break
+            self._step(f"{label} on YouTube: downloading “{r['title'][:60]}”", done=0, total=0)
+            got, _k, _e = await self._take_youtube(r, key, era, holiday or "none")
+            used += got
+        return used
+
+    # ---- ABC Family's 25 Days of Christmas --------------------------------------------------
+    def start_25days(self, year: int, budget: int, min_height: int = 0, nearby: bool = True, youtube: bool = True):
+        self.min_height = int(min_height or 0)
+        self._begin(self._run_25days, int(year), budget, nearby, youtube)
+
+    async def _run_25days(self, year: int, budget: int, nearby: bool, youtube: bool = True):
         """The real commercials from ABC Family's 25 Days of Christmas: tapes from that December first,
         then the years either side (the same ads and 25 Days promos often ran several years)."""
         from .xmasdata import YEAR_HINTS
@@ -1364,6 +1453,9 @@ class Finder:
                         have.add(cand["doc"]["identifier"])
                     if self.stop or used >= budget:
                         break
+            from . import youtube as yt
+            if youtube and yt.available() and not self.stop and used < budget:
+                used += await self._youtube_25days(year, budget - used, nearby, hints)
             await self._rescan()
             self._step("Done. Your library is being rescanned so the 25 Days channel picks them up.",
                        running=False)
@@ -1372,6 +1464,41 @@ class Finder:
             self.progress.update(running=False, error=f"Something went wrong: {e}", step="")
         finally:
             self.progress["running"] = False
+
+    async def _youtube_25days(self, year: int, budget: int, nearby: bool, hints: list[str]) -> int:
+        """ABC Family's 25 Days of Christmas commercials on YouTube: that December first, then the years
+        either side. Judged like archive tapes (the title must say ABC Family or 25 Days)."""
+        used = 0
+        rounds = [[year]] + ([[year - 1, year + 1]] if nearby else [])
+        have = {t["id"] for tapes in self.index().values() for t in tapes}
+        for years in rounds:
+            if self.stop or used >= budget:
+                break
+            self._step(f"Searching YouTube for 25 Days of Christmas {'/'.join(map(str, years))}…", done=0, total=0)
+            queries = [q for y in years for q in (f"ABC Family 25 Days of Christmas {y}",
+                                                  f"ABC Family commercials December {y}",
+                                                  f"ABC Family Christmas commercials {y}")]
+            scored = []
+            for r in await self._youtube_search(queries):
+                if f"yt-{r['id']}" in have or not (20 <= r["duration"] <= 4 * 3600):
+                    continue
+                sc, kind, yr = judge_25days({"identifier": "yt-" + r["id"], "title": r["title"], "downloads": r["views"]},
+                                            years, hints)
+                if sc > 0:
+                    scored.append((sc, yr, r))
+            scored.sort(key=lambda x: -x[0])
+            self.progress["found"].append({"network": f"25 Days of Christmas {'/'.join(map(str, years))} on YouTube",
+                                           "matches": len(scored)})
+            for _sc, yr, r in scored[:15]:
+                if self.stop or used >= budget:
+                    break
+                self._step(f"25 Days on YouTube: downloading “{r['title'][:60]}”", done=0, total=0)
+                got, _k, _e = await self._take_youtube(r, "", era_tag(yr) or "", "christmas", key="25days",
+                                                       folder=OWN / "25days" / f"y{yr}",
+                                                       extra={"for": [year], "year": yr})
+                used += got
+                have.add(f"yt-{r['id']}")
+        return used
 
     def summary_25days(self) -> dict:
         idx = self.index()
@@ -1383,7 +1510,9 @@ class Finder:
             by_year[y]["tapes"] += 1
             by_year[y]["clips"] += t.get("clips", 0)
             by_year[y]["airings"] += 1 if t.get("kind") == "airing" else 0
-        return {"tapes": [{"title": t["title"], "year": t.get("year"), "kind": t.get("kind", "ads"),
+        from . import youtube as yt
+        return {"youtube": yt.available(),
+                "tapes": [{"title": t["title"], "year": t.get("year"), "kind": t.get("kind", "ads"),
                            "clips": t.get("clips", 0), "quality": quality_label(t.get("q"))} for t in tapes],
                 "by_year": by_year, "status": self.progress,
                 "airings": [{"title": a["title"], "breaks": len(a["breaks"]), "date": a.get("date", "")}
@@ -1418,7 +1547,7 @@ def judge_25days(doc: dict, years: list[int], hints: list[str]) -> tuple[float, 
     if re.search(r"freeform|fox family|family channel|fox kids", title, re.I) and not re.search(r"abc family", title,
                                                                                                 re.I):
         return 0, "", 0
-    if _FOREIGN.search(title) or _NEVER.search(title) or _NEVER.search(desc[:2000]):
+    if _FOREIGN.search(title) or _NEVER.search(title) or _NEVER.search(desc[:2000]) or _FANMADE.search(title):
         return 0, "", 0
     yrs = tape_years(doc)
     yr = next((y for y in years if y in yrs), 0)

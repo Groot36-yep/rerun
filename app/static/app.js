@@ -1086,7 +1086,7 @@ async function viewTwentyFive() {
 
 function twentyFiveFinder(year, d, reload) {
   const box = h("div", { class: "finder" });
-  let gb = 4, minH = 0, nearby = true, timer = null;
+  let gb = 4, minH = 0, nearby = true, youtube = true, timer = null;
   const render = (d) => {
     const st = d.status;
     const busy = st.running;
@@ -1097,11 +1097,12 @@ function twentyFiveFinder(year, d, reload) {
         h("span", { class: "plain-label" }, "Quality"),
         select([[0, "Any (exact ads first)"], [360, "Watchable and up"], [480, "Good and up"]], minH, (v) => { minH = parseInt(v, 10); }, { class: "inline", disabled: busy })),
       checkbox("Also the years either side", nearby, (val) => { nearby = val; }),
+      d.youtube ? checkbox("Search YouTube too", youtube, (val) => { youtube = val; }, "After the Internet Archive, ABC Family December commercials people have put on YouTube.") : null,
       h("p", { class: "hint" }, "Whole broadcasts are read straight from the archive and only their breaks are saved, so they need little space but can take a while."),
       h("div", { class: "row", style: { marginTop: "10px" } },
         busy ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this step…"); } }, "Stop")
           : h("button", { class: "btn primary", onclick: async () => {
-            try { render(await api("POST", "/api/25days/finder", { year, budget_gb: gb, min_height: minH, nearby })); poll(); }
+            try { render(await api("POST", "/api/25days/finder", { year, budget_gb: gb, min_height: minH, nearby, youtube })); poll(); }
             catch (x) { toast(x.message, true); }
           } }, `Find December ${year}'s commercials`)),
       busy ? h("div", null,
@@ -1713,7 +1714,7 @@ async function openFinder(onStart) {
   const picked = new Set(d.networks.filter((n) => n.have_channel).map((n) => n.key));
   const eras = new Set(d.channel_eras.length ? d.channel_eras : ["2000s"]);
   const hols = new Set();
-  let gb = 1.5, minH = 360, airings = true;
+  let gb = 1.5, minH = 360, airings = true, youtube = !!d.youtube;
   const name = (n) => n.label.replace(" / Fox Family", "");
   modal((box, close) => {
     box.classList.add("wide", "finder-dialog");
@@ -1743,6 +1744,8 @@ async function openFinder(onStart) {
         h("label", null, "Space per network", select([[0.5, "0.5 GB"], [1.5, "1.5 GB"], [3, "3 GB"], [6, "6 GB"]], gb, (v) => { gb = parseFloat(v); }))),
       checkbox("Use whole broadcasts too", airings, (val) => { airings = val; },
         "Shows recorded with their commercials. Rerun reads them straight from the archive and keeps only the breaks: little space, but slower."),
+      d.youtube ? checkbox("Search YouTube too", youtube, (val) => { youtube = val; },
+        "Commercial breaks people have put on YouTube (“Nickelodeon commercials 2003”…), judged the same way. The space is shared between the two.") : null,
       h("p", { class: "hint" }, "Rerun checks each tape's real picture before downloading, takes the sharpest first, and keeps only the best copy of any commercial it already has."),
       d.networks.some((n) => n.tapes) ? h("details", { class: "subpanel" },
         h("summary", null, "Already downloaded"),
@@ -1757,7 +1760,7 @@ async function openFinder(onStart) {
         h("button", { class: "btn quiet", onclick: close }, "Cancel"),
         h("button", { class: "btn primary", disabled: !picked.size || !eras.size, onclick: async () => {
           try {
-            await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], holidays: [...hols], budget_gb: gb, min_height: minH, airings });
+            await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], holidays: [...hols], budget_gb: gb, min_height: minH, airings, youtube });
             close(); toast("Finding commercials in the background"); onStart();
           } catch (x) { toast(x.message, true); }
         } }, !picked.size ? "Pick a network" : !eras.size ? "Pick a decade" : `Find commercials for ${plural(picked.size, "network")}`)));
