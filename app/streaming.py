@@ -335,13 +335,13 @@ class ChannelStream:
                 t0, t1 = item["e"] - 45 - self.cursor, item["e"] - 15 - self.cursor
                 t0, t1 = max(0.5, t0), min(t1, end - self.cursor - 1)
                 if t1 - t0 >= 6:
-                    path = f"{self.text_file}.next{self.segments % 4}"
-                    try:
-                        with open(path, "w", encoding="utf-8") as f:
-                            f.write(nxt["title"][:60])
-                        out.update(next_file=path, t0=t0, t1=t1)
-                    except OSError:
-                        pass
+                    try:  # in the colour of the network's logo, if it has one
+                        banner = await asyncio.to_thread(images.up_next_banner, nxt["title"], H,
+                                                         images.bug_accent(out.get("logo")))
+                        if banner:
+                            out.update(banner=banner, t0=t0, t1=t1)
+                    except Exception as e:
+                        log.info("No Up next banner (%s)", e.__class__.__name__)
         return out or None
 
     def _bug_network(self, ch: dict, item: dict) -> str:

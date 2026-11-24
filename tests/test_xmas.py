@@ -404,25 +404,33 @@ async def check_lineup():
 def check_overlay_filters():
     import tempfile as _t
     from app.ffmpeg import FFmpeg
-    bug = os.path.join(_t.mkdtemp(), "bug.png")
+    from app import images
+    d = _t.mkdtemp()
+    bug = os.path.join(d, "bug.png")
     open(bug, "wb").write(b"png")
+    banner = os.path.join(d, "banner.png")
+    open(banner, "wb").write(images.make_banner("Scooby-Doo, Where Are You!", 720, "#ff6900"))
+    assert images.logo_accent(images.make_banner("x", 200, "#ff6900")) is not None
     ff = FFmpeg()
-    ff.filters, ff.font, ff.encoder_status = {"overlay", "drawtext"}, "/f/font.ttf", {"using": "none"}
+    ff.filters, ff.encoder_status = {"overlay"}, {"using": "none"}
     cmd = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True,
-                       overlay={"logo": bug, "next_file": "/d/next.txt", "t0": 5, "t1": 20})
+                       overlay={"logo": bug, "banner": banner, "t0": 5, "t1": 20})
     graph = cmd[cmd.index("-filter_complex") + 1]
-    assert "-loop" in cmd and "overlay=" in graph and "UP NEXT" in graph and cmd[cmd.index("-map") + 1] == "[v]"
+    assert cmd.count("-loop") == 2 and graph.count("overlay=") == 2 and "fade=t=in:st=5.00" in graph
+    assert cmd[cmd.index("-map") + 1] == "[v]"
     assert graph.index("overlay=") < graph.index("pad="), "the logo goes inside the picture, not on the side bars"
-    silent = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, False, overlay={"logo": bug})
-    assert "[2:v:0]" in silent[silent.index("-filter_complex") + 1], "with made-up silence the logo is input 2"
+    silent = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, False, overlay={"logo": bug, "banner": banner,
+                                                                                       "t0": 1, "t1": 9})
+    sg = silent[silent.index("-filter_complex") + 1]
+    assert "[pic][2:v:0]overlay" in sg and "[3:v:0]format=rgba" in sg, "inputs numbered after the silence"
     plain = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True)
     assert "-filter_complex" not in plain and "-vf" in plain
     missing = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True, overlay={"logo": "/nope.png"})
     assert "-filter_complex" not in missing, "a missing logo file means no logo, not a failure"
     ff.filters = set()
-    bare = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True, overlay={"logo": bug, "next_file": "/x",
+    bare = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True, overlay={"logo": bug, "banner": banner,
                                                                                      "t0": 1, "t1": 9})
-    assert "-filter_complex" not in bare and "UP NEXT" not in " ".join(bare), "without the filters, plain picture"
+    assert "-filter_complex" not in bare, "without the overlay filter, a plain picture"
     print("logo and Up next filters: OK")
 
 

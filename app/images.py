@@ -14,6 +14,7 @@ import io
 import logging
 import math
 import os
+import re
 from urllib.parse import urlencode
 
 import httpx
@@ -507,7 +508,7 @@ async def official_logo(ref: str) -> bytes | None:
 # --------------------------------------------------------------------------- the on-screen logo ("bug")
 
 BUG_DIR = DATA_DIR / "bugs"
-BUG_V = 2
+BUG_V = 3
 _bug_misses: dict[str, float] = {}
 
 
@@ -534,7 +535,7 @@ def make_bug(raw: bytes, height: int) -> bytes | None:
         if not alpha.getbbox():
             return None
     alpha = _ink(logo, alpha)
-    target_h = max(18, round(height * 0.085))
+    target_h = max(18, round(height * 0.075))
     scale = min(target_h / logo.height, height * 0.26 / logo.width)
     size = (max(1, round(logo.width * scale)), max(1, round(logo.height * scale)))
     alpha = alpha.resize(size, Image.LANCZOS)
@@ -544,7 +545,7 @@ def make_bug(raw: bytes, height: int) -> bytes | None:
     shadow.putalpha(alpha.point(lambda a: int(a * 0.28)))
     out.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(1.5)), (pad + 1, pad + 2))
     white = Image.new("RGBA", size, (255, 255, 255, 255))
-    white.putalpha(alpha.point(lambda a: int(a * 0.62)))
+    white.putalpha(alpha.point(lambda a: int(a * 0.52)))
     out.alpha_composite(white, (pad, pad))
     return _png(out)
 
@@ -585,6 +586,104 @@ async def screen_bug(ref: str, height: int, online: bool = True, names: list[str
         return None
     BUG_DIR.mkdir(parents=True, exist_ok=True)
     path.write_bytes(png)
+    try:
+        colour = await asyncio.to_thread(logo_accent, raw)
+        if colour:
+            path.with_suffix(".colour").write_text(colour)
+    except Exception:
+        pass
+    return str(path)
+
+
+def bug_accent(bug_path: str | None) -> str | None:
+    """The colour of the logo a bug was made from ("#f57d0d" for Nick's orange), if it has one."""
+    try:
+        return open(os.path.splitext(bug_path)[0] + ".colour", encoding="utf-8").read().strip() if bug_path else None
+    except OSError:
+        return None
+
+
+def logo_accent(raw: bytes) -> str | None:
+    """A logo's main colour, if it has a strong one: Nickelodeon's orange, Disney's blue. Black-and-white
+    logos (Boomerang's cube, Cartoon Network's letters) have none."""
+    logo = Image.open(io.BytesIO(raw)).convert("RGBA")
+    logo.thumbnail((96, 96))
+    hsv = logo.convert("RGB").convert("HSV")
+    px = [(rgb, sv) for rgb, sv, a in zip(logo.convert("RGB").getdata(), hsv.getdata(), logo.getchannel("A").getdata())
+          if a > 128]
+    strong = [rgb for rgb, (h, sat, val) in px if sat > 115 and val > 90]
+    if not px or len(strong) < len(px) * 0.08:
+        return None
+    r, g, b = (sorted(c[i] for c in strong)[len(strong) // 2] for i in range(3))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+BANNER_V = 1
+GOLD_ACCENT = "#d4a028"
+
+
+def _ink_on(colour: str) -> tuple:
+    r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+    return (21, 17, 14, 255) if 0.299 * r + 0.587 * g + 0.114 * b > 150 else (255, 253, 248, 255)
+
+
+def make_banner(title: str, height: int, accent: str | None = None) -> bytes:
+    """The "Up next" banner: a coloured tab in the network's colour, then the next show's title on a dark
+    bar, with rounded ends and a soft shadow. Drawn twice as big and shrunk, so the edges are smooth."""
+    accent = accent if accent and re.fullmatch(r"#[0-9a-fA-F]{6}", accent) else GOLD_ACCENT
+    k = 2
+    bh = round(height * 0.1) * k
+    radius = round(bh * 0.22)
+    label_font = _font(round(bh * 0.25), "sans")
+    title_font = _font(round(bh * 0.47), "sans")
+    label = "UP NEXT"
+    tracking = round(bh * 0.035)
+    label_w = sum(label_font.getlength(ch) for ch in label) + tracking * (len(label) - 1)
+    tab_w = round(label_w + bh * 0.62)
+    max_title_w = height * 1.02 * k - tab_w
+    title = " ".join((title or "").split())
+    while title_font.getlength(title) > max_title_w and len(title) > 4:
+        title = title[:-2].rstrip(" ,.-:") + "…"
+    title_w = round(title_font.getlength(title) + bh * 0.7)
+    w = tab_w + title_w
+    shadow_pad = round(bh * 0.25)
+    img = Image.new("RGBA", (w + shadow_pad * 2, bh + shadow_pad * 2), (0, 0, 0, 0))
+    # shadow
+    sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle((shadow_pad, shadow_pad + round(bh * 0.06), shadow_pad + w,
+                                          shadow_pad + bh + round(bh * 0.06)), radius, fill=(0, 0, 0, 120))
+    img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(bh * 0.09)))
+    d = ImageDraw.Draw(img)
+    x0, y0 = shadow_pad, shadow_pad
+    # the dark bar for the title, then the coloured tab over its left end
+    d.rounded_rectangle((x0, y0, x0 + w, y0 + bh), radius, fill=(20, 16, 13, 218))
+    d.rounded_rectangle((x0, y0, x0 + tab_w + radius, y0 + bh), radius, fill=accent)
+    d.rectangle((x0 + tab_w, y0, x0 + tab_w + radius, y0 + bh), fill=(20, 16, 13, 218))
+    d.line((x0 + tab_w + radius * 0.4, y0 + bh - k * 2, x0 + w - radius, y0 + bh - k * 2), fill=accent, width=k * 2)
+    # "UP NEXT", spaced out, centred in the tab
+    ink = _ink_on(accent)
+    lx = x0 + (tab_w - label_w) / 2
+    ly = y0 + (bh - (label_font.getbbox("UP")[3] - label_font.getbbox("UP")[1])) / 2 - label_font.getbbox("UP")[1]
+    for ch in label:
+        d.text((lx, ly), ch, font=label_font, fill=ink)
+        lx += label_font.getlength(ch) + tracking
+    # the title, centred on the bar's height
+    tb = title_font.getbbox("Hg")
+    ty = y0 + (bh - (tb[3] - tb[1])) / 2 - tb[1]
+    d.text((x0 + tab_w + bh * 0.35, ty), title, font=title_font, fill=(255, 253, 248, 255))
+    out = img.resize((max(1, img.width // k), max(1, img.height // k)), Image.LANCZOS)
+    return _png(out)
+
+
+def up_next_banner(title: str, height: int, accent: str | None = None) -> str | None:
+    """The banner's file, made once per title, size and colour."""
+    if not title:
+        return None
+    folder = BUG_DIR / "banners"
+    path = folder / f"{hashlib.sha1(f'{BANNER_V}:{title}:{height}:{accent}'.encode()).hexdigest()[:16]}.png"
+    if not path.exists():
+        folder.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(make_banner(title, height, accent))
     return str(path)
 
 

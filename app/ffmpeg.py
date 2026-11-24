@@ -189,24 +189,12 @@ class FFmpeg:
         return ["-t", f"{duration:.3f}", "-max_muxing_queue_size", "4096", "-flush_packets", "1",
                 "-f", "mpegts", "pipe:1"]
 
-    def _banner(self, ov: dict) -> str:
-        """The "Up next" banner as drawtext filters (with a trailing comma), or "" if it can't be drawn."""
-        if not (ov.get("next_file") and self.font and "drawtext" in self.filters):
-            return ""
-        a, b = float(ov["t0"]), float(ov["t1"])
-        fade = (f"alpha='if(lt(t,{a + 0.5:.2f}),(t-{a:.2f})/0.5,if(gt(t,{b - 0.5:.2f}),({b:.2f}-t)/0.5,1))'"
-                f":enable='between(t,{a:.2f},{b:.2f})'")
-        font = f"fontfile={filter_escape(self.font)}"
-        return (f"drawtext={font}:text='UP NEXT':fontcolor=0xd4a028:fontsize=h/30:box=1:"
-                f"boxcolor=0x15110e@0.72:boxborderw=h/110:x=w*0.07:y=h*0.79-h/30-h/55:{fade},"
-                f"drawtext={font}:textfile={filter_escape(ov['next_file'])}:expansion=none:fontcolor=white:"
-                f"fontsize=h/17:box=1:boxcolor=0x15110e@0.72:boxborderw=h/70:x=w*0.07:y=h*0.79:{fade},")
-
     def media_cmd(self, src: str, offset: float, duration: float, s: dict, burst: float, has_audio: bool,
                   hw_decode: bool = True, overlay: dict | None = None) -> list[str]:
         """One piece of a show or commercial, as live TV. `overlay` can add the network's logo in the
-        corner ("logo": a picture file) and the "Up next" banner ("next_file", shown from t0 to t1 seconds
-        into the piece). Both are drawn inside the picture itself, before any side bars are added."""
+        corner ("logo": a picture file) and the "Up next" banner ("banner": a picture file, shown from t0 to
+        t1 seconds into the piece, fading in as it slides in from the left). Both sit inside the picture
+        itself, before any side bars are added."""
         hw = self.encoder_status.get("using") or "none"
         W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])
         ov = overlay or {}
@@ -225,20 +213,31 @@ class FFmpeg:
             audio, n = f"{n}:a:0", n + 1
         else:
             audio = "0:a:0"
-        logo = ov.get("logo") if "overlay" in self.filters and os.path.isfile(ov.get("logo") or "") else None
-        if logo:
-            args += ["-loop", "1", "-framerate", "5", "-i", "file:" + logo]  # a still picture, held for the whole piece
+        can = "overlay" in self.filters
+        logo = ov.get("logo") if can and os.path.isfile(ov.get("logo") or "") else None
+        banner = ov.get("banner") if can and os.path.isfile(ov.get("banner") or "") else None
         fit = f"bwdif=mode=send_frame:parity=auto:deint=interlaced,scale={W}:{H}:force_original_aspect_ratio=decrease"
         tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS},{self._vf_tail(hw)}"
-        banner = self._banner(ov)
-        if logo:
-            graph = (f"[0:v:0]{fit}[pic];[pic][{n}:v:0]overlay=x=main_w-overlay_w-main_w*0.045:"
-                     f"y=main_h-overlay_h-main_h*0.065:eof_action=repeat[pb];[pb]{banner}{tail}[v]")
-            video = ["-filter_complex", graph, "-map", "[v]"]
+        if not (logo or banner):
+            args += ["-map", "0:v:0", "-vf", f"{fit},{tail}"]
         else:
-            video = ["-map", "0:v:0", "-vf", f"{fit},{banner}{tail}"]
-        args += [*video, "-map", audio, "-sn", "-dn", *self._video_codec(s, hw), *self._audio_out(s),
-                 *self._ts_out(duration)]
+            graph, cur = [f"[0:v:0]{fit}[pic]"], "pic"
+            if logo:  # a still picture, held for the whole piece
+                args += ["-loop", "1", "-framerate", "5", "-i", "file:" + logo]
+                graph.append(f"[{cur}][{n}:v:0]overlay=x=main_w-overlay_w-main_w*0.045:"
+                             f"y=main_h-overlay_h-main_h*0.065:eof_action=repeat[pb]")
+                cur, n = "pb", n + 1
+            if banner:
+                a, b = float(ov.get("t0") or 0), float(ov.get("t1") or 0)
+                args += ["-loop", "1", "-framerate", "15", "-t", f"{duration + 1:.3f}", "-i", "file:" + banner]
+                graph.append(f"[{n}:v:0]format=rgba,fade=t=in:st={a:.2f}:d=0.4:alpha=1,"
+                             f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban]")
+                graph.append(f"[{cur}][ban]overlay=x='main_w*0.055-main_w*0.03*max(0,1-(t-{a:.2f})/0.4)':"
+                             f"y=main_h*0.73:eval=frame:enable='between(t,{a:.2f},{b:.2f})'[pn]")
+                cur = "pn"
+            graph.append(f"[{cur}]{tail}[v]")
+            args += ["-filter_complex", ";".join(graph), "-map", "[v]"]
+        args += ["-map", audio, "-sn", "-dn", *self._video_codec(s, hw), *self._audio_out(s), *self._ts_out(duration)]
         return args
 
     def slate_cmd(self, text_file: str | None, duration: float, s: dict, burst: float) -> list[str]:
