@@ -232,8 +232,17 @@ class FFmpeg:
                 args += ["-loop", "1", "-framerate", "15", "-t", f"{duration + 1:.3f}", "-i", "file:" + banner]
                 graph.append(f"[{n}:v:0]format=rgba,fade=t=in:st={a:.2f}:d=0.4:alpha=1,"
                              f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban]")
-                graph.append(f"[{cur}][ban]overlay=x='main_w*0.055-main_w*0.03*max(0,1-(t-{a:.2f})/0.4)':"
-                             f"y=main_h*0.73:eval=frame:enable='between(t,{a:.2f},{b:.2f})'[pn]")
+                rest = f"max(0,1-(t-{a:.2f})/0.45)"  # 1 when the banner appears, 0 once it's in place
+                x, y = "main_w*0.055", "main_h*0.73"
+                motion = ov.get("motion") or "left"
+                if motion == "left":
+                    x = f"main_w*0.055-main_w*0.035*{rest}"
+                elif motion == "right":
+                    x = f"main_w*0.055+main_w*0.05*{rest}"
+                elif motion == "up":
+                    y = f"main_h*0.73+main_h*0.06*{rest}"
+                graph.append(f"[{cur}][ban]overlay=x='{x}':y='{y}':eval=frame:"
+                             f"enable='between(t,{a:.2f},{b:.2f})'[pn]")
                 cur = "pn"
             graph.append(f"[{cur}]{tail}[v]")
             args += ["-filter_complex", ";".join(graph), "-map", "[v]"]

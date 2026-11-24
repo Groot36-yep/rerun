@@ -335,11 +335,14 @@ class ChannelStream:
                 t0, t1 = item["e"] - 45 - self.cursor, item["e"] - 15 - self.cursor
                 t0, t1 = max(0.5, t0), min(t1, end - self.cursor - 1)
                 if t1 - t0 >= 6:
-                    try:  # in the colour of the network's logo, if it has one
+                    try:  # in the network's 2000s style, or in the colour of its logo
+                        net = self._bug_network(ch, item)
+                        theme = images.theme_for(archive.tag_for_network(net) if net else None,
+                                                 plan=bool(ch.get("plan")))
                         banner = await asyncio.to_thread(images.up_next_banner, nxt["title"], H,
-                                                         images.bug_accent(out.get("logo")))
+                                                         images.bug_accent(out.get("logo")), theme)
                         if banner:
-                            out.update(banner=banner, t0=t0, t1=t1)
+                            out.update(banner=banner, t0=t0, t1=t1, motion=images.MOTION.get(theme, "left"))
                     except Exception as e:
                         log.info("No Up next banner (%s)", e.__class__.__name__)
         return out or None

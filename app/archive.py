@@ -339,14 +339,11 @@ def _http_args(src: str) -> list[str]:
 SHIFT = 1_000_000
 
 
-def detect(ffmpeg: str, src: str, on_progress=None) -> tuple[list[float], list[float], float]:
-    """Cut points in a recording: (black-and-silent cuts, every black cut, length).
+def _detect_span(ffmpeg: str, src: str, start: float | None, length: float | None, on_progress=None):
+    """Black frames (clearly black, and nearly black), silences and the length of a recording, or of
+    `length` seconds of it from `start`. Times are from the start of the recording."""
+    span = ([] if start is None else ["-ss", f"{start:.2f}"]) + ([] if length is None else ["-t", f"{length:.2f}"])
 
-    Two black detectors run at once. Clearly black frames are a cut by themselves. On worn tapes the
-    gap between ads is often only nearly black, so nearly-black frames count too, but only when the
-    sound drops out at the same moment (dark scenes inside an ad keep their sound). The silence
-    between ads on tape is short (a tenth of a second or two) and sits on top of tape hiss, hence the
-    fairly loud threshold."""
     def run(with_sound: bool) -> subprocess.CompletedProcess:
         graph = ("[0:v:0]scale=192:-2,split[a][b];[a]blackdetect=d=0.05:pic_th=0.92:pix_th=0.12[x];"
                  "[b]setpts=PTS+1000000/TB,blackdetect=d=0.03:pic_th=0.85:pix_th=0.15[y]")
@@ -354,7 +351,7 @@ def detect(ffmpeg: str, src: str, on_progress=None) -> tuple[list[float], list[f
         if with_sound:
             graph += ";[0:a:0]silencedetect=noise=-36dB:d=0.06[z]"
             outs += ["-map", "[z]", "-f", "null", "-"]
-        cmd = [ffmpeg, "-hide_banner", "-nostats", *_http_args(src), "-i", src, "-filter_complex", graph, *outs]
+        cmd = [ffmpeg, "-hide_banner", "-nostats", *_http_args(src), *span, "-i", src, "-filter_complex", graph, *outs]
         if shutil.which("nice"):
             cmd = ["nice", "-n", "15", *cmd]
         return _run(cmd, on_progress)
@@ -363,32 +360,70 @@ def detect(ffmpeg: str, src: str, on_progress=None) -> tuple[list[float], list[f
     if res.returncode != 0 and re.search(r"0:a:0|matches no streams|Stream specifier", res.stderr):
         res = run(False)  # a tape without sound: black frames alone
     err = res.stderr
+    off = start or 0.0
     # Newer ffmpeg doesn't say which detector printed a line, so the loose one's clock runs a million
     # seconds ahead.
     strict, loose = [], []
     for a, b in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err):
         a, b = float(a), float(b)
         if a >= SHIFT:
-            loose.append((a - SHIFT, b - SHIFT))
+            loose.append((a - SHIFT + off, b - SHIFT + off))
         else:
-            strict.append((a, b))
-    s_starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", err)]
-    s_ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", err)]
-    silences = list(zip(s_starts, s_ends))
+            strict.append((a + off, b + off))
+    s_starts = [float(x) + off for x in re.findall(r"silence_start: ([\d.]+)", err)]
+    s_ends = [float(x) + off for x in re.findall(r"silence_end: ([\d.]+)", err)]
     m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", err)
     total = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
     if not total:  # streams without a duration header: the last timestamp ffmpeg reached
         times = re.findall(r"time=(\d+):(\d+):([\d.]+)", err)
         if times:
             hh, mm, ss = times[-1]
-            total = int(hh) * 3600 + int(mm) * 60 + float(ss)
+            total = int(hh) * 3600 + int(mm) * 60 + float(ss) + off
+    return strict, loose, list(zip(s_starts, s_ends)), total
+
+
+def detect(ffmpeg: str, src: str, on_progress=None, parts: int = 1,
+           length: float = 0.0) -> tuple[list[float], list[float], float]:
+    """Cut points in a recording: (black-and-silent cuts, every black cut, length).
+
+    Two black detectors run at once. Clearly black frames are a cut by themselves. On worn tapes the
+    gap between ads is often only nearly black, so nearly-black frames count too, but only when the
+    sound drops out at the same moment (dark scenes inside an ad keep their sound). The silence
+    between ads on tape is short (a tenth of a second or two) and sits on top of tape hiss, hence the
+    fairly loud threshold.
+
+    A long recording on the Internet Archive can be read in `parts` pieces at once: the archive limits
+    each connection, not the total, so four pieces take about a quarter of the time. The pieces overlap
+    a little so no cut is missed where they meet."""
+    if parts > 1 and length > 600:
+        from concurrent.futures import ThreadPoolExecutor
+        size = length / parts
+        spans = [(max(0.0, i * size - 4), size + 8) for i in range(parts)]
+        done = [0.0] * parts
+
+        def tracker(i):
+            def report(d):
+                done[i] = min(d, spans[i][1])
+                if on_progress:
+                    on_progress(min(sum(done), length))
+            return report
+
+        with ThreadPoolExecutor(parts) as pool:
+            results = list(pool.map(lambda i: _detect_span(ffmpeg, src, spans[i][0], spans[i][1], tracker(i)),
+                                    range(parts)))
+        strict = [b for r in results for b in r[0]]
+        loose = [b for r in results for b in r[1]]
+        silences = [x for r in results for x in r[2]]
+        total = length
+    else:
+        strict, loose, silences, total = _detect_span(ffmpeg, src, None, None, on_progress)
 
     def quiet(a, b):
         return any(s - 0.4 <= b and e + 0.4 >= a for s, e in silences)
 
     hushed = [(a, b) for a, b in loose if quiet(a, b)]
-    strong = [(a + b) / 2 for a, b in strict + hushed if quiet(a, b)]
-    every = [(a + b) / 2 for a, b in strict + hushed]
+    strong = sorted({round((a + b) / 2, 2) for a, b in strict + hushed if quiet(a, b)})
+    every = sorted({round((a + b) / 2, 2) for a, b in strict + hushed})
     return strong, every, total
 
 
@@ -504,8 +539,9 @@ def breaks_in(segs: list[tuple[float, float]]) -> list[dict]:
     return out
 
 
-def find_breaks(ffmpeg: str, src: str, on_progress=None) -> list[dict]:
-    strong, every, total = detect(ffmpeg, src, on_progress)
+def find_breaks(ffmpeg: str, src: str, on_progress=None, length: float = 0.0) -> list[dict]:
+    parts = 4 if src.startswith("http") and length > 1200 else 1  # see detect()
+    strong, every, total = detect(ffmpeg, src, on_progress, parts=parts, length=length)
     if not total or not every:
         return []
     found = breaks_in(_pieces(strong, total, ends=True))
@@ -887,7 +923,7 @@ class Finder:
         def progress(done, t=title[:60]):
             self._step(f"Looking for the breaks in “{t}”: minute {int(done // 60)} of {total // 60 or '?'}, read "
                        f"straight from the archive", done=int(done), total=total)
-        found = await asyncio.to_thread(find_breaks, ff, url, progress)
+        found = await asyncio.to_thread(find_breaks, ff, url, progress, float(total))
         if not found:
             self._note(f"No commercial breaks found in “{title[:60]}”")
             return []
@@ -895,13 +931,25 @@ class Finder:
             title + " " + re.sub(r"<[^>]+>", " ", _text(cand.get("desc")))[:3000]),
             "date": cand.get("date", ""), "years": sorted(tape_years(cand["doc"])), "file": f["name"], "breaks": []}
         folder.mkdir(parents=True, exist_ok=True)
-        for i, b in enumerate(found):
-            if self.stop:
-                break
+        sem = asyncio.Semaphore(3)  # three breaks at once: the archive limits each connection, not the total
+        saved = [0]
+
+        async def save(i, b):
             dest = folder / f"{base}--break{i + 1:02d}.mkv"
-            self._step(f"Saving break {i + 1} of {len(found)} from “{title[:50]}”")
-            if not await asyncio.to_thread(extract, ff, url, b["s"], b["e"], str(dest)):
+            async with sem:
+                if self.stop:
+                    return None
+                ok = await asyncio.to_thread(extract, ff, url, b["s"], b["e"], str(dest))
+            saved[0] += 1
+            self._step(f"Saved {saved[0]} of {len(found)} breaks from “{title[:50]}”", done=saved[0], total=len(found))
+            if not ok:
                 dest.unlink(missing_ok=True)
+                return None
+            return dest
+
+        dests = await asyncio.gather(*(save(i, b) for i, b in enumerate(found)))
+        for i, (b, dest) in enumerate(zip(found, dests)):
+            if dest is None or self.stop:
                 continue
             if await self._file_clips(dest, title, cand, [], tape, airing={"at": b["at"], "n": i + 1}):
                 kept.append(dest)

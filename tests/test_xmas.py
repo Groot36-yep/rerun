@@ -431,6 +431,18 @@ def check_overlay_filters():
     bare = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True, overlay={"logo": bug, "banner": banner,
                                                                                      "t0": 1, "t1": 9})
     assert "-filter_complex" not in bare, "without the overlay filter, a plain picture"
+    from PIL import Image
+    import io as _io
+    for theme in ("nick", "cn", "disney", "boomerang", "25days"):  # every network style draws, long titles fit
+        img = Image.open(_io.BytesIO(images.make_themed_banner("A Very Long Title " * 6, 720, theme)))
+        assert 200 < img.width < 1100 and 50 < img.height < 260, (theme, img.size)
+    assert images.theme_for("nick") == "nick" and images.theme_for("abcfamily", plan=True) == "25days"
+    assert images.theme_for("mtv") == ""
+    ff.filters = {"overlay"}
+    up = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True,
+                      overlay={"banner": banner, "t0": 5, "t1": 20, "motion": "up"})
+    g = up[up.index("-filter_complex") + 1]
+    assert "y='main_h*0.73+main_h*0.06*max(0,1-(t-5.00)/0.45)'" in g, g
     print("logo and Up next filters: OK")
 
 

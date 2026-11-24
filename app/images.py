@@ -675,15 +675,17 @@ def make_banner(title: str, height: int, accent: str | None = None) -> bytes:
     return _png(out)
 
 
-def up_next_banner(title: str, height: int, accent: str | None = None) -> str | None:
-    """The banner's file, made once per title, size and colour."""
+def up_next_banner(title: str, height: int, accent: str | None = None, theme: str = "") -> str | None:
+    """The banner's file, made once per title, size, colour and style."""
     if not title:
         return None
     folder = BUG_DIR / "banners"
-    path = folder / f"{hashlib.sha1(f'{BANNER_V}:{title}:{height}:{accent}'.encode()).hexdigest()[:16]}.png"
+    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}"
+    path = folder / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.png"
     if not path.exists():
         folder.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(make_banner(title, height, accent))
+        png = make_themed_banner(title, height, theme) if theme in THEME_DRAW else make_banner(title, height, accent)
+        path.write_bytes(png)
     return str(path)
 
 
@@ -871,3 +873,206 @@ def public_logo_url(ch: dict, catalog=None) -> str:
     letters = (f"placehold.co/1200x500/transparent/{fg[1:]}/png?"
                + urlencode({"text": "\\n".join(lines), "font": "oswald"}))
     return _fit(letters, aspect)
+
+
+# ---- "Up next" banners in each network's 2000s style ------------------------------------------
+# Not the networks' own artwork (Rerun doesn't have it): each is drawn in the spirit of that channel's
+# on-air look in the 2000s, with the fonts Rerun ships. Others get the plain style above.
+
+def theme_for(tag: str | None, plan: bool = False) -> str:
+    if plan:
+        return "25days"
+    return {"nick": "nick", "nicktoons": "nick", "cn": "cn", "disney": "disney", "toondisney": "disney",
+            "playhouse": "disney", "boomerang": "boomerang"}.get(tag or "", "")
+
+
+# how each style comes on screen: from where it slides
+MOTION = {"nick": "up", "cn": "left", "disney": "fade", "boomerang": "right", "25days": "up", "": "left"}
+
+
+def _splat(cx, cy, r, seed=7, bumps=7):
+    """A paint splat: a rounded blob with a few soft lobes."""
+    import random as _r
+    rng = _r.Random(seed)
+    phases = [rng.random() * 6.28 for _ in range(3)]
+    pts = []
+    for i in range(240):
+        a = 2 * math.pi * i / 240
+        bump = (0.09 * math.sin(a * bumps + phases[0]) + 0.05 * math.sin(a * 3 + phases[1])
+                + 0.03 * math.sin(a * 11 + phases[2]))
+        pts.append((cx + r * (1 + bump) * math.cos(a) * 1.4, cy + r * (1 + bump) * math.sin(a)))
+    return pts
+
+
+def _fit(title, font, max_w):
+    title = " ".join((title or "").split())
+    while font.getlength(title) > max_w and len(title) > 4:
+        title = title[:-2].rstrip(" ,.-:") + "…"
+    return title
+
+
+def _shadowed(img, pad, blur, alpha=120, dy=0.0):
+    """A soft drop shadow under everything already drawn on img."""
+    a = img.getchannel("A").point(lambda v: min(alpha, v))
+    sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    sh.putalpha(a)
+    sh = sh.filter(ImageFilter.GaussianBlur(blur))
+    out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    out.alpha_composite(sh, (0, round(dy)))
+    out.alpha_composite(img)
+    return out
+
+
+def _banner_nick(title, bh, k):
+    big = _font(round(bh * 0.5), "fun")
+    tfont = _font(round(bh * 0.5), "fun")
+    t = _fit(title, tfont, bh * 7.2)
+    sr = bh * 0.58
+    w = round(sr * 2.9 + tfont.getlength(t) + bh * 1.0)
+    h = round(bh * 1.55)
+    img = Image.new("RGBA", (w + 40 * k, h + 40 * k), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cx, cy = 20 * k + sr * 1.45, 20 * k + h / 2
+    # the title on a dark, slightly tilted slab tucked behind the splat
+    slab = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(slab)
+    sd.rounded_rectangle((cx, cy - bh * 0.42, 20 * k + w, cy + bh * 0.42), round(bh * 0.2), fill=(30, 18, 60, 225))
+    slab = slab.rotate(-2, resample=Image.BICUBIC, center=(cx, cy))
+    img.alpha_composite(slab)
+    d = ImageDraw.Draw(img)
+    d.polygon(_splat(cx, cy, sr), fill="#f57d0d")
+    d.ellipse((cx + sr * 1.25, cy - sr * 1.0, cx + sr * 1.45, cy - sr * 0.8), fill="#f57d0d")  # flecks of paint
+    d.ellipse((cx - sr * 1.75, cy + sr * 0.5, cx - sr * 1.58, cy + sr * 0.67), fill="#f57d0d")
+    label = "next"
+    lw = big.getlength(label)
+    lb = big.getbbox(label)
+    d.text((cx - lw / 2, cy - (lb[3] + lb[1]) / 2), label, font=big, fill="white",
+           stroke_width=round(bh * 0.05), stroke_fill="#7a2f00")
+    tb = tfont.getbbox("Hg")
+    d.text((cx + sr * 1.65, cy - (tb[3] + tb[1]) / 2 - bh * 0.02), t, font=tfont, fill="white",
+           stroke_width=round(bh * 0.04), stroke_fill="#1a0f33")
+    return _shadowed(img, 20 * k, bh * 0.08, 140, bh * 0.05)
+
+
+def _banner_cn(title, bh, k):
+    lab = _font(round(bh * 0.3), "sans")
+    tfont = _font(round(bh * 0.5), "sans")
+    t = _fit(title.upper(), tfont, bh * 7.5)
+    sq = round(bh * 0.16)
+    tw = round(tfont.getlength(t) + bh * 0.8)
+    lw = round(lab.getlength("COMING UP NEXT") + bh * 0.1)
+    w = max(tw, lw + bh) + sq * 2
+    h = round(bh * 1.25) + sq * 2
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    # the checkerboard edge, then a black slab
+    for i in range(0, w // sq + 1):
+        for j in range(2):
+            if (i + j) % 2 == 0:
+                d.rectangle((i * sq, j * sq, i * sq + sq - 1, j * sq + sq - 1), fill="black")
+            else:
+                d.rectangle((i * sq, j * sq, i * sq + sq - 1, j * sq + sq - 1), fill="white")
+    d.rectangle((0, sq * 2, w, h), fill=(0, 0, 0, 235))
+    d.text((bh * 0.4, sq * 2 + bh * 0.1), "COMING UP NEXT", font=lab, fill="white")
+    d.line((bh * 0.4, sq * 2 + bh * 0.5, bh * 0.4 + lw, sq * 2 + bh * 0.5), fill="white", width=k * 2)
+    d.text((bh * 0.4, sq * 2 + bh * 0.55), t, font=tfont, fill="white")
+    return img
+
+
+def _banner_disney(title, bh, k):
+    lab = _font(round(bh * 0.32), "serif")
+    tfont = _font(round(bh * 0.5), "sans")
+    t = _fit(title, tfont, bh * 7.5)
+    w = round(max(tfont.getlength(t), lab.getlength("up next") + bh) + bh * 1.4)
+    h = round(bh * 1.3)
+    pad = 24 * k
+    img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+    # a glowing blue-to-purple pill
+    grad = Image.new("RGBA", (w, h))
+    gd = ImageDraw.Draw(grad)
+    for x in range(w):
+        f = x / max(1, w - 1)
+        gd.line((x, 0, x, h), fill=(round(24 + 70 * f), round(70 - 30 * f), round(190 + 20 * f), 235))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), h // 2, fill=255)
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(glow).rounded_rectangle((pad, pad, pad + w, pad + h), h // 2, fill=(140, 170, 255, 160))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(bh * 0.18)))
+    img.paste(grad, (pad, pad), mask)
+    d = ImageDraw.Draw(img)
+    # a little sparkle
+    sx, sy, s = pad + bh * 0.62, pad + h * 0.36, bh * 0.16
+    d.polygon([(sx, sy - s), (sx + s * 0.25, sy - s * 0.25), (sx + s, sy), (sx + s * 0.25, sy + s * 0.25), (sx, sy + s),
+               (sx - s * 0.25, sy + s * 0.25), (sx - s, sy), (sx - s * 0.25, sy - s * 0.25)], fill="white")
+    d.text((pad + bh * 0.9, pad + h * 0.12), "up next", font=lab, fill=(220, 230, 255, 255))
+    d.text((pad + bh * 0.62, pad + h * 0.43), t, font=tfont, fill="white")
+    return img
+
+
+def _banner_boomerang(title, bh, k):
+    lab = _font(round(bh * 0.36), "fun")
+    tfont = _font(round(bh * 0.46), "serif")
+    t = _fit(title, tfont, bh * 7.2)
+    burst_r = bh * 0.78
+    tw = round(tfont.getlength(t) + bh * 1.0)
+    h = round(bh * 1.1)
+    w = round(burst_r * 2 + tw)
+    pad = 16 * k
+    img = Image.new("RGBA", (w + pad * 2, round(burst_r * 2) + pad * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cy = pad + burst_r
+    # cream card with a teal rule, the 1960s way
+    d.rounded_rectangle((pad + burst_r, cy - h / 2, pad + w, cy + h / 2), round(bh * 0.12), fill=(246, 236, 214, 240))
+    d.rectangle((pad + burst_r, cy + h / 2 - k * 6, pad + w - round(bh * 0.12), cy + h / 2 - k * 2), fill="#1d8f93")
+    # an atomic starburst for "next"
+    cx = pad + burst_r
+    pts = []
+    for i in range(24):
+        r = burst_r if i % 2 == 0 else burst_r * 0.68
+        a = math.pi * i / 12 - math.pi / 2
+        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    d.polygon(pts, fill="#ef6f2e")
+    for i, label in enumerate(("next!",)):
+        lw = lab.getlength(label)
+        lb = lab.getbbox(label)
+        d.text((cx - lw / 2, cy - (lb[3] + lb[1]) / 2), label, font=lab, fill="white", stroke_width=k, stroke_fill="#9b3a12")
+    tb = tfont.getbbox("Hg")
+    d.text((cx + burst_r + bh * 0.25, cy - (tb[3] + tb[1]) / 2 - k * 2), t, font=tfont, fill=(35, 28, 22, 255))
+    return _shadowed(img, pad, bh * 0.07, 110, bh * 0.05)
+
+
+def _banner_25days(title, bh, k):
+    lab = _font(round(bh * 0.3), "serif")
+    tfont = _font(round(bh * 0.48), "serif")
+    t = _fit(title, tfont, bh * 7.5)
+    w = round(max(tfont.getlength(t), lab.getlength("Coming up next")) + bh * 1.6)
+    h = round(bh * 1.3)
+    pad = 14 * k
+    img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((pad, pad, pad + w, pad + h), round(bh * 0.14), fill=(142, 18, 32, 238),
+                        outline=(222, 184, 98, 255), width=k * 3)
+    import random as _r
+    rng = _r.Random(25)
+    x_from = pad + bh * 0.5 + lab.getlength("Coming up next") + bh * 0.4
+    for _ in range(6):  # a few snowflakes, above the title and right of the label
+        x, y, s = rng.uniform(x_from, pad + w - bh * 0.25), pad + rng.uniform(bh * 0.18, h * 0.36), rng.uniform(3, 6) * k
+        for a in range(3):
+            ang = math.pi * a / 3
+            d.line((x - s * math.cos(ang), y - s * math.sin(ang), x + s * math.cos(ang), y + s * math.sin(ang)),
+                   fill=(255, 255, 255, 90), width=k)
+    d.text((pad + bh * 0.5, pad + h * 0.1), "Coming up next", font=lab, fill=(236, 205, 130, 255))
+    d.text((pad + bh * 0.5, pad + h * 0.42), t, font=tfont, fill="white")
+    return _shadowed(img, pad, bh * 0.07, 110, bh * 0.05)
+
+
+THEME_DRAW = {"nick": _banner_nick, "cn": _banner_cn, "disney": _banner_disney, "boomerang": _banner_boomerang,
+              "25days": _banner_25days}
+
+
+def make_themed_banner(title: str, height: int, theme: str) -> bytes:
+    k = 2
+    bh = round(height * 0.1) * k
+    img = THEME_DRAW[theme](title, bh, k)
+    img = img.crop(img.getbbox() or (0, 0, 1, 1))
+    return _png(img.resize((max(1, img.width // k), max(1, img.height // k)), Image.LANCZOS))
