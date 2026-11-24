@@ -149,6 +149,24 @@ class Prober:
 
 LONG_AD = 150  # a "commercial" file longer than this is a compilation, to be split into single ads
 
+# Bumpers and idents ("You're watching Disney Channel", Nick's splat, "We'll be right back") play before a
+# show and going into its breaks, under that show's own network, never as an ordinary commercial.
+BUMPER_FOLDERS = {"bumpers", "bumper", "bumps", "idents", "ident", "ids", "station ids", "intros", "intro",
+                  "interstitials"}
+_BUMPER = re.compile(r"\bbump(er)?s?\b|\bidents?\b|you'?re watching|you are watching|coming up next|"
+                     r"we'?ll be right back|back to the show|now back to|station id|\bintro\b", re.I)
+BUMPER_MAX = 20.0  # longer than this, even on a bumper tape, it's a promo or a commercial
+
+
+def with_kind(tags: list[str], title: str, dur: float, tape: str = "") -> list[str]:
+    """Folder tags, plus "bumper" for a bumper or ident: from a bumpers folder, named like one, or a
+    short clip from a tape of bumpers."""
+    if dur > BUMPER_MAX or "bumper" in tags:
+        return tags
+    if BUMPER_FOLDERS & set(tags) or _BUMPER.search(title or "") or (tape and _BUMPER.search(tape) and dur <= 15):
+        return [*tags, "bumper"]
+    return tags
+
 
 def _cached_clips(path: str, size: int, mtime: int) -> list | None:
     try:
@@ -207,15 +225,29 @@ async def scan_folder(root: str, kind: str, prober: Prober, progress=None, split
                 log.info("Left out %s: it's %d minutes long and has no clear breaks between ads",
                          os.path.basename(p), r["dur"] // 60)
                 continue
-            clips = {"title": stem, "clips": found}
+            clips = {"title": stem, "clips": [list(c) for c in found]}
         if clips is not None and kind == "commercials":
             # A recorded commercial break: each commercial plays straight out of the tape.
             base = clean_title(clips.get("title") or stem)
-            for i, (start, length) in enumerate(clips.get("clips") or []):
-                if start + length <= r["dur"] + 1:
-                    items.append({"id": f"{file_id(p)}c{i}", "dur": length, "in": start, "file": p, "part": "",
-                                  "audio": r["a"], "chapters": [], "tags": folder_tags, "src": src,
-                                  "title": f"{base} ({i + 1})", "h": r.get("h", 0), "q": r.get("q")})
+            q = dict(r.get("q") or {})
+            if (clips.get("q") or {}).get("eh"):
+                q["eh"] = clips["q"]["eh"]  # how sharp the picture really is (see archive.effective_height)
+            airing = clips.get("airing")
+            for i, c in enumerate(clips.get("clips") or []):
+                c = c if isinstance(c, dict) else {"s": c[0], "d": c[1]}
+                start, length = float(c["s"]), float(c["d"])
+                if start + length > r["dur"] + 1:
+                    continue
+                title = c.get("n") or f"{base} ({i + 1})"
+                tags = with_kind(folder_tags, title if c.get("n") else "", length, tape=base)
+                item = {"id": f"{file_id(p)}c{i}", "dur": length, "in": start, "file": p, "part": "",
+                        "audio": r["a"], "chapters": [], "tags": tags, "src": src,
+                        "title": title, "h": q.get("eh") or r.get("h", 0), "q": q}
+                if c.get("dup"):
+                    item["dup"] = True  # a better copy of the same ad is on another tape
+                if airing:
+                    item["brk"] = airing.get("n", 0)  # which break of a recorded broadcast it aired in
+                items.append(item)
             continue
         if kind == "commercials" and r["dur"] > LONG_AD * 4:
             continue  # a long recording with no splitter: it could never fit in a break
@@ -225,5 +257,6 @@ async def scan_folder(root: str, kind: str, prober: Prober, progress=None, split
             item.update(parse_music_video(stem, folder_tags))
         else:
             item["title"] = clean_title(stem)
+            item["tags"] = with_kind(folder_tags, stem, r["dur"])
         items.append(item)
     return items

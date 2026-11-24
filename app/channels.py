@@ -7,6 +7,7 @@ A channel's content is a list of rules, for example:
   {"type": "filter", "media": "music_videos"}
   {"type": "holiday", "key": "christmas"}
   {"type": "show", "id": "p1234"}
+  {"type": "lineup", "key": "boomerang"}
 Rules are re-applied after every scan, so new shows join automatically.
 """
 from __future__ import annotations
@@ -47,6 +48,8 @@ CHANNEL_DEFAULTS = {
     "season": "",  # a holiday key: the channel only airs during that holiday
     "off_season": "card",  # card (shows "back on ...") | hide (leaves the guide)
     "holiday_mix": True,  # sprinkle in holiday episodes during the holidays
+    "style": "",  # "2000s": a 2000s cable-style holiday day (see xmas.py) | "plain": just shuffle
+    "plan": {},  # a fixed historical schedule, e.g. {"name": "abcfamily25", "year": 2008}
     "seed": 0,
 }
 
@@ -84,15 +87,37 @@ def normalize_channel(ch: dict) -> dict:
     out["season"] = out["season"] if out["season"] in seasons.PRESETS else ""
     out["off_season"] = out["off_season"] if out["off_season"] in ("card", "hide") else "card"
     out["holiday_mix"] = bool(out["holiday_mix"])
+    out["style"] = out["style"] if out["style"] in ("", "2000s", "plain") else ""
+    plan = out["plan"] if isinstance(out["plan"], dict) else {}
+    from .xmasdata import SCHEDULES
+    if plan.get("name") == "abcfamily25" and int(plan.get("year") or 0) in SCHEDULES:
+        out["plan"] = {"name": "abcfamily25", "year": int(plan["year"]),
+                       "stand_ins": bool(plan.get("stand_ins", True)), "exact_breaks": bool(plan.get("exact_breaks", True))}
+    else:
+        out["plan"] = {}
     out["seed"] = int(out["seed"] or random.randint(1, 2**31))
     return out
 
 
+def christmas_style(ch: dict) -> str:
+    """Christmas channels get the 2000s treatment unless you've chosen "plain"."""
+    if ch.get("plan"):
+        return ""
+    if ch.get("style"):
+        return "" if ch["style"] == "plain" else ch["style"]
+    return "2000s" if ch.get("season") == "christmas" else ""
+
+
+# Bump when the way schedules are built changes, so an update rebuilds them (from the show on now).
+SCHEDULE_VERSION = 2  # 2: bumpers and idents in their own places, Christmas and 25 Days channels
+
+
 def content_signature(ch: dict, holidays: dict | None = None) -> str:
     """Changes whenever an edit should rebuild the schedule."""
-    keys = ("rules", "exclude", "order", "slot_minutes", "commercials", "seed", "season", "holiday_mix")
+    keys = ("rules", "exclude", "order", "slot_minutes", "commercials", "seed", "season", "holiday_mix", "style",
+            "plan")
     blob = (json.dumps({k: ch.get(k) for k in keys}, sort_keys=True) + json.dumps(holidays or {}, sort_keys=True)
-            + ",".join(sorted(hidden_filler)))
+            + ",".join(sorted(hidden_filler)) + f"|v{SCHEDULE_VERSION}")
     return hashlib.sha1(blob.encode()).hexdigest()[:16]
 
 
@@ -135,6 +160,9 @@ def resolve(ch: dict, cat: Catalog, holidays: dict | None = None) -> list[dict]:
             shows.add(rule["id"])
         elif t == "movie" and rule.get("id") in cat.movies:
             movies.add(rule["id"])
+        elif t == "lineup":  # a classic channel's real lineup, e.g. Boomerang's (see lineups.py)
+            from .lineups import show_ids
+            shows |= show_ids(cat, str(rule.get("key") or ""))
         elif t == "holiday" and rule.get("key") in seasons.PRESETS:
             found = seasons.matches(cat, rule["key"], holidays.get(rule["key"]) or {})
             net = str(rule.get("network") or "").lower()
@@ -186,7 +214,7 @@ def filler_pool(ch: dict, cat: Catalog) -> list[dict]:
         for x in items:
             if want and not (_lower(x.get("tags")) & want):
                 continue
-            if x["id"] in hidden_filler:
+            if x["id"] in hidden_filler or x.get("dup"):
                 continue
             if x["dur"] >= 1:
                 pool.append(x)

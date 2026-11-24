@@ -163,7 +163,7 @@ function describeInfo(i) {
 
 // ================================================================ page frames
 
-const NAV = [["#/channels", "Channels"], ["#/networks", "Networks"], ["#/holidays", "Holidays"], ["#/commercials", "Commercials"],
+const NAV = [["#/channels", "Channels"], ["#/networks", "Networks"], ["#/holidays", "Holidays"], ["#/25days", "25 Days"], ["#/commercials", "Commercials"],
   ["#/guide", "TV Guide"], ["#/settings", "Settings"], ["#/help", "Help"]];
 
 function shell(active) {
@@ -174,6 +174,9 @@ function shell(active) {
       h("a", { class: "brand", href: "#/channels", "aria-label": "Rerun home" }, h("img", { src: "/static/logo.svg", alt: "Rerun" })),
       h("nav", { class: "nav", "aria-label": "Main" }, NAV.map(([href, label]) => h("a", { href, class: href === active ? "on" : null }, label))))),
     h("main", { id: "view", class: "page" }));
+  // On a phone the menu scrolls sideways: keep the page you're on in view.
+  const nav = $(".nav"), on = $(".nav a.on");
+  if (nav && on && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = on.offsetLeft - (nav.clientWidth - on.clientWidth) / 2;
   return $("#view");
 }
 
@@ -721,7 +724,8 @@ async function viewNetworks() {
   add(v, pageHead("Your library", "Networks", "Every TV network found in your library. Switch one on and it becomes a channel with its official logo; switch it off and the channel goes away. Your shows are never touched."));
   const bar = h("div", { class: "toolbar" });
   const body = h("div");
-  add(v, bar, body);
+  const classics = await classicChannels();
+  add(v, classics, bar, body);
   const st = await api("GET", "/api/settings");
   const auto = { ...st.auto };
   let query = "";
@@ -861,7 +865,270 @@ async function viewHolidays() {
       })),
       h("section", { class: "block", style: { marginTop: "38px" } }, blockHead("The calendar", "Coming up first"), r.holidays.map(row)));
   }
+  add(v, h("div", { class: "xmas-row" }, await christmasPanel(),
+    h("a", { class: "panel xmas-link", href: "#/25days" },
+      h("div", { class: "eyebrow" }, "ABC Family, December 1–25"),
+      h("h2", null, "25 Days of Christmas"),
+      h("p", { class: "lede" }, "The real schedule, the real commercials, and a list of what you still need."),
+      h("span", { class: "btn" }, "Open 25 Days"))));
+  v.append(body);
   load();
+}
+
+// ================================================================ classic channels (Boomerang)
+
+async function classicChannels() {
+  let r;
+  try { r = await api("GET", "/api/lineups"); } catch (x) { return null; }
+  return h("section", { class: "block", style: { marginBottom: "34px" } }, blockHead("Classic channels", "Built from their real lineups"),
+    h("p", { class: "block-note" }, "Some channels ran other networks' shows: Plex lists Scooby-Doo under CBS, not Boomerang. These channels are built from what they really aired."),
+    h("div", { class: "lineup-cards" }, r.lineups.map((l) => h("a", { class: "lineup-card", href: `#/lineup/${l.key}` },
+      h("img", { src: l.logo_url, alt: "" }),
+      h("div", null, h("b", null, l.name), h("span", null, `${l.years}. You have ${l.have} of its ${l.total} shows.`),
+        h("span", { class: "lineup-state" }, l.channel ? `On channel ${l.channel.number}` : "Not on the air yet"))))));
+}
+
+const TIER_NAMES = { staple: "Aired all the time", regular: "Aired often", occasional: "Aired now and then" };
+
+async function viewLineup(key) {
+  const v = shell("#/networks");
+  const body = h("div");
+  add(v, body);
+  const load = async () => {
+    let r;
+    try { r = await api("GET", `/api/lineups/${key}`); } catch (x) { fill(body, h("p", { class: "error" }, x.message)); return; }
+    document.title = `${r.name} · Rerun`;
+    const need = r.wants.filter((w) => !w.have);
+    const have = r.wants.filter((w) => w.have);
+    const scanBtn = h("button", { class: "btn", disabled: !!r.scan.running, onclick: async () => {
+      try { await api("POST", "/api/scan"); toast("Checking your Plex library…"); scanBtn.disabled = true; scanBtn.textContent = "Checking Plex…";
+        const wait = async () => { const s = await api("GET", "/api/scan"); if (s.running) later(wait, 2000); else { toast("Plex checked"); load(); } }; later(wait, 2000);
+      } catch (x) { toast(x.message, true); }
+    } }, r.scan.running ? "Checking Plex…" : "Check my Plex again");
+    const busy = r.finder.running;
+    fill(body,
+      h("p", null, h("a", { href: "#/networks" }, "← Networks")),
+      h("header", { class: "lineup-head" },
+        h("img", { src: r.logo_url, alt: "" }),
+        h("div", null, h("h1", null, r.name), h("p", { class: "lede" }, `${r.about} This is its lineup from ${r.years}.`))),
+      summaryBar([[`${r.have} / ${r.total}`, "Shows you have"], [`${r.staples.have} / ${r.staples.total}`, "Of the staples"],
+        [r.bumpers, "Bumpers and idents"], [r.channel ? r.channel.number : "—", "Channel"]]),
+
+      h("section", { class: "panel" },
+        h("h2", null, r.channel ? `${r.channel.number} · ${r.channel.name}` : "Put it on the air"),
+        h("p", { class: "lede" }, r.channel
+          ? `Plays every ${r.name} show you have, with ${r.name}'s logo in the corner and its bumpers before each show and going into the breaks. New shows you add join automatically.`
+          : `A channel with every ${r.name} show you have, its logo in the corner, and its bumpers and idents before each show and going into the breaks.`),
+        h("div", { class: "row" }, r.channel ? h("a", { class: "btn", href: `#/channel/${r.channel.id}` }, "Edit channel")
+          : h("button", { class: "btn primary", disabled: !have.length, onclick: async () => {
+            try { const res = await api("POST", `/api/lineups/${key}/channel`); toast(`${r.name} is on channel ${res.number}`); load(); } catch (x) { toast(x.message, true); }
+          } }, have.length ? `Add the ${r.name} channel` : "Get some of its shows first"))),
+
+      h("section", { class: "panel" },
+        h("h2", null, `${r.name}'s bumpers, idents and commercials`),
+        h("p", { class: "lede" }, r.bumpers
+          ? `You have ${plural(r.bumpers, "bumper or ident", "bumpers and idents")} and ${plural(r.commercials, "commercial")} from ${r.name}. Find more to add variety.`
+          : `The bits between the shows are most of what made ${r.name} feel like ${r.name}. Rerun can find them on the Internet Archive: bumper and ident collections, ${r.name} commercial breaks from the 2000s, and whole broadcasts (only their breaks are kept).`),
+        busy ? h("p", { class: "hint" }, "Finding commercials… follow along on the Commercials page.")
+          : h("div", { class: "row" },
+            h("button", { class: "btn primary", onclick: async () => {
+              try { await api("POST", `/api/lineups/${key}/finder`, { budget_gb: 3, christmas: true }); toast(`Finding ${r.name}'s bumpers and commercials`); location.hash = "#/commercials"; }
+              catch (x) { toast(x.message, true); }
+            } }, `Find ${r.name}'s bumpers and commercials`),
+            h("a", { class: "btn quiet", href: "#/commercials" }, "See what you have"))),
+
+      h("section", { class: "panel" },
+        h("h2", null, need.length ? `${need.length} shows to get` : `You have every ${r.name} show`),
+        h("p", { class: "lede" }, `Checked against your library ${r.scanned_at ? fmtAgo(r.scanned_at) : "(not scanned yet)"}, by name and the year each series began. Staples are the shows ${r.name} ran year after year; start there.`),
+        h("div", { class: "row" }, scanBtn,
+          need.length ? h("button", { class: "btn", onclick: async () => { copyText(await (await fetch(`/api/lineups/${key}/need.txt`)).text()); } }, "Copy the list to get") : null,
+          need.length ? h("a", { class: "btn quiet", href: `/api/lineups/${key}/need.txt`, target: "_blank" }, "Open as text") : null),
+        h("div", { class: "want-cols" },
+          h("div", null, h("h3", null, `Still to get · ${need.length}`),
+            ["staple", "regular", "occasional"].map((tier) => {
+              const list = need.filter((w) => w.tier === tier);
+              return list.length ? [h("h4", { class: "tier" }, `${TIER_NAMES[tier]} · ${list.length}`),
+                h("ul", { class: "want-list" }, list.map((w) => h("li", null, h("b", null, w.title), h("span", { class: "muted" }, ` (${w.year}) · on ${r.name} ${w.aired}`))))] : null;
+            })),
+          h("div", null, h("h3", null, `In your library · ${have.length}`),
+            h("ul", { class: "want-list have" }, have.map((w) => h("li", { title: `Matched: ${w.match}` },
+              h("b", null, w.title), h("span", { class: "muted" }, ` · ${plural(w.episodes, "episode")}`))))))));
+  };
+  load();
+}
+
+// ================================================================ Christmas: the 2000s channel
+
+async function christmasPanel() {
+  const box = h("section", { class: "panel xmas-panel" });
+  const load = async () => {
+    let r;
+    try { r = await api("GET", "/api/christmas"); } catch (x) { fill(box, h("p", { class: "error" }, x.message)); return; }
+    const need = r.essentials.filter((e) => !e.have);
+    const label = (e) => e.kind === "episode" ? `${e.show}: “${e.title}”` : `${e.title} (${e.year})`;
+    fill(box,
+      h("div", { class: "eyebrow" }, "Christmas, the 2000s way"),
+      h("h2", null, "The Christmas Channel"),
+      h("p", { class: "lede" }, "Your Christmas channel runs a day like 2000s cable did, with 2000s holiday commercials first and a countdown to Christmas in the guide."),
+      h("ul", { class: "xmas-day" }, r.dayparts.map((d) => h("li", null, h("b", null, `${fmtHour(d.from)}–${fmtHour(d.to)}`), d.name)),
+        h("li", null, h("b", null, "Dec 24, 8pm"), r.has_story ? "24 Hours of A Christmas Story, back to back until 8pm Christmas Day"
+          : "24 Hours of A Christmas Story, once A Christmas Story (1983) is in your library")),
+      r.channels.length ? r.channels.map((c) => h("div", { class: "row", style: { marginTop: "6px" } },
+        toggle(`${c.number} ${c.name}: 2000s-style day`, c.style === "2000s", async (val) => {
+          try { await api("PUT", `/api/channels/${c.id}`, { style: val ? "2000s" : "plain" }); toast(val ? "2000s Christmas day on" : "Back to a plain shuffle"); }
+          catch (x) { toast(x.message, true); }
+        })))
+        : h("p", { class: "hint" }, "Add a Christmas channel from the calendar below; it gets the 2000s treatment."),
+      h("details", { class: "subpanel" },
+        h("summary", null, `2000s Christmas essentials: you have ${r.have} of ${r.total}`),
+        h("p", { class: "hint" }, "The movies, specials and episodes that were on every December in the 2000s. Rerun also counts these as Christmas titles even when the name doesn't say so (Elf, The Polar Express, Home Alone)."),
+        h("div", { class: "want-cols" },
+          h("div", null, h("h3", null, `Still to get · ${need.length}`), h("ul", { class: "want-list" }, need.map((e) => h("li", null, label(e))))),
+          h("div", null, h("h3", null, `In your library · ${r.have}`), h("ul", { class: "want-list have" },
+            r.essentials.filter((e) => e.have).map((e) => h("li", { title: e.match }, label(e)))))),
+        need.length ? h("button", { class: "btn small", onclick: () => copyText(need.map(label).join("\n")) }, "Copy the list to get") : null));
+  };
+  load();
+  return box;
+}
+
+const fmtHour = (h) => `${(h % 12) || 12}${h < 12 ? "am" : "pm"}`;
+const fmtClock = (s) => { const [hh, mm] = s.split(":").map(Number); return `${(hh % 12) || 12}:${String(mm).padStart(2, "0")}${hh < 12 ? "am" : "pm"}`; };
+
+// ================================================================ ABC Family's 25 Days of Christmas
+
+async function viewTwentyFive() {
+  const v = shell("#/25days");
+  add(v, pageHead("ABC Family, December", "25 Days of Christmas",
+    "ABC Family's 25 Days of Christmas, played back at the exact times it aired, with the real commercials from those Decembers. Rerun checks your Plex library for every title and tells you what you still need."));
+  const body = h("div");
+  add(v, body);
+  let year = 0;
+  const load = async () => {
+    let r;
+    try { r = await api("GET", `/api/25days${year ? `?year=${year}` : ""}`); } catch (x) { fill(body, h("p", { class: "error" }, x.message)); return; }
+    year = r.year;
+    const need = r.wants.filter((w) => !w.have);
+    const pct = Math.round((100 * r.have) / Math.max(1, r.total));
+    const kindName = { movie: "Movie", special: "TV special" };
+    const scanBtn = h("button", { class: "btn", onclick: async () => {
+      try { await api("POST", "/api/scan"); toast("Checking your Plex library…"); scanBtn.disabled = true; scanBtn.textContent = "Checking Plex…";
+        const wait = async () => { const s = await api("GET", "/api/scan"); if (s.running) later(wait, 2000); else { toast("Plex checked"); load(); } }; later(wait, 2000);
+      } catch (x) { toast(x.message, true); }
+    } }, r.scan.running ? "Checking Plex…" : "Check my Plex again");
+    scanBtn.disabled = !!r.scan.running;
+    const ch = r.channel;
+    const opts = { stand_ins: ch ? ch.stand_ins : true, exact_breaks: ch ? ch.exact_breaks : true };
+    const saveChannel = async (msg) => {
+      try { const res = await api("POST", "/api/25days/channel", { year, ...opts }); toast(msg || `On channel ${res.number}`); load(); }
+      catch (x) { toast(x.message, true); }
+    };
+    fill(body,
+      h("div", { class: "toolbar slim" },
+        h("span", { class: "plain-label" }, "Schedule from"),
+        h("div", { class: "chips" }, r.years.map((y) => h("span", { class: "chip toggle" + (y === year ? " on" : ""), role: "button", tabindex: 0,
+          onclick: () => { year = y; load(); } }, `December ${y}`))),
+        h("span", { class: "hint", style: { margin: 0 } }, r.source)),
+      summaryBar([[`${r.have} / ${r.total}`, "Titles you have"], [need.length, "Still to get"],
+        [r.finder.tapes.reduce((n, t) => n + t.clips, 0), "Real 25 Days ads"], [ch ? ch.number : "—", "Channel"]]),
+      h("div", { class: "meter", style: { margin: "-26px 0 34px" } }, h("i", { style: { width: pct + "%" } })),
+
+      h("section", { class: "panel" },
+        h("div", { class: "eyebrow" }, "The channel"),
+        h("h2", null, ch ? `${ch.number} · ${ch.name}` : "Put it on the air"),
+        h("p", { class: "lede" }, ch
+          ? `Playing the December ${ch.year} schedule from December 1 to 25. Between listings it runs your ABC Family shows (or Christmas episodes), like ABC Family's regular daytime.`
+          : `A channel that plays the December ${year} schedule day by day: the same titles at the same times, from December 1 to 25.`),
+        r.on_now ? h("p", null, h("span", { class: "on-air" }, "On now"), " ", r.on_now.title) : r.up_next ? h("p", { class: "hint" }, `Next: ${r.up_next.title}, ${new Date(r.up_next.s * 1000).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`) : null,
+        checkbox("Fill titles I don't have with other Christmas movies from my library", opts.stand_ins, (val) => { opts.stand_ins = val; if (ch) saveChannel("Saved"); },
+          "Off: a card says what to get instead."),
+        checkbox("Replay recorded breaks where they aired", opts.exact_breaks, (val) => { opts.exact_breaks = val; if (ch) saveChannel("Saved"); },
+          "When Rerun has a tape of the actual broadcast, its commercials play at the same moments in the movie, in their original order."),
+        h("div", { class: "row", style: { marginTop: "14px" } },
+          ch ? [ch.year !== year ? h("button", { class: "btn primary", onclick: () => saveChannel(`Now playing December ${year}`) }, `Switch to December ${year}`) : null,
+            h("a", { class: "btn", href: `#/channel/${ch.id}` }, "Edit channel")]
+            : h("button", { class: "btn primary", onclick: () => saveChannel() }, "Add the 25 Days channel"))),
+
+      h("section", { class: "panel" },
+        h("div", { class: "eyebrow" }, "Your Plex library"),
+        h("h2", null, need.length ? `${need.length} titles to get` : "You have every title"),
+        h("p", { class: "lede" }, `Checked against your library ${r.scanned_at ? fmtAgo(r.scanned_at) : "(not scanned yet)"}. Titles are matched by name and year, so the 1979 Jack Frost special and the 1998 movie are told apart. Specials can be movies in Plex or episodes of a specials show.`),
+        h("div", { class: "row" }, scanBtn,
+          need.length ? h("button", { class: "btn", onclick: async () => { const t = await (await fetch(`/api/25days/need.txt?year=${year}`)).text(); copyText(t); } }, "Copy the list to get") : null,
+          need.length ? h("a", { class: "btn quiet", href: `/api/25days/need.txt?year=${year}`, target: "_blank" }, "Open as text") : null),
+        h("div", { class: "want-cols" },
+          h("div", null, h("h3", null, `Still to get · ${need.length}`),
+            h("ul", { class: "want-list" }, need.map((w) => h("li", null,
+              h("b", null, w.title), ` (${w.year})`,
+              h("span", { class: "muted" }, ` · ${kindName[w.kind]}${w.christmas ? "" : " · not a Christmas title"} · ${w.airings > 1 ? `airs ${w.airings} times, first` : "airs"} ${w.first}`))))),
+          h("div", null, h("h3", null, `In your library · ${r.have}`),
+            h("ul", { class: "want-list have" }, r.wants.filter((w) => w.have).map((w) => h("li", { title: `Matched: ${w.match}` },
+              h("b", null, w.title), h("span", { class: "muted" }, ` · ${w.match}`))))))),
+
+      h("section", { class: "panel finder-panel" },
+        h("div", { class: "eyebrow" }, "The real commercials"),
+        h("h2", null, "Commercials from 25 Days broadcasts"),
+        h("p", { class: "lede" }, `Rerun looks on the Internet Archive for ABC Family tapes from December ${year} first: commercial breaks people taped, and whole broadcasts recorded with their commercials (only the breaks are kept). Then it tries the years either side, since many ads and 25 Days promos ran for several Decembers. The 25 Days channel plays these before anything else.`),
+        twentyFiveFinder(year, r.finder, load)),
+
+      h("section", { class: "block", style: { marginTop: "38px" } }, blockHead("The schedule", `December ${year}`),
+        h("p", { class: "block-note" }, "Eastern times, as ABC Family listed them; Rerun plays them at the same clock times where you are. Gaps were ABC Family's regular shows."),
+        h("div", { class: "days" }, Object.entries(r.days).map(([d, slots]) => h("details", { class: "day" },
+          h("summary", null, h("b", null, `December ${d}`), h("span", { class: "muted" }, ` · ${slots.length} listings`)),
+          h("ul", null, slots.map((s) => {
+            const w = r.wants.find((x) => x.key === s.key);
+            return h("li", { class: w && w.have ? "have" : "need" }, h("span", { class: "t" }, fmtClock(s.start)), s.title,
+              w && !w.have ? h("span", { class: "muted" }, " · need") : null);
+          })))))));
+  };
+  load();
+}
+
+function twentyFiveFinder(year, d, reload) {
+  const box = h("div", { class: "finder" });
+  let gb = 4, minH = 0, nearby = true, timer = null;
+  const render = (d) => {
+    const st = d.status;
+    const busy = st.running;
+    fill(box,
+      h("div", { class: "row" },
+        h("span", { class: "plain-label" }, "Space"),
+        select([[1, "1 GB"], [4, "4 GB"], [10, "10 GB"], [25, "25 GB"]], gb, (v) => { gb = parseFloat(v); }, { class: "inline", disabled: busy }),
+        h("span", { class: "plain-label" }, "Quality"),
+        select([[0, "Any (exact ads first)"], [360, "Watchable and up"], [480, "Good and up"]], minH, (v) => { minH = parseInt(v, 10); }, { class: "inline", disabled: busy })),
+      checkbox("Also the years either side", nearby, (val) => { nearby = val; }),
+      h("p", { class: "hint" }, "Whole broadcasts are read straight from the archive and only their breaks are saved, so they need little space but can take a while."),
+      h("div", { class: "row", style: { marginTop: "10px" } },
+        busy ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this step…"); } }, "Stop")
+          : h("button", { class: "btn primary", onclick: async () => {
+            try { render(await api("POST", "/api/25days/finder", { year, budget_gb: gb, min_height: minH, nearby })); poll(); }
+            catch (x) { toast(x.message, true); }
+          } }, `Find December ${year}'s commercials`)),
+      busy ? h("div", null,
+        h("div", { class: "progress" + (st.total ? "" : " indeterminate") }, h("div", { style: { width: st.total ? `${Math.round((100 * st.done) / st.total)}%` : "" } })),
+        h("p", { class: "hint" }, st.step)) : st.step ? h("p", { class: "hint" }, st.step) : null,
+      st.error ? h("p", { class: "error" }, st.error) : null,
+      st.log && st.log.length ? h("ul", { class: "finder-log" }, st.log.slice(-8).map((l) => h("li", null, l))) : null,
+      d.tapes.length ? h("details", { class: "subpanel" },
+        h("summary", null, `${plural(d.tapes.length, "tape")}, ${plural(d.tapes.reduce((n, t) => n + t.clips, 0), "commercial")}`),
+        h("ul", { class: "finder-tapes" }, d.tapes.map((t) => h("li", null, `${t.title} · ${t.year} · ${t.kind === "airing" ? "broadcast" : "commercials"} · ${t.clips} ads · ${t.quality} picture`))),
+        d.airings.length ? h("p", { class: "hint" }, `Recorded broadcasts whose breaks replay in place: ${d.airings.map((a) => `${a.title} (${a.breaks} breaks)`).join("; ")}`) : null,
+        busy ? null : h("button", { class: "btn small quiet", onclick: async () => {
+          if (!confirm("Delete the 25 Days commercials Rerun downloaded?")) return;
+          try { await api("DELETE", "/api/finder/25days"); toast("Removed"); reload(); } catch (x) { toast(x.message, true); }
+        } }, "Delete these")) : null);
+  };
+  const poll = async () => {
+    try {
+      const r = await api("GET", `/api/25days?year=${year}`);
+      render(r.finder);
+      clearTimeout(timer);
+      if (r.finder.status.running) timer = later(poll, 2500); else if (r.finder.status.step) reload();
+    } catch (x) { fill(box, h("p", { class: "error" }, x.message)); }
+  };
+  render(d);
+  if (d.status.running) poll();
+  return box;
 }
 
 // ================================================================ channel editor
@@ -1197,7 +1464,7 @@ async function viewGuide() {
             const e = Math.min(b.e, g.end);
             const isNow = b.s <= now && now < b.e;
             return h("div", {
-              class: "g-block" + (isNow ? " now" : b.movie ? " movie" : ""), title: `${fmtTime(b.s)}–${fmtTime(b.e)}  ${b.title}${b.sub ? " — " + b.sub : ""}`,
+              class: "g-block" + (isNow ? " now" : b.movie ? " movie" : "") + (b.card ? " card" : ""), title: `${fmtTime(b.s)}–${fmtTime(b.e)}  ${b.title}${b.sub ? " — " + b.sub : ""}`,
               style: { left: ((s - g.start) / 60) * PX + 2 + "px", width: Math.max(4, ((e - s) / 60) * PX - 4) + "px" },
             }, h("b", null, b.title || "—"), b.sub ? h("span", null, b.sub) : null);
           })))));
@@ -1213,151 +1480,228 @@ function fmtDur(s) {
   return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s}s`;
 }
 
-function previewAd(ad) {
+function previewAd(ad, labels = {}) {
   modal((box, close) => {
-    fill(box, h("div", { class: "eyebrow" }, "Preview"), h("h2", { style: { margin: "6px 0 12px" } }, ad.title || "Commercial"),
+    fill(box, h("h2", { style: { margin: "0 0 12px" } }, ad.title || "Commercial"),
       h("video", { class: "ad-video", src: `/api/commercials/${ad.id}/preview.mp4`, controls: true, autoplay: true, playsinline: true }),
-      h("p", { class: "hint" }, `${fmtDur(ad.dur)} · ${ad.tags.join(" · ") || "no tags"}`),
-      h("p", { class: "hint" }, `Picture: ${qualityText(ad.q)}${ad.q && ad.q.h ? ` (${quality(ad)})` : ""}`),
+      h("p", { class: "ad-preview-meta" },
+        h("span", { class: `q-pill ${qualityClass(ad)}` }, quality(ad) || "Unknown"), fmtDur(ad.dur),
+        ad.tags.map((t) => labels[t] || t).join(", ") || null),
+      h("p", { class: "hint" }, `Picture: ${qualityText(ad.q)}`),
       h("div", { class: "row end" }, h("button", { class: "btn quiet", onclick: close }, "Close")));
   });
 }
 
 const SOURCE_NAMES = { found: "Found online", folder: "Your folders", plex: "Plex" };
-// "640×480 · 29.97 fps · 1.8 Mbps · h264"
-const qualityText = (q) => !q || !q.h ? "Quality unknown" : [`${q.w}×${q.h}`, q.fps ? `${q.fps} fps` : "",
-  q.kbps ? (q.kbps >= 1000 ? `${(q.kbps / 1000).toFixed(1)} Mbps` : `${q.kbps} kbps`) : "", q.codec].filter(Boolean).join(" · ");
-const quality = (a) => !a.h ? "" : a.h >= 700 ? "HD" : a.h >= 400 ? "Good quality" : a.h >= 300 ? "Watchable" : "Low quality";
+// "640×480, 29.97 fps, 1.8 Mbps, h264"
+const qualityText = (q) => !q || !q.h ? "quality unknown" : [`${q.w}×${q.h}`, q.eh && q.eh < q.h ? `blown up from ${q.eh} lines` : "",
+  q.fps ? `${q.fps} fps` : "",
+  q.kbps ? (q.kbps >= 1000 ? `${(q.kbps / 1000).toFixed(1)} Mbps` : `${q.kbps} kbps`) : "", q.codec].filter(Boolean).join(", ");
+const QUALITIES = [["HD", "q-hd"], ["Good", "q-good"], ["Watchable", "q-ok"], ["Low", "q-low"], ["Unknown", "q-none"]];
+const quality = (a) => !a.h ? "" : a.h >= 700 ? "HD" : a.h >= 400 ? "Good" : a.h >= 300 ? "Watchable" : "Low";
+const qualityClass = (a) => (QUALITIES.find(([n]) => n === (quality(a) || "Unknown")) || QUALITIES[4])[1];
 
 async function viewCommercials() {
   const v = shell("#/commercials");
-  add(v, pageHead("Your breaks", "Commercials", "Every commercial, promo and bumper Rerun can play. Click one to watch it; remove any you don't want on the air (nothing is deleted, and you can put them back)."));
-  const finderPanel = h("details", { class: "panel finder-panel" },
-    h("summary", null, h("span", { class: "eyebrow" }, "Find more"), h("h2", null, "Classic commercials from the Internet Archive")),
-    h("p", { class: "hint" }, "Real commercials, promos and bumpers taped off TV. Each network channel gets its own (Nick ads on Nickelodeon, Disney ads on Disney Channel), decade channels like “90s Cartoons” get that decade's, and holiday ads air in season. Downloaded to this computer for watching at home."),
-    commercialFinder());
-  const bar = h("div", { class: "toolbar slim" });
-  const tagBox = h("div", { class: "chips" });
+  add(v, pageHead("Your breaks", "Commercials", "Everything Rerun can play between shows. Click a commercial to watch it; remove the ones you don't want on the air (nothing is deleted)."));
+  const hero = h("section", { class: "ad-hero" });
+  const strip = h("div", { class: "finder-strip", hidden: true });
+  const bar = h("div", { class: "toolbar slim ad-filters" });
   const grid = h("div", { class: "ad-grid" });
-  const more = h("div", { class: "row", style: { justifyContent: "center", marginTop: "20px" } });
-  add(v, finderPanel, bar, tagBox, grid, more);
-  let all = [], query = "", tag = "", showHidden = false, shown = 60;
-  const visible = () => all.filter((a) => (showHidden ? a.hidden : !a.hidden)
-    && (!tag || a.tags.includes(tag) || SOURCE_NAMES[a.source] === tag || quality(a) === tag)
-    && (!query || `${a.title} ${a.tags.join(" ")}`.toLowerCase().includes(query)));
+  const more = h("div", { class: "row", style: { justifyContent: "center", marginTop: "24px" } });
+  add(v, hero, strip, bar, grid, more);
+  let data = { items: [], labels: {}, groups: { network: [], era: [], season: [] }, stats: {} };
+  const f = { query: "", kind: "", network: "", era: "", season: "", quality: "", source: "", sort: "best", hidden: false };
+  let shown = 60;
+  const label = (t) => data.labels[t] || t;
+  const matches = (a) => (f.hidden ? a.hidden : !a.hidden)
+    && (!f.kind || (f.kind === "bumper") === a.tags.includes("bumper"))
+    && (!f.network || a.tags.includes(f.network)) && (!f.era || a.tags.includes(f.era))
+    && (!f.season || a.tags.includes(f.season)) && (!f.source || a.source === f.source)
+    && (!f.quality || (quality(a) || "Unknown") === f.quality)
+    && (!f.query || `${a.title} ${a.tags.map(label).join(" ")}`.toLowerCase().includes(f.query));
+  const byTitle = (x, y) => x.title.localeCompare(y.title, undefined, { numeric: true, sensitivity: "base" });
+  const sorters = {
+    best: (x, y) => (y.h || 0) - (x.h || 0) || ((y.q || {}).kbps || 0) - ((x.q || {}).kbps || 0) || byTitle(x, y),
+    title: (x, y) => byTitle(x, y),
+    short: (x, y) => x.dur - y.dur,
+    long: (x, y) => y.dur - x.dur,
+  };
   const setHidden = async (ids, hidden) => {
     try {
       await api("POST", "/api/commercials/hide", { ids, hidden });
-      all.forEach((a) => { if (ids.includes(a.id)) a.hidden = hidden; });
-      toast(hidden ? (ids.length > 1 ? `${ids.length} commercials taken off the air` : "Taken off the air") : "Back on the air");
+      data.items.forEach((a) => { if (ids.includes(a.id)) a.hidden = hidden; });
+      data.hidden = data.items.filter((a) => a.hidden).length;
+      toast(hidden ? (ids.length > 1 ? `${ids.length} commercials taken off the air` : "Taken off the air") : (ids.length > 1 ? `${ids.length} commercials back on the air` : "Back on the air"));
       render();
     } catch (x) { toast(x.message, true); }
   };
-  const card = (a) => h("div", { class: "ad-card" + (a.hidden ? " is-off" : "") },
-    h("button", { class: "ad-thumb", onclick: () => previewAd(a), "aria-label": `Watch ${a.title}` },
+  const card = (a) => h("article", { class: "ad-card" + (a.hidden ? " is-off" : "") },
+    h("button", { class: "ad-thumb", onclick: () => previewAd(a, data.labels), "aria-label": `Watch ${a.title}` },
       h("img", { src: `/api/commercials/${a.id}/thumb.jpg`, alt: "", loading: "lazy" }),
+      h("span", { class: `q-pill ${qualityClass(a)}`, title: qualityText(a.q) }, quality(a) || "?"),
+      a.tags.includes("bumper") ? h("span", { class: "ad-kind" }, "Bumper") : null,
       h("span", { class: "ad-dur" }, fmtDur(a.dur))),
     h("div", { class: "ad-body" },
       h("b", { title: a.title }, a.title || "Commercial"),
-      h("span", { class: "ad-q", title: qualityText(a.q) }, a.q && a.q.h ? `${a.q.h}p${a.q.fps >= 50 ? a.q.fps >= 59 ? "60" : "50" : ""} · ${quality(a)}${a.q.kbps ? ` · ${(a.q.kbps / 1000).toFixed(1)} Mbps` : ""}` : "Quality unknown"),
-      h("span", null, [SOURCE_NAMES[a.source], ...a.tags].filter(Boolean).join(" · "))),
-    h("button", { class: "btn small quiet", onclick: () => setHidden([a.id], !a.hidden) }, a.hidden ? "Put back" : "Remove"));
-  const render = () => {
-    const list = visible();
-    const counts = {};
-    all.filter((a) => !a.hidden).forEach((a) => [...a.tags, SOURCE_NAMES[a.source], quality(a)].filter(Boolean).forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
-    fill(tagBox, h("span", { class: "chip toggle" + (tag ? "" : " on"), role: "button", tabindex: 0, onclick: () => { tag = ""; shown = 60; render(); } }, `All · ${all.filter((a) => !a.hidden).length}`),
-      Object.entries(counts).sort((x, y) => y[1] - x[1]).slice(0, 30).map(([t, n]) => h("span", {
-        class: "chip toggle" + (tag === t ? " on" : ""), role: "button", tabindex: 0, onclick: () => { tag = tag === t ? "" : t; shown = 60; render(); },
-      }, `${t} · ${n}`)));
-    fill(grid, list.length ? list.slice(0, shown).map(card)
-      : h("p", { class: "no-match" }, all.length ? (showHidden ? "Nothing removed." : "Nothing matches.") : "No commercials yet. Find some above, or add a commercials folder in Settings → Libraries."));
-    fill(more,
-      list.length > shown ? h("button", { class: "btn", onclick: () => { shown += 120; render(); } }, `Show more (${list.length - shown} left)`) : null,
-      list.length > 1 && (query || tag) ? h("button", {
-        class: "btn quiet", onclick: () => {
-          if (confirm(`${showHidden ? "Put back" : "Remove"} all ${list.length} commercials shown?`)) setHidden(list.map((a) => a.id), !showHidden);
-        },
-      }, `${showHidden ? "Put back" : "Remove"} all ${list.length} shown`) : null);
+      h("span", null, a.tags.filter((t) => !/^y\d{4}$/.test(t) && t !== "bumper").map(label).join(", ") || SOURCE_NAMES[a.source]),
+      h("button", { class: "ad-remove", onclick: () => setHidden([a.id], !a.hidden) }, a.hidden ? "Put back" : "Remove")));
+
+  const renderHero = () => {
+    const on = data.items.filter((a) => !a.hidden);
+    const counts = Object.fromEntries(QUALITIES.map(([n]) => [n, 0]));
+    on.forEach((a) => { counts[quality(a) || "Unknown"] += 1; });
+    const secs = on.reduce((n, a) => n + a.dur, 0);
+    const time = secs >= 3600 ? `${(secs / 3600).toFixed(1)} hours of breaks` : `${Math.round(secs / 60)} minutes of breaks`;
+    fill(hero,
+      h("div", { class: "ad-hero-count" },
+        h("b", null, on.length.toLocaleString()),
+        h("span", null, on.length === 1 ? "commercial on the air" : "commercials on the air"),
+        h("p", null, [time, data.stats.dupes ? `${plural(data.stats.dupes, "duplicate copy", "duplicate copies")} kept off` : null,
+          data.hidden ? `${data.hidden} removed by you` : null].filter(Boolean).join(". ") + ".")),
+      on.length ? h("div", { class: "ad-hero-quality" },
+        h("div", { class: "qbar", role: "img", "aria-label": QUALITIES.map(([n]) => `${n}: ${counts[n]}`).join(", ") },
+          QUALITIES.filter(([n]) => counts[n]).map(([n, cls]) => h("i", { class: cls, style: { flexGrow: counts[n] } }))),
+        h("div", { class: "qlegend" }, QUALITIES.filter(([n]) => counts[n]).map(([n, cls]) => h("button", {
+          class: "qkey" + (f.quality === n ? " on" : ""), "aria-pressed": String(f.quality === n),
+          title: f.quality === n ? "Show every quality" : `Show only ${n.toLowerCase()} quality`,
+          onclick: () => { f.quality = f.quality === n ? "" : n; shown = 60; render(); },
+        }, h("i", { class: cls }), `${n} ${counts[n]}`)))) : null,
+      h("div", { class: "ad-hero-acts" },
+        h("button", { class: "btn primary", onclick: () => openFinder(onFinderStart) }, "Find more commercials"),
+        h("a", { class: "btn quiet", href: "#/setup/libraries/settings" }, "Add a folder")));
   };
-  fill(bar, searchBox("Find a commercial", (q) => { query = q; shown = 60; render(); }),
-    toggle("Show removed ones", false, (val) => { showHidden = val; shown = 60; render(); }));
-  try { all = (await api("GET", "/api/commercials")).items; } catch (x) { fill(grid, h("p", { class: "error" }, x.message)); return; }
-  finderPanel.open = !all.some((a) => a.source === "found");
-  render();
+
+  const facet = (key, all, opts) => select([["", all], ...opts.map((o) => [o[0], `${o[1]} (${data.items.filter((a) => !a.hidden && (key === "source" ? a.source === o[0] : a.tags.includes(o[0]))).length})`])],
+    f[key], (val) => { f[key] = val; shown = 60; render(); }, { class: "inline", "aria-label": all });
+  const renderBar = () => fill(bar,
+    searchBox("Find a commercial", (q) => { f.query = q; shown = 60; render(); }),
+    h("div", { class: "ad-facets" },
+      data.groups.bumpers ? select([["", "Commercials and bumpers"], ["ad", `Commercials (${data.items.filter((a) => !a.hidden && !a.tags.includes("bumper")).length})`],
+        ["bumper", `Bumpers and idents (${data.items.filter((a) => !a.hidden && a.tags.includes("bumper")).length})`]], f.kind,
+      (val) => { f.kind = val; shown = 60; render(); }, { class: "inline", "aria-label": "Type" }) : null,
+      data.groups.network.length ? facet("network", "All networks", data.groups.network.map((t) => [t, label(t)])) : null,
+      data.groups.era.length ? facet("era", "Any decade", data.groups.era.map((t) => [t, label(t)])) : null,
+      data.groups.season.length ? facet("season", "Any season", data.groups.season.map((t) => [t, label(t)])) : null,
+      facet("source", "All sources", Object.entries(SOURCE_NAMES).filter(([k]) => data.items.some((a) => a.source === k))),
+      select([["best", "Sharpest first"], ["title", "A to Z"], ["short", "Shortest first"], ["long", "Longest first"]], f.sort,
+        (val) => { f.sort = val; render(); }, { class: "inline", "aria-label": "Sort" })),
+    toggle("Removed ones", f.hidden, (val) => { f.hidden = val; shown = 60; render(); }));
+
+  const render = () => {
+    renderHero();
+    const list = data.items.filter(matches).sort(sorters[f.sort]);
+    const filtered = f.query || f.kind || f.network || f.era || f.season || f.quality || f.source;
+    fill(grid, list.length ? list.slice(0, shown).map(card)
+      : h("div", { class: "empty" }, data.items.length
+        ? h("p", null, f.hidden ? "You haven't removed any commercials." : "No commercials match these filters.")
+        : [h("p", null, "No commercials yet. Find classic ones on the Internet Archive, or add a folder of your own."),
+          h("button", { class: "btn primary", onclick: () => openFinder(onFinderStart) }, "Find commercials")]));
+    fill(more,
+      list.length > shown ? h("button", { class: "btn", onclick: () => { shown += 120; render(); } }, `Show ${Math.min(120, list.length - shown)} more of ${list.length - shown}`) : null,
+      list.length > 1 && filtered ? h("button", {
+        class: "btn quiet", onclick: () => {
+          if (confirm(`${f.hidden ? "Put back" : "Remove"} all ${list.length} commercials shown?`)) setHidden(list.map((a) => a.id), !f.hidden);
+        },
+      }, `${f.hidden ? "Put back" : "Remove"} all ${list.length} shown`) : null);
+  };
+
+  const load = async () => {
+    try { data = await api("GET", "/api/commercials"); } catch (x) { fill(grid, h("p", { class: "error" }, x.message)); return; }
+    renderBar();
+    render();
+  };
+  // A search in progress shows as a strip at the top of the page; the list reloads when it's done.
+  let timer = null, wasRunning = false;
+  const watch = async () => {
+    let d;
+    try { d = await api("GET", "/api/finder"); } catch (x) { return; }
+    const st = d.status;
+    if (st.running) {
+      strip.hidden = false;
+      fill(strip, h("div", { class: "progress" + (st.total ? "" : " indeterminate") }, h("div", { style: { width: st.total ? `${Math.round((100 * st.done) / st.total)}%` : "" } })),
+        h("div", { class: "row" }, h("b", null, "Finding commercials"), h("span", { class: "hint" }, st.step),
+          h("span", { class: "spacer" }), h("button", { class: "btn small", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this step…"); } }, "Stop")),
+        st.log && st.log.length ? h("p", { class: "hint" }, st.log[st.log.length - 1]) : null);
+      wasRunning = true;
+      clearTimeout(timer);
+      timer = later(watch, 2500);
+    } else if (wasRunning) {
+      wasRunning = false;
+      strip.hidden = false;
+      fill(strip, h("div", { class: "row" }, h("b", null, st.error ? "The search stopped" : "Search finished"),
+        h("span", { class: "hint" }, st.error || (st.log && st.log.length ? st.log[st.log.length - 1] : st.step)),
+        h("span", { class: "spacer" }), h("button", { class: "btn small quiet", onclick: () => { strip.hidden = true; } }, "Dismiss")));
+      load();
+      later(load, 20000); // the library scan that follows adds them
+    }
+  };
+  const onFinderStart = () => { wasRunning = true; watch(); };
+  await load();
+  watch();
+}
+
+// Classic commercials from the Internet Archive (see app/archive.py), in a dialog.
+async function openFinder(onStart) {
+  let d;
+  try { d = await api("GET", "/api/finder"); } catch (x) { toast(x.message, true); return; }
+  if (d.status.running) { toast("Already looking for commercials"); return; }
+  const picked = new Set(d.networks.filter((n) => n.have_channel).map((n) => n.key));
+  const eras = new Set(d.channel_eras.length ? d.channel_eras : ["2000s"]);
+  const hols = new Set();
+  let gb = 1.5, minH = 360, airings = true;
+  const name = (n) => n.label.replace(" / Fox Family", "");
+  modal((box, close) => {
+    box.classList.add("wide", "finder-dialog");
+    const render = () => fill(box,
+      h("h2", null, "Find classic commercials"),
+      h("p", { class: "lede" }, "Real commercials, promos and bumpers people taped off TV and saved on the Internet Archive. Network channels play their own network's, decade channels play that decade's, and holiday ads air in season."),
+      h("h3", null, "Networks"),
+      h("div", { class: "tiles finder-tiles" }, d.networks.map((n) => h("button", {
+        class: "tile" + (picked.has(n.key) ? " on" : ""), "aria-pressed": String(picked.has(n.key)),
+        onclick: () => { picked.has(n.key) ? picked.delete(n.key) : picked.add(n.key); render(); },
+      }, h("span", null, name(n),
+        n.clips || n.have_channel ? h("small", null, n.clips ? `${n.clips.toLocaleString()} so far` : "You have this channel") : null)))),
+      h("h3", null, "Decades"),
+      h("div", { class: "chips" }, d.eras.map((e) => h("button", {
+        class: "chip toggle" + (eras.has(e) ? " on" : ""), "aria-pressed": String(eras.has(e)),
+        onclick: () => { eras.has(e) ? eras.delete(e) : eras.add(e); render(); },
+      }, e))),
+      h("h3", null, "Holiday commercials"),
+      h("div", { class: "chips" }, d.holidays.map((k) => h("button", {
+        class: "chip toggle" + (hols.has(k) ? " on" : ""), "aria-pressed": String(hols.has(k)),
+        onclick: () => { hols.has(k) ? hols.delete(k) : hols.add(k); render(); },
+      }, k[0].toUpperCase() + k.slice(1)))),
+      h("p", { class: "hint" }, "Holiday ads only air in their season."),
+      h("h3", null, "Options"),
+      h("div", { class: "finder-opts" },
+        h("label", null, "Picture quality", select([[0, "Any"], [360, "Watchable and up"], [480, "Good and up"]], minH, (v) => { minH = parseInt(v, 10); })),
+        h("label", null, "Space per network", select([[0.5, "0.5 GB"], [1.5, "1.5 GB"], [3, "3 GB"], [6, "6 GB"]], gb, (v) => { gb = parseFloat(v); }))),
+      checkbox("Use whole broadcasts too", airings, (val) => { airings = val; },
+        "Shows recorded with their commercials. Rerun reads them straight from the archive and keeps only the breaks: little space, but slower."),
+      h("p", { class: "hint" }, "Rerun checks each tape's real picture before downloading, takes the sharpest first, and keeps only the best copy of any commercial it already has."),
+      d.networks.some((n) => n.tapes) ? h("details", { class: "subpanel" },
+        h("summary", null, "Already downloaded"),
+        d.networks.filter((n) => n.tapes).map((n) => h("div", { class: "finder-have" },
+          h("div", null, h("b", null, name(n)),
+            h("span", { class: "muted" }, ` ${plural(n.clips, "commercial")} from ${plural(n.tapes, "tape")}, ${(n.bytes / 1e9).toFixed(1)} GB`)),
+          h("button", { class: "btn small quiet", onclick: async () => {
+            if (!confirm(`Delete the ${name(n)} commercials Rerun downloaded?`)) return;
+            try { d = await api("DELETE", `/api/finder/${n.key}`); toast(`${name(n)} commercials deleted`); render(); } catch (x) { toast(x.message, true); }
+          } }, "Delete")))) : null,
+      h("div", { class: "row end modal-foot" },
+        h("button", { class: "btn quiet", onclick: close }, "Cancel"),
+        h("button", { class: "btn primary", disabled: !picked.size || !eras.size, onclick: async () => {
+          try {
+            await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], holidays: [...hols], budget_gb: gb, min_height: minH, airings });
+            close(); toast("Finding commercials in the background"); onStart();
+          } catch (x) { toast(x.message, true); }
+        } }, !picked.size ? "Pick a network" : !eras.size ? "Pick a decade" : `Find commercials for ${plural(picked.size, "network")}`)));
+    render();
+  });
 }
 
 // ================================================================ settings
-
-// Classic commercials from the Internet Archive (see app/archive.py).
-function commercialFinder() {
-  const box = h("div", { class: "finder" });
-  const picked = new Set();
-  const eras = new Set();
-  const hols = new Set();
-  let gb = 1.5, minH = 360, first = true;
-  const render = (d) => {
-    if (first) {
-      d.networks.filter((n) => n.have_channel).forEach((n) => picked.add(n.key));
-      (d.channel_eras.length ? d.channel_eras : ["2000s"]).forEach((e) => eras.add(e));
-      first = false;
-    }
-    const st = d.status;
-    const busy = st.running;
-    fill(box,
-      h("div", { class: "finder-nets" }, d.networks.map((n) => h("label", { class: "check" },
-        h("input", { type: "checkbox", checked: picked.has(n.key), disabled: busy,
-          onchange: (e) => { e.target.checked ? picked.add(n.key) : picked.delete(n.key); } }),
-        h("span", null, n.label, h("span", { class: "muted" },
-          n.clips ? [...Object.entries(n.eras), ...Object.entries(n.holidays || {})].map(([e, k]) => `${e}: ${k}`).join(" · ") : n.have_channel ? "You have this channel" : ""))))),
-      h("label", null, "Eras"),
-      h("div", { class: "chips" }, d.eras.map((e) => h("span", {
-        class: "chip toggle" + (eras.has(e) ? " on" : ""), role: "button", tabindex: 0,
-        onclick: busy ? null : () => { eras.has(e) ? eras.delete(e) : eras.add(e); render(d); },
-      }, e))),
-      h("label", null, "Holiday commercials too"),
-      h("div", { class: "chips" }, d.holidays.map((k) => h("span", {
-        class: "chip toggle" + (hols.has(k) ? " on" : ""), role: "button", tabindex: 0,
-        onclick: busy ? null : () => { hols.has(k) ? hols.delete(k) : hols.add(k); render(d); },
-      }, k[0].toUpperCase() + k.slice(1)))),
-      h("p", { class: "hint" }, "Holiday commercials only air in their season, and go around that holiday's shows first."),
-      h("div", { class: "row", style: { marginTop: "6px" } },
-        h("span", { class: "plain-label" }, "Quality"),
-        select([[0, "Any"], [360, "Watchable (360p and up)"], [480, "Good (480p and up)"]], minH, (v) => { minH = parseInt(v, 10); }, { class: "inline", disabled: busy }),
-        h("span", { class: "plain-label" }, "Space per network"),
-        select([[0.5, "0.5 GB"], [1.5, "1.5 GB"], [3, "3 GB"], [6, "6 GB"]], gb, (v) => { gb = parseFloat(v); }, { class: "inline", disabled: busy })),
-      h("div", { class: "row", style: { marginTop: "14px" } },
-        busy ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this download…"); } }, "Stop")
-          : h("button", { class: "btn primary", onclick: async () => {
-            try { render(await api("POST", "/api/finder", { networks: [...picked], eras: [...eras], holidays: [...hols], budget_gb: gb, min_height: minH })); poll(); }
-            catch (x) { toast(x.message, true); }
-          } }, "Find commercials"),
-        busy || !st.step ? null : h("span", { class: "hint" }, st.step)),
-      busy ? h("div", null,
-        h("div", { class: "progress" + (st.total ? "" : " indeterminate") }, h("div", { style: { width: st.total ? `${Math.round((100 * st.done) / st.total)}%` : "" } })),
-        h("p", { class: "hint" }, st.step)) : null,
-      st.error ? h("p", { class: "error" }, st.error) : null,
-      st.found && st.found.length ? h("p", { class: "hint" }, st.found.map((f) => `${f.network}: ${plural(f.matches, "matching tape")}`).join(" · ")) : null,
-      d.networks.filter((n) => n.tapes).map((n) => h("details", { class: "subpanel" },
-        h("summary", null, `${n.label}: ${plural(n.clips, "commercial")} from ${plural(n.tapes, "tape")}, ${(n.bytes / 1e9).toFixed(1)} GB`),
-        h("ul", { class: "finder-tapes" }, n.titles.map((t) => h("li", null, t))),
-        busy ? null : h("button", { class: "btn small quiet", onclick: async () => {
-          if (!confirm(`Delete the ${n.label} commercials Rerun downloaded?`)) return;
-          try { render(await api("DELETE", `/api/finder/${n.key}`)); toast(`${n.label} commercials removed`); } catch (x) { toast(x.message, true); }
-        } }, "Delete these"))));
-  };
-  let timer = null;
-  const poll = async () => {
-    try {
-      const d = await api("GET", "/api/finder");
-      render(d);
-      clearTimeout(timer);
-      if (d.status.running) timer = later(poll, 2000);
-    } catch (x) { fill(box, h("p", { class: "error" }, x.message)); }
-  };
-  poll();
-  return box;
-}
 
 function settingRow(title, about, ...controls) {
   return h("div", { class: "setting" }, h("div", { class: "about" }, h("h2", null, title), about ? h("p", null, about) : null), h("div", null, controls));
@@ -1447,6 +1791,9 @@ async function viewSettings() {
         h("div", null, h("label", null, "Hardware encoding"), select([["auto", "Automatic — recommended"], ["vaapi", "Intel Quick Sync / AMD"], ["nvenc", "NVIDIA"], ["none", "Off — use the processor"]], st.hwaccel, (val) => { st.hwaccel = val; })),
         h("div", null, h("label", null, "Channels at once, max"), h("input", { type: "number", value: st.tuners, min: 1, max: 20, oninput: (e) => { st.tuners = parseInt(e.target.value, 10); } }))),
       checkbox("Even out the volume", st.even_volume, (val) => { st.even_volume = val; }, "Keeps commercials from being louder than the shows."),
+      checkbox("Network logo in the corner", st.screen_bug !== false, (val) => { st.screen_bug = val; },
+        "A see-through logo during shows, like real channels had: the channel's own on a network's channel, each show's own network on a mixed one. To use a logo from your era, put it in Rerun's data folder under bugs/custom, named like Nickelodeon.png."),
+      checkbox("“Up next” banner", st.up_next !== false, (val) => { st.up_next = val; }, "Says what's on next, near the end of each show."),
       enc,
       saveStream),
     settingRow("Guide", "How far ahead the schedule and Plex's guide reach, and how Plex apps get channel logos and show pictures.",
@@ -1571,7 +1918,9 @@ async function route() {
   if (!boot.setup_complete) { location.hash = "#/setup/plex"; return; }
   const ch = hash.match(/^#\/channel\/(\w+)$/);
   if (ch) return viewChannel(ch[1]);
-  const views = { "#/channels": viewChannels, "#/networks": viewNetworks, "#/holidays": viewHolidays, "#/commercials": viewCommercials, "#/guide": viewGuide,
+  const lineupRoute = hash.match(/^#\/lineup\/([a-z0-9]+)$/);
+  if (lineupRoute) return viewLineup(lineupRoute[1]);
+  const views = { "#/channels": viewChannels, "#/networks": viewNetworks, "#/holidays": viewHolidays, "#/25days": viewTwentyFive, "#/commercials": viewCommercials, "#/guide": viewGuide,
     "#/settings": viewSettings, "#/help": viewHelp, "#/plex": viewHelp, "#/status": viewHelp };
   if (views[hash]) return views[hash]();
   location.hash = "#/channels";

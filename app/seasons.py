@@ -144,6 +144,11 @@ def matches(cat, key: str, conf: dict) -> dict:
                 or any(hit_text(col_rx, c) for c in m.get("collections", []))
                 or genres & {g.lower() for g in m.get("genres", [])}):
             movies.add(m["id"])
+    if key == "christmas":  # Elf, The Polar Express, Home Alone... whose titles don't say Christmas
+        from .xmas import christmas_ids
+        extra_ids = christmas_ids(cat)
+        movies |= extra_ids["movies"]
+        eps |= extra_ids["episodes"]
     out = {"episodes": eps, "movies": movies}
     if len(_cache) > 64:
         _cache.clear()

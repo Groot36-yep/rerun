@@ -504,6 +504,90 @@ async def official_logo(ref: str) -> bytes | None:
     return None
 
 
+# --------------------------------------------------------------------------- the on-screen logo ("bug")
+
+BUG_DIR = DATA_DIR / "bugs"
+BUG_V = 2
+_bug_misses: dict[str, float] = {}
+
+
+def _ink(logo: Image.Image, alpha: Image.Image) -> Image.Image:
+    """How strongly each pixel is part of the logo's drawing: dark or colourful parts are ink, white parts
+    are gaps (so the B inside Boomerang's cube stays a B). An all-white logo is all ink."""
+    dark = ImageChops.invert(logo.convert("L"))
+    colour = logo.convert("RGB").convert("HSV").getchannel("S")
+    ink = ImageChops.lighter(dark, colour).point(lambda v: min(255, int(v * 1.7)))
+    ink = ImageChops.multiply(ink, alpha)
+    area = sum(alpha.point(lambda a: 1 if a > 128 else 0).getdata()) or 1
+    inked = sum(ink.point(lambda a: 1 if a > 128 else 0).getdata())
+    return ink if inked / area > 0.12 else alpha
+
+
+def make_bug(raw: bytes, height: int) -> bytes | None:
+    """A network logo as a see-through white mark, the way channels kept a quiet logo in the corner of
+    the picture. A faint shadow keeps it readable on a white scene."""
+    logo = _trim(Image.open(io.BytesIO(raw)).convert("RGBA"))
+    alpha = logo.getchannel("A")
+    if alpha.getextrema()[0] >= 250:  # no transparency: the logo is whatever differs from its background
+        corner = Image.new("RGBA", logo.size, logo.getpixel((0, 0)))
+        alpha = ImageChops.difference(logo, corner).convert("L").point(lambda v: 255 if v > 40 else 0)
+        if not alpha.getbbox():
+            return None
+    alpha = _ink(logo, alpha)
+    target_h = max(18, round(height * 0.085))
+    scale = min(target_h / logo.height, height * 0.26 / logo.width)
+    size = (max(1, round(logo.width * scale)), max(1, round(logo.height * scale)))
+    alpha = alpha.resize(size, Image.LANCZOS)
+    pad = 4
+    out = Image.new("RGBA", (size[0] + pad * 2, size[1] + pad * 2), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", size, (0, 0, 0, 255))
+    shadow.putalpha(alpha.point(lambda a: int(a * 0.28)))
+    out.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(1.5)), (pad + 1, pad + 2))
+    white = Image.new("RGBA", size, (255, 255, 255, 255))
+    white.putalpha(alpha.point(lambda a: int(a * 0.62)))
+    out.alpha_composite(white, (pad, pad))
+    return _png(out)
+
+
+def custom_bug(names: list[str]) -> str | None:
+    """Your own on-screen logo for a network, if you've put one in the "bugs" folder of Rerun's data
+    folder: named after the network ("Nickelodeon.png") or its commercials tag ("nick.png"). Use it for
+    the logo a network had in your era (the official logos Rerun finds are today's)."""
+    folder = BUG_DIR / "custom"
+    for n in names:
+        for ext in (".png", ".webp", ".jpg"):
+            p = folder / f"{n}{ext}"
+            if n and p.is_file():
+                return str(p)
+    return None
+
+
+async def screen_bug(ref: str, height: int, online: bool = True, names: list[str] | None = None) -> str | None:
+    """The file of a network's on-screen logo at this picture height, made once and kept."""
+    own = custom_bug(names or [])
+    if own:
+        ref = f"file:{own}:{int(os.path.getmtime(own))}"
+    if not ref:
+        return None
+    path = BUG_DIR / f"{hashlib.sha1(f'{BUG_V}:{ref}:{height}'.encode()).hexdigest()[:16]}.png"
+    if path.exists():
+        return str(path)
+    if _bug_misses.get(ref, 0) > asyncio.get_event_loop().time() or not (online or own):
+        return None
+    raw = open(own, "rb").read() if own else await official_logo(ref)
+    try:
+        png = await asyncio.to_thread(make_bug, raw, height) if raw else None
+    except Exception as e:  # a logo file Pillow can't read
+        log.info("Couldn't make the on-screen logo for %s (%s)", ref, e.__class__.__name__)
+        png = None
+    if not png:
+        _bug_misses[ref] = asyncio.get_event_loop().time() + 3600  # don't ask again for an hour
+        return None
+    BUG_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(png)
+    return str(path)
+
+
 def logo_ref(ch: dict, catalog=None) -> str:
     """Which official logo a channel should use, if any."""
     if ch.get("logo"):

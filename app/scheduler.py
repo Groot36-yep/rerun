@@ -21,7 +21,9 @@ from datetime import datetime
 
 from . import seasons
 from . import archive
-from .channels import content_signature, filler_pool, resolve
+from . import lineups, xmas
+from .channels import christmas_style, content_signature, filler_pool, resolve
+from .xmasdata import title_info
 
 NETWORK_TAGS = set(archive.PROFILES)
 from .store import DATA_DIR, atomic_write_json, read_json
@@ -122,12 +124,28 @@ class Builder:
         self.slot = int(ch.get("slot_minutes") or 0) * 60
         self.programs = {p["key"]: p for p in resolve(ch, cat, self.holidays)}
         com = ch.get("commercials") or {}
-        self.filler = filler_pool(ch, cat) if com.get("enabled") else []
+        pool = filler_pool(ch, cat) if com.get("enabled") else []
+        # Bumpers and idents only play in their own places (see _bumper), never as a commercial.
+        self.bumpers = [f for f in pool if "bumper" in (f.get("tags") or [])]
+        self.filler = [f for f in pool if "bumper" not in (f.get("tags") or [])]
         self.min_filler = min((f["dur"] for f in self.filler), default=0)
+        # A network's own channel (Nickelodeon, or Boomerang built from its real lineup) shows its own
+        # bumpers and logo whatever network a show first aired on; mixed channels use each show's.
+        auto = ch.get("auto_key") or ""
+        self.lineup = auto[len("lineup:"):] if auto.startswith("lineup:") else ""
+        self.home_net = (archive.tag_for_network(auto[len("network:"):]) if auto.startswith("network:")
+                         else lineups.ads_tag(self.lineup) or None)
         self.style = com.get("break_style", "chapters")
+        self.xstyle = christmas_style(ch)
+        self._groups: dict | None = None
+        self._airings: list | None = None
+        self._by_file: dict | None = None
+        self._found: dict = {}
+        self._story: str | None = None
         for k in ("bags", "seq", "lastpick"):
             self.st.setdefault(k, {})
         self.st.setdefault("recent", [])
+        self.st.setdefault("recent_b", [])
 
     # ---- deterministic randomness -------------------------------------------------
     def _rng(self) -> random.Random:
@@ -284,9 +302,21 @@ class Builder:
         return []
 
     # ---- commercials --------------------------------------------------------------
-    def _break_context(self, prog: dict, media: list[dict], t: float) -> dict:
+    def _break_context(self, prog: dict, media: list[dict], t: float, extra: dict | None = None) -> dict:
         """What the commercials around this show should match: its network, its era, and the holiday
-        (on a holiday channel, during a holiday episode, or any holiday that's in season)."""
+        (on a holiday channel, during a holiday episode, or any holiday that's in season). The 25 Days
+        channel wants that year's real 25 Days ads; the 2000s Christmas channel 2000s holiday ads."""
+        ctx = self._base_context(prog, media, t)
+        if (extra or {}).get("plan"):
+            ctx.update(hol="christmas", active=ctx["active"] | {"christmas"}, prefer=self._plan_prefer(),
+                       era=archive.era_tag(extra["plan"]), net="abcfamily", has_net=True)
+        elif self.xstyle == "2000s":
+            ctx.update(hol=ctx["hol"] or "christmas", prefer=[("2000s", 2.5)])
+        if self.lineup and self.home_net:  # Boomerang ads around Scooby-Doo, not CBS-era ones
+            ctx.update(net=self.home_net, has_net=True)
+        return ctx
+
+    def _base_context(self, prog: dict, media: list[dict], t: float) -> dict:
         first = media[0] if media else {}
         if prog["kind"] in ("show", "episodes"):
             show = self.cat.shows.get(first.get("show") or prog.get("show"), {})
@@ -298,6 +328,44 @@ class Builder:
             (k for k in active if first.get("id") in self._holiday_ids(k)), None)
         return {"net": archive.tag_for_network(net), "has_net": bool(net), "era": archive.era_tag(year), "hol": hol,
                 "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower()}
+
+    def _bumper(self, ctx: dict | None, room: float) -> dict | None:
+        """A bumper or ident from the show's own network ("You're watching Disney Channel" before a Disney
+        show, a Nick splat going into a Nick break), or None. On a mixed channel each show gets its own
+        network's; a show from a network with no bumpers gets none rather than someone else's. In season,
+        that holiday's bumpers come first; out of season they stay on the shelf."""
+        if not self.bumpers or not ctx or room < 3:
+            return None
+        nets = {n for n in (self.home_net or ctx.get("net"),) if n}
+        if ctx.get("prefer") and any(t == "25days" for t, _w in ctx["prefer"]):
+            nets.add("25days")
+        if not nets:
+            return None
+        active = ctx.get("active", set())
+        recent = set(self.st["recent_b"])
+        cands = []
+        for b in self.bumpers:
+            tags = {str(x).lower() for x in b.get("tags") or []}
+            if not tags & nets or b["dur"] > room:
+                continue
+            hol = tags & set(seasons.PRESETS)
+            if hol and not hol & active:
+                continue  # a Christmas bumper in July
+            score = (3 if hol else 0) + (1 if ctx.get("era") and ctx["era"] in tags else 0) \
+                - (5 if b["id"] in recent else 0)
+            cands.append((score, b))
+        if not cands:
+            return None
+        best = max(s for s, _ in cands)
+        pick = self._rng().choice([b for s, b in cands if s == best])
+        keep = max(1, min(12, len(self.bumpers) // 2))
+        self.st["recent_b"] = (self.st["recent_b"] + [pick["id"]])[-keep:]
+        return pick
+
+    def _put(self, items: list, pos: float, f: dict) -> float:
+        items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
+                      "t": f.get("title", ""), **_src(f)})
+        return pos + f["dur"]
 
     def _holiday_ids(self, key: str) -> set:
         found = seasons.matches(self.cat, key, self.holidays.get(key) or {})
@@ -317,6 +385,9 @@ class Builder:
             score += 1.5  # a tape recorded this time of year
         if ctx.get("era") and ctx["era"] in tags:
             score += 1  # 2000s ads around a 2000s episode
+        for tag, weight in ctx.get("prefer", ()):
+            if tag in tags:
+                score += weight  # e.g. the 25 Days channel wants that year's real 25 Days ads
         return score
 
     def _pick_filler(self, seconds: float, ctx: dict | None = None) -> tuple[list[dict], float]:
@@ -457,42 +528,266 @@ class Builder:
         return self._slate_block(t, end - t, title, desc)
 
     async def build_block(self, t: float):
+        if self.ch.get("plan"):
+            return await self._plan_block(t)
         if self.ch.get("season") and not seasons.in_window(self.holidays.get(self.ch["season"]) or {}, t):
             return self._off_season_block(t)
         if not self.programs:
             length = (ceil_slot(t + 1, self.slot) - t) if self.slot else 1800
             return self._slate_block(t, max(length, 60), "Nothing scheduled yet",
                                      "This channel has no shows yet. Add some in Rerun.")
-        prog = self._next_program()
-        for _ in range(len(self.programs) * 4):  # skip e.g. a Christmas-only special in July
-            if not self._all_shelved(prog, t):
-                break
+        extra: dict = {}
+        picked = self._pick_2000s(t) if self.xstyle == "2000s" else None
+        if picked:
+            prog, media, extra = picked
+        else:
             prog = self._next_program()
-        media = self._next_media(prog, t)
+            for _ in range(len(self.programs) * 4):  # skip e.g. a Christmas-only special in July
+                if not self._all_shelved(prog, t):
+                    break
+                prog = self._next_program()
+            media = self._next_media(prog, t)
         if not media:
             return self._slate_block(t, 300, "Coming up", "")
         dur = sum(m["dur"] for m in media)
-        end = self._plan_end(t, dur)
+        end = extra.get("end") or self._plan_end(t, dur)
+        items, block = await self._layout(prog, media, t, end, extra=extra)
+        return items, block
+
+    async def _layout(self, prog: dict, media: list[dict], t: float, end: float, *, first_in: float = 0.0,
+                      pods: list | None = None, extra: dict | None = None):
+        """Lay out a block: the program cut at its breaks, commercials in between, ending at `end`.
+        `first_in` starts the first item part-way (tuning in late); `pods` are recorded breaks to replay
+        as they aired: [(seconds into the program, [commercials])]."""
+        extra = extra or {}
+        full = sum(m["dur"] for m in media)
+        dur = full - first_in
+        end = max(end, t + dur)
         ad_time = end - t - dur
-        breaks = await self._break_points(media, dur, ad_time)
-        ctx = self._break_context(prog, media, t) if self.filler else None
-        n_breaks = len(breaks) + 1
-        share = ad_time / n_breaks
+        ctx = self._break_context(prog, media, t, extra) if self.filler or self.bumpers else None
+        breaks = [b for b in await self._break_points(media, full, ad_time) if b > first_in + 60]
+        pods = {at: clips for at, clips in (pods or []) if first_in + 60 < at < full - 30 and clips}
+        if pods:  # recorded breaks where they aired, ordinary ones where the recording has none
+            breaks = sorted([*pods, *(b for b in breaks if all(abs(b - a) > 240 for a in pods))])
+        share = ad_time / (len(breaks) + 1)
         items: list[dict] = []
         pos, acc, carry = t, 0.0, 0.0
-        for m in media:
-            seg = 0.0
-            for bp in [b - acc for b in breaks if acc < b <= acc + m["dur"] + 1e-6]:
+        bumpers = prog["kind"] != "music" and not first_in
+        if bumpers:  # the network's ident right before the show starts
+            intro = self._bumper(ctx, min(20.0, ad_time / 3))
+            if intro:
+                pos = self._put(items, pos, intro)
+                carry -= intro["dur"]
+        for i, m in enumerate(media):
+            seg = first_in if i == 0 else 0.0
+            for bp in [b - acc for b in breaks if acc + seg < b <= acc + m["dur"] + 1e-6]:
                 pos = self._content(items, m, seg, bp - seg, pos)
                 seg = bp
-                pos, carry = self._ads(items, pos, share + carry, final=False, ctx=ctx)
+                if bp + acc in pods:
+                    pos, carry = self._pod(items, pos, pods[bp + acc], share + carry)
+                else:
+                    lead = self._bumper(ctx, min(15.0, (share + carry) / 4)) if bumpers and share + carry >= 60 else None
+                    if lead:  # "we'll be right back" into the break
+                        pos = self._put(items, pos, lead)
+                        carry -= lead["dur"]
+                    pos, carry = self._ads(items, pos, share + carry, final=False, ctx=ctx)
             if m["dur"] - seg > 0.05:
                 pos = self._content(items, m, seg, m["dur"] - seg, pos)
             acc += m["dur"]
         if end - pos > 0.05:
             pos, _ = self._ads(items, pos, end - pos, final=True, ctx=ctx)
-        items[-1]["e"] = end
-        return items, self._describe(prog, media, t, end)
+        items[-1]["e"] = max(end, items[-1]["s"] + 0.05)
+        block = self._describe(prog, media, t, items[-1]["e"])
+        if extra.get("title"):
+            block.update(title=extra["title"], sub=extra.get("sub", ""))
+        notes = [x for x in (extra.get("note"), self._countdown(t)) if x]
+        if notes:
+            block["desc"] = " · ".join(notes) + ("\n" + block["desc"] if block["desc"] else "")
+        return items, block
+
+    def _pod(self, items: list, pos: float, clips: list[dict], seconds: float) -> tuple[float, float]:
+        """A recorded break, in its original order, as much of it as there's room for."""
+        left = seconds
+        for f in clips:
+            if f["dur"] > left + 2:
+                break
+            items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
+                          "t": f.get("title", ""), **_src(f)})
+            pos += f["dur"]
+            left -= f["dur"]
+        return pos, left
+
+    def _countdown(self, t: float) -> str:
+        if not (self.ch.get("plan") or self.xstyle):
+            return ""
+        n = xmas.days_until_christmas(t)
+        if n is None:
+            return ""
+        return "Christmas Eve!" if n == 1 else f"{n} days until Christmas"
+
+    # ---- the 2000s Christmas channel ------------------------------------------------------
+    def _pick_2000s(self, t: float):
+        """A 2000s cable Christmas day: what's on depends on the time (see xmas.DAYPARTS)."""
+        cat = self.cat
+        if self._groups is None:
+            ids = set()
+            for p in self.programs.values():
+                if p["kind"] == "show":
+                    ids.update(e["id"] for e in cat.episodes.get(p["show"], []))
+                elif p["kind"] in ("episodes", "movies"):
+                    ids.update(p["items"])
+            groups: dict[str, dict[str, list]] = {}
+            for i in sorted(ids):
+                if i not in cat.items:
+                    continue
+                x = cat.items[i]
+                year = x.get("year") or int((x.get("date") or "0")[:4] or 0) or \
+                    cat.shows.get(x.get("show"), {}).get("year", 0)
+                sub = "2000s" if 2000 <= int(year or 0) <= 2009 else "other"
+                groups.setdefault(xmas.kind_of(cat, i), {}).setdefault(sub, []).append(i)
+            self._groups = groups
+            self._story = xmas.christmas_story(cat)
+        rng = self._rng()
+        if self._story and xmas.in_marathon(t) and self._story in cat.items:
+            m = cat.items[self._story]
+            end = t + 7200 if m["dur"] <= 6600 else ceil_slot(t + m["dur"] + 900, 1800)
+            prog = {"kind": "movies", "key": "marathon", "items": [self._story]}
+            return prog, [m], {"end": end, "note": "24 Hours of A Christmas Story"}
+        part, mix = xmas.daypart(t)
+        kinds = [(k, w) for k, w in mix.items() if self._groups.get(k)]
+        if not kinds:
+            return None
+        kind = rng.choices([k for k, _ in kinds], weights=[w for _, w in kinds])[0]
+        subs = self._groups[kind]
+        sub = "2000s" if subs.get("2000s") and (not subs.get("other") or rng.random() < 0.6) else "other"
+        ids = subs[sub]
+        pick = self._take(f"x:{kind}:{sub}", ids, False)
+        if not pick:
+            return None
+        media = [cat.items[pick]]
+        if pick not in cat.movies:
+            media = self._pack(f"x:{kind}:{sub}", ids, False, media)
+        prog = {"kind": "movies" if pick in cat.movies else "episodes", "key": f"x:{kind}", "items": ids,
+                "show": media[0].get("show")}
+        return prog, media, {"note": part}
+
+    # ---- ABC Family's 25 Days of Christmas -------------------------------------------------
+    def _plan_item(self, key: str) -> dict | None:
+        cache = self._found  # per build, so titles you add are picked up
+        if key not in cache:
+            got = xmas.find_key(self.cat, key)
+            cache[key] = got["id"] if got else ""
+        return self.cat.items.get(cache[key]) if cache[key] else None
+
+    def _pods_for(self, key: str, year: int, full: float) -> list:
+        if self._airings is None:
+            try:
+                import json
+                self._airings = json.loads(archive.AIRINGS.read_text())
+            except (OSError, ValueError):
+                self._airings = []
+        rec = xmas.match_airing(self._airings, key, year)
+        if not rec:
+            return []
+        if self._by_file is None:
+            self._by_file = defaultdict(list)
+            for f in self.cat.all_filler():
+                if f.get("file"):
+                    self._by_file[f["file"]].append(f)
+            for lst in self._by_file.values():
+                lst.sort(key=lambda f: f.get("in", 0))
+        return [(b["at"], self._by_file.get(b["file"], [])) for b in rec["breaks"] if b["at"] < full - 30]
+
+    def _stand_in(self, length: float) -> list[dict]:
+        """Something Christmassy from your library that fits a slot you don't have the title for."""
+        found = seasons.matches(self.cat, "christmas", self.holidays.get("christmas") or {})
+        ids = sorted(i for i in found["movies"] | found["episodes"] if i in self.cat.items)
+        fit = [i for i in ids if self.cat.items[i]["dur"] <= length * 0.85]
+        if not fit:
+            return []
+        rng = self._rng()
+        best = [i for i in fit if self.cat.items[i]["dur"] >= length * 0.45] or fit
+        out, total = [], 0.0
+        for i in rng.sample(best, len(best)):
+            d = self.cat.items[i]["dur"]
+            if total + d <= length * 0.85:
+                out.append(self.cat.items[i])
+                total += d
+            if total >= length * 0.55 or len(out) >= 4:
+                break
+        return out
+
+    async def _plan_block(self, t: float):
+        plan = self.ch["plan"]
+        year = int(plan["year"])
+        season = datetime.fromtimestamp(t).year
+        w0, w1 = xmas.plan_window(year, season)
+        if not (w0 <= t < w1):
+            nxt = w0 if t < w0 else xmas.plan_window(year, season + 1)[0]
+            end = min(nxt, t + 6 * 3600)
+            return self._slate_block(t, max(60.0, end - t), f"{self.ch['name']} returns December 1",
+                                     f"ABC Family's 25 Days of Christmas, as it aired in {year}.")
+        slots = xmas.plan_slots(year, season)
+        cur = next((s for s in slots if s["s"] <= t < s["e"]), None)
+        if cur is None:
+            nxt = next((s["s"] for s in slots if s["s"] > t), w1)
+            return await self._gap_block(t, nxt, slots)
+        info = title_info(cur["key"])
+        length = cur["e"] - cur["s"]
+        item = self._plan_item(cur["key"])
+        media = [item] if item else (self._stand_in(length) if plan.get("stand_ins", True) else [])
+        day = f"25 Days of Christmas · Day {cur['day']}"
+        if not media:
+            return self._slate_block(t, cur["e"] - t, info["title"],
+                                     f"{day}. Not in your library yet — see the 25 Days page for what to get.")
+        full = sum(m["dur"] for m in media)
+        first_in = 0.0
+        late = t - cur["s"]
+        if late > 20 * 60 and len(media) == 1:  # tuning in part-way through, like real TV
+            first_in = min(full - 120, max(0.0, late * full / length))
+        pods = self._pods_for(cur["key"], year, full) if item and plan.get("exact_breaks", True) else []
+        prog = {"kind": "movies" if media[0]["id"] in self.cat.movies else "episodes", "key": f"plan:{cur['key']}",
+                "items": [m["id"] for m in media], "show": media[0].get("show")}
+        if item:
+            extra = {"title": info["title"], "note": day + (" · with its original commercials" if pods else "")}
+        else:
+            extra = {"note": f"{day} · standing in for {info['title']}, which isn't in your library"}
+        extra["plan"] = year
+        return await self._layout(prog, media, t, cur["e"], first_in=first_in, pods=pods, extra=extra)
+
+    async def _gap_block(self, t: float, limit: float, slots: list[dict]):
+        """Between listings ABC Family ran its regular shows: this channel's own lineup fills in, never
+        running into the next listing."""
+        room = limit - t
+        nxt = next((s for s in slots if s["s"] >= limit - 1), None)
+        coming = f"Coming up: {title_info(nxt['key'])['title']}" if nxt else "Coming up"
+        extra = {"plan": int(self.ch["plan"]["year"])}
+        if room >= 240 and self.programs:
+            for _ in range(12):
+                prog = self._next_program()
+                media = self._next_media(prog, t)
+                dur = sum(m["dur"] for m in media)
+                if media and dur <= room:
+                    end = self._plan_end(t, dur)
+                    if end > limit or limit - end < 300:
+                        end = limit
+                    return await self._layout(prog, media, t, end, extra=extra)
+        length = min(room, 1800) if room > 2400 else room
+        items: list[dict] = []
+        if self.filler:
+            ctx = {"hol": "christmas", "active": {"christmas"}, "prefer": self._plan_prefer(), "month": "december"}
+            self._ads(items, t, length, final=True, ctx=ctx)
+        else:
+            items = [{"s": t, "e": t + length, "k": "x", "m": "", "in": 0, "t": coming}]
+        items[-1]["e"] = t + length
+        block = {"s": t, "e": t + length, "title": coming, "sub": "", "desc": "ABC Family's 25 Days of Christmas",
+                 "sn": 0, "en": 0, "img": "", "cats": [], "movie": False, "year": 0, "date": "", "rating": ""}
+        return items, block
+
+    def _plan_prefer(self) -> list:
+        year = int(self.ch["plan"]["year"])
+        return [("25days", 4), (f"y{year}", 4), (f"y{year - 1}", 2), (f"y{year + 1}", 2), ("abcfamily", 3),
+                (archive.era_tag(year) or "2000s", 1)]
 
     async def extend(self, p: Playout, until: float):
         t = p.end

@@ -113,6 +113,8 @@ DEFAULT_CONFIG = {
         "hwaccel": "auto",  # auto (Intel Quick Sync / AMD if it works) | none | vaapi | nvenc
         "vaapi_device": "/dev/dri/renderD128",
         "even_volume": True,
+        "screen_bug": True,  # the network's logo in the corner during shows
+        "up_next": True,  # "Up next" banner near the end of a show
         "tuners": 4,
     },
     "security": {"lan_only": True, "extra_networks": []},

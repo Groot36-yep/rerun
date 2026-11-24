@@ -15,7 +15,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from urllib.parse import quote
 
-from . import __version__, seasons
+from . import __version__, seasons, xmas, xmasdata
+from . import archive as archive_mod
+from . import lineups as lineups_mod
 from . import channels as channels_mod
 from .archive import OWN as OWN_COMMERCIALS
 from .guide import logo_url as plex_logo_url, tuner_id
@@ -26,7 +28,7 @@ from .channels import (
 )
 from .images import VERSION as LOGO_V
 from .logos_table import TMDB_LOGOS, WIKIPEDIA_ARTICLES
-from .networks import HOLIDAY_START
+from .networks import CATEGORIES, HOLIDAY_START, family_for
 from .folders import VIDEO_EXT
 from .ffmpeg import RESOLUTIONS
 from .metadata import test_tmdb_key
@@ -340,6 +342,8 @@ async def put_settings(body: dict, app=Depends(signed_in)):
         if str(s.get("vaapi_device", "")).startswith("/dev/dri/"):
             cur["vaapi_device"] = s["vaapi_device"]
         cur["even_volume"] = bool(s.get("even_volume", cur["even_volume"]))
+        cur["screen_bug"] = bool(s.get("screen_bug", cur.get("screen_bug", True)))
+        cur["up_next"] = bool(s.get("up_next", cur.get("up_next", True)))
         cur["tuners"] = _num(s.get("tuners", cur["tuners"]), 1, 20, 4)
     if "security" in body:
         sec = body["security"]
@@ -727,6 +731,204 @@ async def holiday_channel(key: str, body: dict | None = None, app=Depends(signed
     return {"ok": True, "channel": ch["id"], "number": ch["number"]}
 
 
+# ---- ABC Family's 25 Days of Christmas, and the 2000s Christmas channel ----------------------
+
+def _plan_channel(app) -> dict | None:
+    return next((c for c in app.cfg.data["channels"] if (c.get("plan") or {}).get("name") == "abcfamily25"), None)
+
+
+def _year(year) -> int:
+    y = int(year or 2008)
+    if y not in xmasdata.SCHEDULES:
+        raise HTTPException(400, f"Rerun has the 25 Days schedule for {', '.join(map(str, xmasdata.SCHEDULES))}")
+    return y
+
+
+@router.get("/25days")
+async def twentyfive(year: int = 0, app=Depends(signed_in)):
+    ch = _plan_channel(app)
+    year = _year(year or (ch["plan"]["year"] if ch else 2008))
+    wants = xmas.plan_wants(app.catalog, year)
+    now = time.time()
+    season = time.localtime(now).tm_year
+    slots = xmas.plan_slots(year, season)
+    on_now = next((s for s in slots if s["s"] <= now < s["e"]), None)
+    up_next = next((s for s in slots if s["s"] > now), None)
+    days = {}
+    for d, lst in sorted(xmasdata.SCHEDULES[year].items()):
+        days[d] = [{"start": s, "end": e, "key": k, "title": xmasdata.TITLES[k][0]} for s, e, k in lst]
+    return {
+        "years": list(xmasdata.SCHEDULES), "year": year, "source": xmasdata.SOURCES.get(year, ""),
+        "wants": wants, "have": sum(1 for w in wants if w["have"]), "total": len(wants),
+        "days": days, "scanned_at": app.catalog.scanned_at, "scan": app.scanner.progress,
+        "channel": {"id": ch["id"], "number": ch["number"], "name": ch["name"], "year": ch["plan"]["year"],
+                    "stand_ins": ch["plan"].get("stand_ins", True), "exact_breaks": ch["plan"].get("exact_breaks", True)}
+        if ch else None,
+        "on_now": {"title": xmasdata.TITLES[on_now["key"]][0], "e": on_now["e"]} if on_now else None,
+        "up_next": {"title": xmasdata.TITLES[up_next["key"]][0], "s": up_next["s"]} if up_next else None,
+        "finder": app.finder.summary_25days(),
+    }
+
+
+@router.get("/25days/need.txt")
+async def twentyfive_need(year: int = 2008, app=Depends(signed_in)):
+    """The titles you still need, as a plain list to copy or print."""
+    year = _year(year)
+    need = [w for w in xmas.plan_wants(app.catalog, year) if not w["have"]]
+    lines = [f"ABC Family's 25 Days of Christmas {year} — {len(need)} titles to get", ""]
+    for kind, label in (("movie", "Movies"), ("special", "TV specials")):
+        group = [w for w in need if w["kind"] == kind]
+        if group:
+            lines.append(f"{label}:")
+            lines += [f"  {w['title']} ({w['year']})" + (f" — airs {w['airings']} times" if w["airings"] > 1 else "")
+                      for w in sorted(group, key=lambda w: w["title"].lower())]
+            lines.append("")
+    return PlainTextResponse("\n".join(lines))
+
+
+@router.post("/25days/channel")
+async def twentyfive_channel(body: dict | None = None, app=Depends(signed_in)):
+    """Make (or update) the 25 Days of Christmas channel."""
+    body = body or {}
+    year = _year(body.get("year"))
+    plan = {"name": "abcfamily25", "year": year, "stand_ins": bool(body.get("stand_ins", True)),
+            "exact_breaks": bool(body.get("exact_breaks", True))}
+    d = app.cfg.data
+    ch = _plan_channel(app)
+    if ch:
+        merged = normalize_channel({**ch, "plan": plan})
+        d["channels"][d["channels"].index(ch)] = merged
+        app.cfg.save()
+        _build_soon(app, [merged])
+        return {"ok": True, "channel": merged["id"], "number": merged["number"]}
+    # Between listings ABC Family ran its regular shows: yours if you have them, else Christmas episodes.
+    rules = [{"type": "filter", "media": "shows", "networks": ["ABC Family", "Fox Family", "Freeform"]},
+             {"type": "holiday", "key": "christmas", "media": "episodes"}]
+    sugg = {"key": "plan:abcfamily25", "name": "ABC Family 25 Days of Christmas", "group": "Holidays",
+            "rules": rules, "number_start": HOLIDAY_START, "season": "christmas",
+            "logo": network_logo("ABC Family", app.catalog)}
+    ch = channel_from_suggestion(sugg, d["channels"], bool(app.catalog.filler))
+    ch = normalize_channel({**ch, "plan": plan})
+    d["channels"].append(ch)
+    d["auto"]["dismissed"] = [k for k in d["auto"]["dismissed"] if k != sugg["key"]]
+    app.cfg.save()
+    _build_soon(app, [ch])
+    return {"ok": True, "channel": ch["id"], "number": ch["number"]}
+
+
+@router.post("/25days/finder")
+async def twentyfive_finder(body: dict | None = None, app=Depends(signed_in)):
+    body = body or {}
+    try:
+        gb = min(max(float(body.get("budget_gb", 4)), 0.2), 50)
+        app.finder.start_25days(_year(body.get("year")), int(gb * 1e9), int(body.get("min_height") or 0),
+                                bool(body.get("nearby", True)))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return app.finder.summary_25days()
+
+
+# ---- classic channel lineups (Boomerang) ---------------------------------------------------
+
+def _lineup(key: str) -> dict:
+    if key not in lineups_mod.LINEUPS:
+        raise HTTPException(404, "No such channel lineup")
+    return lineups_mod.LINEUPS[key]
+
+
+def _lineup_channel(app, key: str) -> dict | None:
+    return next((c for c in app.cfg.data["channels"] if c.get("auto_key") == f"lineup:{key}"), None)
+
+
+@router.get("/lineups")
+async def lineups_list(app=Depends(signed_in)):
+    out = []
+    for key, ln in lineups_mod.LINEUPS.items():
+        w = lineups_mod.wants(app.catalog, key)
+        ch = _lineup_channel(app, key)
+        out.append({"key": key, "name": ln["name"], "years": ln["years"], "about": ln["about"],
+                    "have": sum(1 for x in w if x["have"]), "total": len(w),
+                    "logo_url": f"/netlogo/{quote(ln['network'])}.png",
+                    "channel": {"id": ch["id"], "number": ch["number"]} if ch else None})
+    return {"lineups": out}
+
+
+@router.get("/lineups/{key}")
+async def lineup(key: str, app=Depends(signed_in)):
+    ln = _lineup(key)
+    w = lineups_mod.wants(app.catalog, key)
+    ch = _lineup_channel(app, key)
+    tag = ln["ads"]
+    ads = [f for f in app.catalog.all_filler() if tag in (f.get("tags") or []) and not f.get("dup")]
+    return {"key": key, "name": ln["name"], "years": ln["years"], "about": ln["about"], "wants": w,
+            "have": sum(1 for x in w if x["have"]), "total": len(w),
+            "staples": {"have": sum(1 for x in w if x["have"] and x["tier"] == "staple"),
+                        "total": sum(1 for x in w if x["tier"] == "staple")},
+            "logo_url": f"/netlogo/{quote(ln['network'])}.png",
+            "commercials": sum(1 for f in ads if "bumper" not in f["tags"]),
+            "bumpers": sum(1 for f in ads if "bumper" in f["tags"]),
+            "channel": {"id": ch["id"], "number": ch["number"], "name": ch["name"]} if ch else None,
+            "scanned_at": app.catalog.scanned_at, "scan": app.scanner.progress, "finder": app.finder.progress}
+
+
+@router.get("/lineups/{key}/need.txt")
+async def lineup_need(key: str, app=Depends(signed_in)):
+    ln = _lineup(key)
+    need = [w for w in lineups_mod.wants(app.catalog, key) if not w["have"]]
+    lines = [f"{ln['name']} ({ln['years']}) — {len(need)} shows to get", ""]
+    for tier, label in (("staple", "Aired all the time"), ("regular", "Aired often"), ("occasional", "Aired now and then")):
+        group = [w for w in need if w["tier"] == tier]
+        if group:
+            lines.append(f"{label}:")
+            lines += [f"  {w['title']} ({w['year']})" for w in sorted(group, key=lambda w: w["title"].lower())]
+            lines.append("")
+    return PlainTextResponse("\n".join(lines))
+
+
+@router.post("/lineups/{key}/channel")
+async def lineup_channel(key: str, app=Depends(signed_in)):
+    ln = _lineup(key)
+    d = app.cfg.data
+    ch = _lineup_channel(app, key)
+    if ch:
+        return {"ok": True, "channel": ch["id"], "number": ch["number"]}
+    _fam, category = family_for(ln["network"])
+    group, start = CATEGORIES.get(category, CATEGORIES["other"])
+    sugg = {"key": f"lineup:{key}", "name": ln["name"], "group": group, "rules": [{"type": "lineup", "key": key}],
+            "number_start": start, "logo": network_logo(ln["network"], app.catalog)}
+    ch = channel_from_suggestion(sugg, d["channels"], bool(app.catalog.filler))
+    d["channels"].append(ch)
+    d["auto"]["dismissed"] = [k for k in d["auto"]["dismissed"] if k != sugg["key"]]
+    app.cfg.save()
+    _build_soon(app, [ch])
+    return {"ok": True, "channel": ch["id"], "number": ch["number"]}
+
+
+@router.post("/lineups/{key}/finder")
+async def lineup_finder(key: str, body: dict | None = None, app=Depends(signed_in)):
+    """Bumpers, idents and commercials for a classic channel (Boomerang's own)."""
+    ln = _lineup(key)
+    body = body or {}
+    try:
+        gb = min(max(float(body.get("budget_gb", 3)), 0.2), 50)
+        app.finder.start([ln["ads"]], ["2000s"], int(gb * 1e9), ["christmas"] if body.get("christmas") else [],
+                         int(body.get("min_height") or 0), True)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@router.get("/christmas")
+async def christmas(app=Depends(signed_in)):
+    """The 2000s Christmas essentials (have / need) and the Christmas channels' style."""
+    ess = xmas.essentials(app.catalog)
+    chans = [{"id": c["id"], "name": c["name"], "number": c["number"], "style": channels_mod.christmas_style(c)}
+             for c in app.cfg.data["channels"] if c.get("season") == "christmas" and not c.get("plan")]
+    return {"essentials": ess, "have": sum(1 for e in ess if e["have"]), "total": len(ess), "channels": chans,
+            "has_story": bool(xmas.christmas_story(app.catalog)),
+            "dayparts": [{"from": a % 24, "to": b % 24, "name": n} for a, b, n, _m in xmas.DAYPARTS]}
+
+
 @router.get("/catalog/search")
 async def catalog_search(q: str = "", app=Depends(signed_in)):
     q = q.strip().lower()
@@ -761,7 +963,8 @@ async def guide(hours: int = 6, app=Depends(signed_in)):
             continue
         p = app.schedules.get(ch["id"])
         out.append({"id": ch["id"], "number": ch["number"], "name": ch["name"],
-                    "blocks": [{k: b.get(k) for k in ("s", "e", "title", "sub", "movie")}
+                    "blocks": [{**{k: b.get(k) for k in ("s", "e", "title", "sub", "movie")},
+                                "card": not b.get("cats") and not b.get("img")}  # "returns December 1" and the like
                                for b in p.blocks_between(start, end)]})
     return {"start": start, "end": end, "channels": out}
 
@@ -810,11 +1013,39 @@ async def commercials_list(app=Depends(signed_in)):
     items = [{"id": f["id"], "title": f.get("title", ""), "dur": round(f["dur"], 1),
               "tags": f.get("tags", []), "source": _ad_source(app, f), "hidden": f["id"] in hidden,
               "h": int(f.get("h") or 0), "q": f.get("q") or None}
-             for f in app.catalog.all_filler()]
+             for f in app.catalog.all_filler() if not f.get("dup")]  # a better copy of a duplicate airs
     items.sort(key=lambda x: (x["title"].lower(), x["id"]))
     tags = Counter(t for x in items for t in x["tags"])
+    on_air = [x for x in items if not x["hidden"]]
     return {"items": items, "tags": [{"name": k, "count": n} for k, n in tags.most_common()],
-            "hidden": len(hidden & {x["id"] for x in items})}
+            "hidden": len(hidden & {x["id"] for x in items}), "labels": _tag_labels(tags),
+            "groups": {"network": [k for k in archive_mod.PROFILES if k in tags] + (["25days"] if "25days" in tags else []),
+                       "era": [e for e in archive_mod.ERAS if e in tags],
+                       "season": [s for s in ("christmas", "halloween", "december", "october") if s in tags],
+                       "bumpers": tags.get("bumper", 0)},
+            "stats": {"on_air": len(on_air), "seconds": round(sum(x["dur"] for x in on_air)),
+                      "dupes": sum(1 for f in app.catalog.all_filler() if f.get("dup"))}}
+
+
+def _tag_labels(tags) -> dict:
+    """Friendly names for commercial tags: "nick" -> "Nickelodeon", "y2008" -> "December 2008"."""
+    out = {}
+    for t in tags:
+        if t in archive_mod.PROFILES:
+            out[t] = archive_mod.PROFILES[t][0].replace(" / Fox Family", "")
+        elif t == "25days":
+            out[t] = "25 Days of Christmas"
+        elif t == "bumper":
+            out[t] = "Bumper or ident"
+        elif len(t) == 5 and t[0] == "y" and t[1:].isdigit():
+            out[t] = f"December {t[1:]}"
+        elif t in ("october", "december"):
+            out[t] = f"{t.title()} tapes"
+        elif t in archive_mod.ERAS:
+            out[t] = t
+        else:
+            out[t] = t[:1].upper() + t[1:]
+    return out
 
 
 def _filler(app, fid: str) -> dict:
@@ -830,9 +1061,9 @@ def _filler(app, fid: str) -> dict:
 @router.get("/commercials/{fid}/thumb.jpg")
 async def commercial_thumb(fid: str, app=Depends(signed_in)):
     f = _filler(app, fid)
-    path = DATA_DIR / "thumbs" / f"c-{''.join(ch for ch in fid if ch.isalnum())}.jpg"
+    path = DATA_DIR / "thumbs" / f"c2-{''.join(ch for ch in fid if ch.isalnum())}.jpg"
     if not path.exists():
-        at = float(f.get("in") or 0) + min(1.5, f["dur"] / 2)
+        at = float(f.get("in") or 0) + min(f["dur"] * 0.35, 8)  # past the fade in, before the end card
         src = f["_src"] if f["_src"].startswith("http") else "file:" + f["_src"]
         proc = await asyncio.create_subprocess_exec(
             app.ffmpeg.ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", src, "-frames:v", "1",
@@ -894,7 +1125,8 @@ async def finder_start(body: dict, app=Depends(signed_in)):
     try:
         gb = min(max(float(body.get("budget_gb", 1.5)), 0.2), 50)
         app.finder.start(list(body.get("networks") or []), list(body.get("eras") or []), int(gb * 1e9),
-                         list(body.get("holidays") or []), int(body.get("min_height") or 0))
+                         list(body.get("holidays") or []), int(body.get("min_height") or 0),
+                         bool(body.get("airings", True)))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
     return app.finder.summary()

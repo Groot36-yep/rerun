@@ -20,6 +20,11 @@ import secrets
 import tempfile
 import time
 
+from . import archive, images
+from .channels import network_logo
+from .ffmpeg import RESOLUTIONS
+from .lineups import LINEUPS
+
 log = logging.getLogger("rerun.stream")
 
 TS_PACKET = 188
@@ -300,7 +305,59 @@ class ChannelStream:
                 end, burst = self.cursor + dur, None
             else:
                 burst = 0.0
-        return {"item": item, "offset": offset, "dur": dur, "burst": burst, "end": end, "block": block}
+        overlay = await self._overlay(ch, p, idx, item, block, end) if item.get("k") == "c" else None
+        return {"item": item, "offset": offset, "dur": dur, "burst": burst, "end": end, "block": block,
+                "overlay": overlay}
+
+    async def _overlay(self, ch: dict, p, idx: int, item: dict, block: dict, end: float) -> dict | None:
+        """What to draw over a show: its network's logo in the corner, and "Up next" near the end of the
+        last part before the closing break."""
+        app = self.mgr.app
+        s = app.cfg.data["stream"]
+        out: dict = {}
+        H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])[1]
+        if s.get("screen_bug", True):
+            name = self._bug_network(ch, item)
+            names = [name, archive.tag_for_network(name) or ""] if name else []
+            try:
+                logo = await images.screen_bug(network_logo(name, app.catalog) if name else "", H,
+                                               app.cfg.data["metadata"].get("online_lookups", True), names)
+            except Exception as e:
+                log.info("No on-screen logo (%s)", e.__class__.__name__)
+                logo = None
+            if logo:
+                out["logo"] = logo
+        if s.get("up_next", True) and block:
+            later_part = any(x["k"] == "c" for x in p.items[idx + 1:] if x["s"] < block["e"])
+            nxt = p.block_at(block["e"] + 1)
+            if not later_part and nxt and nxt.get("title") and (nxt.get("cats") or nxt.get("img")):
+                # the banner runs from 45 to 15 seconds before this part ends, in this piece's own time
+                t0, t1 = item["e"] - 45 - self.cursor, item["e"] - 15 - self.cursor
+                t0, t1 = max(0.5, t0), min(t1, end - self.cursor - 1)
+                if t1 - t0 >= 6:
+                    path = f"{self.text_file}.next{self.segments % 4}"
+                    try:
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(nxt["title"][:60])
+                        out.update(next_file=path, t0=t0, t1=t1)
+                    except OSError:
+                        pass
+        return out or None
+
+    def _bug_network(self, ch: dict, item: dict) -> str:
+        """Whose logo goes in the corner: the channel's own on a network's channel (Nickelodeon, Boomerang,
+        the 25 Days channel), otherwise the network the show first aired on."""
+        app = self.mgr.app
+        auto = ch.get("auto_key") or ""
+        if auto.startswith("lineup:"):
+            return (LINEUPS.get(auto[7:]) or {}).get("network", "")
+        if (ch.get("plan") or {}).get("name") == "abcfamily25":
+            return "ABC Family"
+        if auto.startswith("network:"):
+            return auto[len("network:"):]
+        m = app.catalog.items.get(item.get("m") or "") or {}
+        return ((app.catalog.shows.get(m.get("show"), {}) or {}).get("network") if m.get("show")
+                else m.get("network")) or ""
 
 
 class StreamManager:
@@ -397,7 +454,9 @@ class StreamManager:
                 log.warning("Can't find %s (%s); showing a card instead", item.get("t") or "a file", item.get("f"))
         has_audio = bool(item.get("a", True))
         if src:
-            cmd, kind = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio), "media"
+            ov = plan.get("overlay")
+            cmd, kind = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
+                                              overlay=ov), "media"
         else:
             text = st.name if item.get("k") == "x" and not item.get("t") else f"{st.name}\n\nWe'll be right back"
             if item.get("k") == "x" and item.get("t"):
@@ -443,11 +502,13 @@ class StreamManager:
                 msg = _oneline(err)
                 if kind == "media" and has_audio and "matches no streams" in msg:
                     has_audio = False
-                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, False, hw_decode)
+                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, False, hw_decode,
+                                                overlay=ov)
                     continue
                 if kind == "media" and hw_decode and self.ffmpeg.encoder_status.get("using") not in (None, "none"):
                     hw_decode = False  # some files only decode on the processor; try that before giving up
-                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio, False)
+                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio, False,
+                                                overlay=ov)
                     continue
                 if kind == "media":
                     log.warning("Couldn't play %s: %s", item.get("t") or src, msg[-300:] or "unknown error")

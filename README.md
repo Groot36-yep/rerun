@@ -117,7 +117,7 @@ the show, or only between shows, and are sized so the next show starts on the ha
 
 ## Classic commercials, found for you
 
-The **Commercials** page finds real commercials, promos and bumpers that people taped off
+**Find more commercials** on the Commercials page finds real commercials, promos and bumpers that people taped off
 TV and saved on the [Internet Archive](https://archive.org). Pick networks (Nickelodeon, Nick Jr.,
 Disney Channel, Playhouse Disney, Cartoon Network, Kids' WB, Fox Kids, MTV, PBS Kids and more), eras
 (70s through 2020s) and how much space to use, and Rerun:
@@ -133,22 +133,53 @@ Disney Channel, Playhouse Disney, Cartoon Network, Kids' WB, Fox Kids, MTV, PBS 
 Tick **Halloween** or **Christmas** to fetch holiday tapes too. Holiday commercials only air in their
 season, and tapes recorded in October or December are favoured in that month.
 
-**Quality:** the finder skips tapes below the quality you pick (360p or 480p), downloads each tape
-as it was uploaded rather than the archive's re-compressed copy, and ranks DVD, broadcast, HD and
-smooth 60fps transfers first. Most of these are VHS recordings, so expect standard definition.
+**Quality comes from the files, not the titles.** Before downloading anything, Rerun reads each
+tape's file list and ranks the tapes by their real picture size, bitrate and frame rate, so the
+sharpest tapes are fetched first. It downloads each tape as it was uploaded rather than the archive's
+re-compressed copy. After downloading it checks whether the video was blown up from a smaller
+picture (a 240-line capture saved as 480p or 1080p is common): such tapes are labelled with their
+real sharpness and ranked accordingly, and the quality you pick (360p or 480p) applies to the real
+picture. Most of these are VHS recordings, so expect standard definition.
+
+**Whole broadcasts too.** Many uploads are a show or movie recorded *with its original commercials*.
+Rerun reads these straight from the archive, finds the commercial breaks (runs of ad-length
+pieces between long stretches of show), and saves only the breaks, so a 6-hour tape costs a few
+hundred megabytes. Tapes that say their commercials were cut out are skipped.
+
+**Cleaner clips.** Pieces are lined up with the lengths ads were sold in (10, 15, 30, 60
+seconds...): a commercial cut in two by a fade to black is put back together. When the uploader
+listed the ads in the description, the clips are named after them ("Pizza Hut (How Deep Is Your
+Love)").
+
+**No repeats.** The same commercial often turns up on several tapes. Rerun recognises copies by
+tiny fingerprints of their pictures and keeps only the best-looking one on the air.
 
 **Long files are split for you.** A break lasts a few minutes, so a commercials file longer than
 2½ minutes (a compilation from YouTube, say) is split into its single commercials the first time
 it's scanned, the same way as downloaded tapes. One that can't be split is left out rather than
 filling a break.
 
-The same page shows every commercial Rerun can play, with a picture and its exact quality
-(size, frame rate and bitrate). Click one to watch it, and
-**Remove** any you don't want on the air (nothing is deleted; "Show removed ones" puts them back).
+The same page shows every commercial Rerun can play: how many are on the air, a bar showing how
+many are HD, good, watchable or low quality, and filters by network, decade, season, quality and
+source. Each commercial has a picture and its exact quality (size, frame rate, bitrate, and whether it
+was blown up from a smaller picture). Click one to watch it, and **Remove** any you don't want on the
+air (nothing is deleted; "Removed ones" puts them back). **Find more commercials** opens the finder;
+while it runs, its progress shows at the top of the page.
 
 **Breaks that match the show.** Each break picks commercials that fit what's on: a Disney episode
 gets Disney commercials (Halloween Disney ones in October), a 2004 episode gets 2000s ads, and a
 show from a network you have no ads for gets plain ads rather than another network's.
+
+**Bumpers and idents in the right place.** Bumpers and idents ("You're watching Disney Channel",
+Nick's splats, "We'll be right back") are told apart from commercials: short clips from bumper tapes,
+clips named like one, and anything in a `bumpers`, `idents` or `intros` folder. They play where the
+network put them: the show's own network ident right before it starts, and one of its bumpers leading
+into each break. On a mixed channel like *2000s Cartoons*, a Disney show opens with a Disney ident and
+the Nick show after it with a Nick one; a show from a network you have no bumpers for gets none rather
+than someone else's. Holiday bumpers come first in season and stay on the shelf the rest of the year.
+To add your own, put them in a commercials folder under the network's name and a `bumpers` folder, e.g.
+`commercials/disney/bumpers/` (network folder names: `nick`, `nickjr`, `disney`, `playhouse`,
+`toondisney`, `cn`, `adultswim`, `boomerang`, `kidswb`, `foxkids`, `abcfamily`, `mtv`, `pbskids`).
 
 These are other people's recordings of broadcast TV, downloaded for watching at home. Delete them
 any time from the same place.
@@ -157,6 +188,59 @@ any time from the same place.
 
 On the **Holidays** page each holiday can have a **TV channel** (holiday episodes only), a **movie
 channel** (holiday movies only), or one mixed channel, e.g. *Halloween TV* and *Halloween Movies*.
+
+## Boomerang and other classic channels
+
+Some channels ran other networks' shows: Plex lists *Scooby-Doo* under CBS and *The Jetsons* under ABC,
+not Boomerang. **Networks → Classic channels → Boomerang** builds the channel from Boomerang's real
+2000–2009 lineup (from Wikipedia's list of programs Boomerang aired): about 120 shows, marked as staples
+(aired year after year), regulars, or occasional. It shows which ones you have and which you still need
+(copy the list, or open it as text), adds the channel, and finds Boomerang's bumpers, idents and
+commercials on the Internet Archive. On the Boomerang channel every show opens with a Boomerang ident
+and goes into its breaks with a Boomerang bumper, whatever network the show first aired on.
+
+## The look of real TV
+
+- **Network logo in the corner.** A see-through logo sits in the corner of the picture during shows (not
+  during commercials), inside the picture even when an old 4:3 show has bars at the sides. A network's
+  own channel shows its own logo; a mixed channel like *2000s Cartoons* shows each show's original
+  network. Rerun uses today's official logos; to use the logo a network had in your era, put a picture
+  in Rerun's data folder under `bugs/custom/`, named after the network or its tag (`Nickelodeon.png`,
+  `boomerang.png`).
+- **"Up next" banner.** Near the end of a show, before its last break, a banner says what's on next.
+
+Both can be switched off in Settings → Picture & sound.
+
+## Christmas, the 2000s way
+
+The **Christmas Channel** runs a day like 2000s cable did: cartoons and specials in the morning,
+sitcom Christmas episodes in the afternoon, family specials at dinnertime, a big holiday movie at 8,
+late-night movies and overnight classics. 2000s titles come up more often, 2000s holiday commercials
+go first, and the guide counts down the days to Christmas. On Christmas Eve at 8pm it switches to
+**24 Hours of A Christmas Story** until 8pm Christmas Day, if you have the movie. Switch a channel back
+to a plain shuffle on the Holidays page.
+
+Rerun also knows the Christmas movies whose titles don't say so (Elf, The Polar Express, Home Alone,
+Jingle All the Way...), and the Holidays page lists 78 2000s Christmas essentials (movies, specials
+and episodes), with which ones you have and which you still need.
+
+## ABC Family's 25 Days of Christmas
+
+The **25 Days** page recreates ABC Family's 25 Days of Christmas as it aired in **December 2008** or
+**December 2009**, from ABC Family's published schedules: every movie and special at the same date and
+clock time (Eastern times, played at the same clock times where you are). It:
+
+- checks your Plex library for every title and lists what you **have** and what you **still need**
+  (with how often each one airs), matching by name and year so that, for example, the 1979 *Jack
+  Frost* special and the 1998 movie are told apart. Copy the list or open it as text;
+- adds a channel that plays the schedule from December 1 to 25. Tune in late and the movie is
+  already part-way through. Between listings it runs your ABC Family shows (or Christmas episodes),
+  like ABC Family's daytime. Titles you don't have can be filled with other Christmas titles from
+  your library, or shown as a card saying what to get;
+- finds that December's real commercials on the Internet Archive: commercial breaks people taped
+  and whole broadcasts recorded with their commercials, then the years either side. When Rerun has a
+  recording of the very broadcast (such as ABC Family's Narnia premiere on December 12, 2008), its
+  breaks play at the same moments in the movie, in their original order.
 
 ## Everyday commands
 

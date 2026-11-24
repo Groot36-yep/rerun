@@ -94,6 +94,12 @@ def all_items(sid: str, request: Request, type: int = 0):
         p = os.path.join(MEDIA, "movies", "Test Movie (1999).mp4")
         items = [{"ratingKey": "900", "type": "movie", "title": "Test Movie", "year": 1999, "studio": "Nickelodeon Movies",
                   "Genre": [{"tag": "Family"}], "thumb": "/library/metadata/900/thumb/1", "Media": media("900", p)}]
+        # a few Christmas titles (same file) for the 25 Days of Christmas and 2000s Christmas checks
+        for rk, title, year in (("901", "The Polar Express", 2004), ("902", "Elf", 2003),
+                                ("903", "A Christmas Story", 1983), ("904", "Dr. Seuss' How the Grinch Stole Christmas", 2000),
+                                ("905", "Jack Frost", 1979)):
+            items.append({"ratingKey": rk, "type": "movie", "title": title, "year": year, "studio": "",
+                          "Genre": [{"tag": "Family"}], "thumb": f"/library/metadata/{rk}/thumb/1", "Media": media(rk, p)})
     page = items[start:start + size]
     return mc(size=len(page), totalSize=len(items), Metadata=page)
 
