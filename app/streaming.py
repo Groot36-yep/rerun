@@ -14,14 +14,15 @@ How a channel plays:
 from __future__ import annotations
 
 import asyncio
+import random
 import logging
 import os
 import secrets
 import tempfile
 import time
 
-from . import archive, images
-from .channels import network_key, network_logo
+from . import archive, images, onair
+from .channels import filler_pool, network_key, network_logo
 from .ffmpeg import RESOLUTIONS
 from .lineups import LINEUPS
 
@@ -34,7 +35,7 @@ TARGET_LEAD = 5.0      # seconds the stream tries to stay ahead of the clock (a 
 FIRST_BURST = 10.0     # fill the player's buffer quickly when a channel starts, so Plex starts sooner
 QUICK_MIN = 2.0        # without ffmpeg's burst option, top up with quick pieces at least this long
 IDLE_GRACE = 20        # keep a channel warm briefly so flipping back is instant
-BAD_FILE_MINUTES = 30
+BAD_FILE_MINUTES = 10
 LIST_ENTRIES = 20000
 
 
@@ -310,61 +311,69 @@ class ChannelStream:
                 "overlay": overlay}
 
     async def _overlay(self, ch: dict, p, idx: int, item: dict, block: dict, end: float) -> dict | None:
-        """What to draw over a show: its network's logo in the corner, and "Up next" near the end of the
-        last part before the closing break."""
+        """What to draw over a show: its network's logo in the corner (the one it had the year the episode
+        aired), "Up next" near the end of the last part before the closing break, "After the break" going
+        into a mid-show break, and a "Tonight at 8" promo early in the block (see onair.py)."""
         app = self.mgr.app
         s = app.cfg.data["stream"]
         out: dict = {}
         H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])[1]
-        if s.get("screen_bug", True):
-            name = self._bug_network(ch, item)
-            names = [name, archive.tag_for_network(name) or ""] if name else []
+        net = self._bug_network(ch, item)
+        tag = archive.tag_for_network(net) if net else None
+        if s.get("screen_bug", True) and net:
+            year = self._year(item)
             try:
-                logo = await images.screen_bug(network_logo(name, app.catalog) if name else "", H,
-                                               app.cfg.data["metadata"].get("online_lookups", True), names)
+                ref = images.era_logo(tag, year) or network_logo(net, app.catalog)
+                logo = await images.screen_bug(ref, H, app.cfg.data["metadata"].get("online_lookups", True),
+                                               [net, tag or ""], year)
             except Exception as e:
                 log.info("No on-screen logo (%s)", e.__class__.__name__)
                 logo = None
             if logo:
                 out["logo"] = logo
-        if s.get("up_next", True) and block:
-            later_part = any(x["k"] == "c" for x in p.items[idx + 1:] if x["s"] < block["e"])
-            nxt = p.block_at(block["e"] + 1)
-            if not later_part and nxt and nxt.get("title") and (nxt.get("cats") or nxt.get("img")):
-                # the banner runs from 45 to 15 seconds before this part ends, in this piece's own time
-                t0, t1 = item["e"] - 45 - self.cursor, item["e"] - 15 - self.cursor
-                t0, t1 = max(0.5, t0), min(t1, end - self.cursor - 1)
-                if t1 - t0 >= 6:
-                    net = self._bug_network(ch, item)
-                    tpl_file = images.find_template([nxt["title"], net, archive.tag_for_network(net) or ""] if net
-                                                    else [nxt["title"]])
-                    tpl = await asyncio.to_thread(images.analyse_template, tpl_file, self.mgr.ffmpeg.ffmpeg) \
-                        if tpl_file else None
-                    if tpl:  # your own template: it plays for its own length (pictures for 10 seconds)
-                        a = max(0.5, item["e"] - 32 - self.cursor)
-                        b = min(a + (tpl["dur"] or 10.0), end - self.cursor - 1)
-                        if b - a >= 3:
-                            out["template"] = {**tpl, "file": tpl_file, "t0": a, "t1": b}
-                            titled = images.template_title(nxt["title"], tpl_file, H)
-                            if titled:
-                                out["template"].update(title_png=titled[0], title_x=titled[1]["x"],
-                                                       title_y=titled[1]["y"])
-                        return out or None
-                    try:  # in the network's 2000s style, or in the colour of its logo
-                        theme = images.theme_for(archive.tag_for_network(net) if net else None,
-                                                 plan=bool(ch.get("plan")))
-                        art = await images.artwork(app, nxt["img"]) if nxt.get("img") and theme == "nick" else None
-                        banner = await asyncio.to_thread(images.up_next_banner, nxt["title"], H,
-                                                         images.bug_accent(out.get("logo")), theme, art,
-                                                         nxt.get("img") or "", out.get("logo"))
-                        if banner:
-                            out.update(banner=banner, t0=t0, t1=t1, motion=images.MOTION.get(theme, "left"),
-                                       place=images.PLACE.get(theme, ""))
-                            if images.banner_art(banner):
-                                out["banner_art"] = images.banner_art(banner)
-                    except Exception as e:
-                        log.info("No Up next banner (%s)", e.__class__.__name__)
+        rel_end = end - self.cursor - 1
+        banners = []
+        for g in onair.plan(p, idx, item, block, s, block.get("title", "")):
+            t0, t1 = max(0.5, g["t0"] - self.cursor), min(g["t1"] - self.cursor, rel_end)
+            if t1 - t0 < (6 if g["kind"] == "up_next" else 4):
+                continue  # this piece only has a sliver of it (a late start or a quick-start piece)
+            if g["kind"] == "up_next":
+                nxt = g["block"]
+                tpl_file = images.find_template([nxt["title"], net, tag or ""] if net else [nxt["title"]])
+                tpl = await asyncio.to_thread(images.analyse_template, tpl_file, self.mgr.ffmpeg.ffmpeg) \
+                    if tpl_file else None
+                if tpl:  # your own template: it plays for its own length (pictures for 10 seconds)
+                    a = max(0.5, item["e"] - 32 - self.cursor)
+                    b = min(a + (tpl["dur"] or 10.0), rel_end)
+                    if b - a >= 3:
+                        out["template"] = {**tpl, "file": tpl_file, "t0": a, "t1": b}
+                        titled = images.template_title(nxt["title"], tpl_file, H)
+                        if titled:
+                            out["template"].update(title_png=titled[0], title_x=titled[1]["x"],
+                                                   title_y=titled[1]["y"])
+                    continue
+            try:  # in the network's 2000s style, or in the colour of its logo
+                theme = images.theme_for(tag, plan=bool(ch.get("plan")))
+                about = g["block"] or {}
+                art = await images.artwork(app, about["img"]) \
+                    if about.get("img") and theme == "nick" and g["kind"] != "teaser" else None
+                banner = await asyncio.to_thread(images.up_next_banner, g["title"], H,
+                                                 images.bug_accent(out.get("logo")), theme, art,
+                                                 about.get("img") or "", out.get("logo"), g["label"], g["short"])
+                if banner:
+                    banners.append({"file": banner, "art": images.banner_art(banner), "t0": t0, "t1": t1,
+                                    "motion": images.MOTION.get(theme, "left"), "place": images.PLACE.get(theme, "")})
+            except Exception as e:
+                log.info("No %s banner (%s)", g["kind"], e.__class__.__name__)
+        if banners:
+            out["banners"] = banners
         return out or None
+
+    def _year(self, item: dict):
+        """The year an episode first aired (or a movie came out), for the logo of that era."""
+        cat = self.mgr.app.catalog
+        m = cat.items.get(item.get("m") or "") or {}
+        return (m.get("date") or "")[:4] or m.get("year") or (cat.shows.get(m.get("show"), {}) or {}).get("year")
 
     def _bug_network(self, ch: dict, item: dict) -> str:
         """Whose logo goes in the corner: the channel's own on a network's channel (Nickelodeon, Boomerang,
@@ -382,9 +391,16 @@ class ChannelStream:
                 else m.get("network")) or ""
 
 
+def _bad_key(src: str, item: dict) -> str:
+    """What a failure counts against: a commercial on a tape is just that commercial (its neighbours on
+    the same tape may play fine); a show is its whole file."""
+    return f"{src}#{item.get('in', 0)}" if item.get("k") == "f" else src
+
+
 class StreamManager:
     def __init__(self, app, port: int):
         self.app = app
+        self._pools: dict[str, tuple] = {}  # each channel's commercials, for stand-ins
         self.port = port
         self.ffmpeg = app.ffmpeg
         self.by_channel: dict[str, ChannelStream] = {}
@@ -448,6 +464,33 @@ class StreamManager:
         exp = self.bad.get(path)
         return bool(exp and exp > time.time())
 
+    def _stand_in(self, cid: str, item: dict, need: float):
+        """Another commercial (or bumper, for a bumper) from the channel's own, at least `need` seconds
+        long and as close to it as can be, whose file is there and plays. (item, source) or None."""
+        ch = self.app.channel(cid)
+        if not ch:
+            return None
+        cat = self.app.catalog
+        stamp = (id(cat), cat.scanned_at, repr(ch.get("commercials")))  # made again after a scan or an edit
+        cached = self._pools.get(ch["id"])
+        if not cached or cached[0] != stamp:
+            cached = (stamp, filler_pool(ch, cat))
+            self._pools[ch["id"]] = cached
+        was = self.app.catalog.items.get(item.get("m") or "") or {}
+        bumper = "bumper" in (was.get("tags") or [])
+        cands = [f for f in cached[1] if ("bumper" in (f.get("tags") or [])) == bumper and f["id"] != item.get("m")
+                 and f["dur"] >= need - 0.3 and not f.get("dup")]
+        random.shuffle(cands)
+        cands.sort(key=lambda f: round(f["dur"] - need))  # the closest length first; equal ones shuffled
+        for f in cands[:12]:
+            alt = {"s": item.get("s", 0), "e": item.get("e", 0), "k": "f", "m": f["id"], "in": f.get("in", 0),
+                   "t": f.get("title", ""), "f": f.get("file") or "", "p": f.get("part") or "", "a": bool(f.get("audio", True))}
+            src = self.app.media_input(alt)
+            if src and not self._is_bad(_bad_key(src, alt)):
+                log.info("Playing %s in place of %s", alt["t"] or "another commercial", item.get("t") or "a missing one")
+                return alt, src
+        return None
+
     def _slate(self, st: ChannelStream, text: str, dur: float, burst: float) -> list[str]:
         try:
             with open(st.text_file, "w", encoding="utf-8") as f:
@@ -468,15 +511,22 @@ class StreamManager:
         spinup, delivered = 0.0, False
         s = self.app.cfg.data["stream"]
         src = None
+        ov = plan.get("overlay")
+        swapped = False
         if item.get("k") in ("c", "f"):
             src = self.app.media_input(item)
-            if src and self._is_bad(src):
+            if src and self._is_bad(_bad_key(src, item)):
                 src = None
             elif not src:
-                log.warning("Can't find %s (%s); showing a card instead", item.get("t") or "a file", item.get("f"))
+                log.warning("Can't find %s (%s)", item.get("t") or "a file", item.get("f"))
+            if not src and item.get("k") == "f":
+                # A commercial or bumper that's gone missing (or won't play): another one of the same
+                # length takes its place, rather than a "We'll be right back" card.
+                stand = self._stand_in(st.cid, item, plan["offset"] + dur)
+                if stand:
+                    item, src, swapped = stand[0], stand[1], True
         has_audio = bool(item.get("a", True))
         if src:
-            ov = plan.get("overlay")
             cmd, kind = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
                                               overlay=ov), "media"
         else:
@@ -532,10 +582,26 @@ class StreamManager:
                     cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio, False,
                                                 overlay=ov)
                     continue
+                if kind == "media" and ov:
+                    # the logo or a banner is what failed, most likely: the show plays without them
+                    log.warning("Couldn't draw over %s (%s); playing it without the logo and banners",
+                                item.get("t") or src, msg[-200:] or "unknown error")
+                    ov = None
+                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
+                                                hw_decode, overlay=None)
+                    continue
                 if kind == "media":
                     log.warning("Couldn't play %s: %s", item.get("t") or src, msg[-300:] or "unknown error")
-                    self.bad[src] = time.time() + BAD_FILE_MINUTES * 60
-                    cmd, kind = self._slate(st, f"{st.name}\n\nWe'll be right back", dur, burst), "slate"
+                    self.bad[_bad_key(src, item)] = time.time() + BAD_FILE_MINUTES * 60
+                    stand = self._stand_in(st.cid, item, plan["offset"] + dur) if item.get("k") == "f" and not swapped else None
+                    if stand:
+                        item, src, swapped = stand[0], stand[1], True
+                        has_audio = bool(item.get("a", True))
+                        cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
+                                                    hw_decode)
+                        continue
+                    text = st.name if item.get("k") == "f" else f"{st.name}\n\nWe'll be right back"
+                    cmd, kind = self._slate(st, text, dur, burst), "slate"
                     continue
                 if kind == "slate":
                     log.warning("Couldn't draw the placeholder card (%s); using a plain screen", msg[-200:])

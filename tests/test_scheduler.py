@@ -185,6 +185,43 @@ async def main():
     rug = [x["m"] for x in p7.items if x["m"].startswith("p2e")]
     assert rug == sorted(rug, key=lambda m: int(m[3:])), "in-order episodes out of order"
 
+    # What goes over the shows: "Up next" on each block's last part, "After the break" before every
+    # mid-show break, and at most one promo a block, for something later on (never the very next block).
+    from app import onair
+    s_on = {"up_next": True, "promos": True}
+    kinds_seen = Counter()
+    for i, x in enumerate(p.items):
+        if x["k"] != "c":
+            continue
+        b = p.block_at(x["s"])
+        texts = onair.plan(p, i, x, b, s_on, b["title"])
+        kinds_seen.update(g["kind"] for g in texts)
+        spans = sorted((g["t0"], g["t1"]) for g in texts)
+        assert all(x["s"] <= a < c <= x["e"] for a, c in spans), (x, texts)
+        assert all(c1 < a2 for (_a1, c1), (a2, _c2) in zip(spans, spans[1:])), f"overlapping texts {texts}"
+        nxt = p.items[i + 1] if i + 1 < len(p.items) else None
+        teaser = [g for g in texts if g["kind"] == "teaser"]
+        if teaser:
+            assert nxt and nxt["k"] != "c" and nxt["e"] <= b["e"], "a teaser should lead into a mid-show break"
+        for g in texts:
+            if g["kind"] == "promo":
+                assert g["block"]["s"] > b["e"] + 1 and g["label"].split()[0] in ("Tonight", "Today", "Tomorrow")
+    promos_per_block = Counter(p.block_at(x["s"])["s"] for i, x in enumerate(p.items) if x["k"] == "c"
+                               for g in onair.plan(p, i, x, p.block_at(x["s"]), s_on) if g["kind"] == "promo")
+    assert max(promos_per_block.values(), default=0) <= 1
+    print("on-screen texts:", dict(kinds_seen))
+    assert kinds_seen["teaser"] > 20 and kinds_seen["promo"] > 10 and kinds_seen["up_next"] > 20
+    assert not any(onair.plan(p, i, x, p.block_at(x["s"]), {"up_next": True, "promos": False})
+                   and any(g["kind"] != "up_next" for g in onair.plan(p, i, x, p.block_at(x["s"]), {"promos": False}))
+                   for i, x in enumerate(p.items) if x["k"] == "c"), "promos off should mean only Up next"
+    print("tonight at 8:", onair.when_label(datetime(2026, 12, 1, 20).timestamp(), datetime(2026, 12, 1, 17, 10).timestamp()),
+          onair.when_label(datetime(2026, 12, 2, 8, 30).timestamp(), datetime(2026, 12, 1, 23).timestamp()))
+
+    # Bumpers from the episode's year win: a 2003 bumper around a 2003 episode, not a 2015 one.
+    from app.scheduler import _year_match, item_year
+    assert item_year({"id": "y1", "title": "Nickelodeon bumpers 2003"}) == 2003
+    assert _year_match(2003, {"year": 2004}, set()) > _year_match(1999, {"year": 2004}, set()) > _year_match(2016, {"year": 2004}, set())
+
     # A test channel: the same shows a minute or so at a time, every break coming round within minutes,
     # and the Christmas channel's test plays even out of season.
     quick = normalize_channel({**nick, "id": "quick", "quick": {"of": "nick", "key": "network:Nickelodeon", "part": 60}})

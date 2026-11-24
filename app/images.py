@@ -16,7 +16,8 @@ import math
 from pathlib import Path
 import os
 import re
-from urllib.parse import urlencode
+import threading
+from urllib.parse import quote, urlencode
 
 import httpx
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
@@ -487,6 +488,45 @@ async def _fetch_wiki(title: str) -> bytes | None:
 _WIKI_SRC: dict[str, str] = {}  # Wikipedia article -> the logo picture's public address
 
 
+# The logos networks had in earlier years, by the commercials tag of the network (archive.PROFILES):
+# (first year, last year, picture). From the networks' Wikipedia articles and Wikimedia Commons; years
+# outside these use today's logo. Your own pictures in bugs/custom/ win (see custom_bug).
+ERA_LOGOS = {
+    "nick": [(1984, 2009, "commons:Nickelodeon_logo_2009.png"),          # the orange splat
+             (2009, 2022, "commons:Nickelodeon_2017_logo.svg")],          # the 2009 wordmark
+    "cn": [(1992, 2004, "commons:Cartoon_Network_1992-2004.svg"),
+           (2004, 2010, "commons:Cartoon_Network_logo_(2004-2010).svg"),
+           (2010, 2030, "commons:Cartoon_Network_2010_logo.svg")],
+    "disney": [(1997, 2010, "commons:2002_Disney_Channel_logo.svg")],
+    "boomerang": [(2000, 2014, "commons:Boomerang_tv_logo_(2000).svg")],
+    "playhouse": [(1997, 2011, "commons:2000_Playhouse_Disney_logo.svg")],
+    "toondisney": [(1998, 2009, "commons:Toon_Disney_logo.svg")],
+    "nicktoons": [(2002, 2009, "commons:Nicktoons-Network-original-balloon-text-logo.png")],
+    "foxkids": [(1990, 2002, "commons:FOX_Kids_logo.svg")],
+    "kidswb": [(1995, 1996, "enwiki:Kids_WB_95.svg"), (1997, 2008, "enwiki:Kids'_WB!_(logo).png")],
+}
+
+
+def era_logo(tag: str | None, year) -> str:
+    """The logo a network had in a year ("commons:..."), or "" for today's."""
+    try:
+        y = int(str(year)[:4])
+    except (TypeError, ValueError):
+        return ""
+    return next((ref for a, b, ref in ERA_LOGOS.get(tag or "", []) if a <= y <= b), "")
+
+
+async def _fetch_wikifile(ref: str) -> bytes | None:
+    """A picture file from Wikimedia Commons or Wikipedia, as a PNG (SVGs are drawn by Wikimedia)."""
+    host = "https://commons.wikimedia.org" if ref.startswith("commons:") else "https://en.wikipedia.org"
+    name = ref.split(":", 1)[1]
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={"User-Agent": WIKI_UA}) as c:
+        r = await c.get(f"{host}/wiki/Special:FilePath/{quote(name)}", params={"width": 600})
+    if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+        return r.content
+    return None
+
+
 async def official_logo(ref: str) -> bytes | None:
     for attempt in range(3):  # a brief network hiccup shouldn't leave a channel with a stand-in logo
         try:
@@ -494,6 +534,8 @@ async def official_logo(ref: str) -> bytes | None:
                 return await _fetch_tmdb(ref[5:])
             if ref.startswith("wiki:"):
                 return await _fetch_wiki(ref[5:])
+            if ref.startswith(("commons:", "enwiki:")):
+                return await _fetch_wikifile(ref)
             return None
         except (httpx.TransportError, httpx.TimeoutException) as e:
             if attempt == 2:
@@ -509,7 +551,7 @@ async def official_logo(ref: str) -> bytes | None:
 # --------------------------------------------------------------------------- the on-screen logo ("bug")
 
 BUG_DIR = DATA_DIR / "bugs"
-BUG_V = 3
+BUG_V = 4
 _bug_misses: dict[str, float] = {}
 
 
@@ -522,6 +564,19 @@ def _ink(logo: Image.Image, alpha: Image.Image) -> Image.Image:
     ink = ImageChops.multiply(ink, alpha)
     area = sum(alpha.point(lambda a: 1 if a > 128 else 0).getdata()) or 1
     inked = sum(ink.point(lambda a: 1 if a > 128 else 0).getdata())
+    hsv = logo.convert("RGB").convert("HSV")
+    hues = [h * 12 // 256 for (h, s, _v), a in zip(hsv.getdata(), alpha.getdata()) if a > 128 and s > 80]
+    many = sum(1 for b in range(12) if hues.count(b) > len(hues) * 0.12) >= 2 if hues else False
+    if inked / area > 0.93 and many:
+        # Colourful all over (Playhouse Disney's yellow cloud, Fox Kids, Toon Disney's red Mickey): the
+        # darker letters are the drawing and the lighter colour around them the gaps, or it'd be a blob.
+        lum = [v for v, a in zip(dark.getdata(), alpha.getdata()) if a > 128]
+        lum.sort()
+        lo, hi = lum[len(lum) // 10], lum[len(lum) * 9 // 10]
+        if hi - lo > 40:
+            span = hi - lo
+            ink = ImageChops.multiply(dark.point(lambda v: max(0, min(255, int((v - lo) * 255 / span)))), alpha)
+            inked = sum(ink.point(lambda a: 1 if a > 128 else 0).getdata())
     return ink if inked / area > 0.12 else alpha
 
 
@@ -551,11 +606,27 @@ def make_bug(raw: bytes, height: int) -> bytes | None:
     return _png(out)
 
 
-def custom_bug(names: list[str]) -> str | None:
+_YEARS_IN_NAME = re.compile(r"^(.*?)\s+((?:19|20)\d\d)(?:\s*-\s*((?:19|20)\d\d))?$")
+
+
+def custom_bug(names: list[str], year=None) -> str | None:
     """Your own on-screen logo for a network, if you've put one in the "bugs" folder of Rerun's data
-    folder: named after the network ("Nickelodeon.png") or its commercials tag ("nick.png"). Use it for
-    the logo a network had in your era (the official logos Rerun finds are today's)."""
+    folder: named after the network ("Nickelodeon.png") or its commercials tag ("nick.png"). For the logo
+    it had in certain years, add them to the name: "Nickelodeon 1984-2009.png", "cn 1998.png"; shows
+    from those years get it, and the plain one (if any) the rest."""
     folder = BUG_DIR / "custom"
+    try:
+        y = int(str(year)[:4]) if year else 0
+    except ValueError:
+        y = 0
+    if y and folder.is_dir():
+        wanted = {n.lower() for n in names if n}
+        for f in sorted(folder.iterdir()):
+            m = _YEARS_IN_NAME.match(f.stem)
+            if m and f.suffix.lower() in (".png", ".webp", ".jpg") and m.group(1).lower() in wanted:
+                a = int(m.group(2))
+                if a <= y <= int(m.group(3) or a):
+                    return str(f)
     for n in names:
         for ext in (".png", ".webp", ".jpg"):
             p = folder / f"{n}{ext}"
@@ -564,9 +635,11 @@ def custom_bug(names: list[str]) -> str | None:
     return None
 
 
-async def screen_bug(ref: str, height: int, online: bool = True, names: list[str] | None = None) -> str | None:
-    """The file of a network's on-screen logo at this picture height, made once and kept."""
-    own = custom_bug(names or [])
+async def screen_bug(ref: str, height: int, online: bool = True, names: list[str] | None = None,
+                     year=None) -> str | None:
+    """The file of a network's on-screen logo at this picture height, made once and kept. With a year,
+    the logo the network had then (your own picture for those years, or one from ERA_LOGOS)."""
+    own = custom_bug(names or [], year)
     if own:
         ref = f"file:{own}:{int(os.path.getmtime(own))}"
     if not ref:
@@ -619,7 +692,29 @@ def logo_accent(raw: bytes) -> str | None:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-BANNER_V = 2
+BANNER_V = 3
+_LABEL = threading.local()  # what the banner says instead of "Up next" ("Tonight at 8", "After the break")
+
+
+def _lab(default: str) -> str:
+    """The banner's label in this style's own lettering: "COMING UP NEXT" -> "TONIGHT AT 8"."""
+    o = getattr(_LABEL, "text", "")
+    if not o:
+        return default
+    if default.isupper():
+        return o.upper()
+    if default.islower():
+        return o.lower()
+    return o[:1].upper() + o[1:]
+
+
+def _short(default: str) -> str:
+    """The one-word label for styles that only have room for a word ("next" in Nick's splat)."""
+    o = getattr(_LABEL, "short", "")
+    if not o:
+        return default
+    o = o.upper() if default.isupper() else o.lower() if default.islower() else o
+    return o + "!" if default.endswith("!") and not o.endswith("!") else o
 GOLD_ACCENT = "#d4a028"
 
 
@@ -637,7 +732,7 @@ def make_banner(title: str, height: int, accent: str | None = None) -> bytes:
     radius = round(bh * 0.22)
     label_font = _font(round(bh * 0.25), "sans")
     title_font = _font(round(bh * 0.47), "sans")
-    label = "UP NEXT"
+    label = _lab("UP NEXT")
     tracking = round(bh * 0.035)
     label_w = sum(label_font.getlength(ch) for ch in label) + tracking * (len(label) - 1)
     tab_w = round(label_w + bh * 0.62)
@@ -677,18 +772,23 @@ def make_banner(title: str, height: int, accent: str | None = None) -> bytes:
 
 
 def up_next_banner(title: str, height: int, accent: str | None = None, theme: str = "", art: bytes | None = None,
-                   art_key: str = "", logo: str | None = None) -> str | None:
-    """The banner's file, made once per title, size, colour, style, artwork and logo."""
+                   art_key: str = "", logo: str | None = None, label: str = "", short: str = "") -> str | None:
+    """The banner's file, made once per title, size, colour, style, artwork and logo. `label` changes what
+    it says instead of "Up next" ("Tonight at 8"), `short` the one word some styles have room for."""
     if not title:
         return None
     folder = BUG_DIR / "banners"
-    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}:{art_key if art else ''}:{logo or ''}"
+    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}:{art_key if art else ''}:{logo or ''}:{label}:{short}"
     path = folder / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.png"
     if not path.exists():
         folder.mkdir(parents=True, exist_ok=True)
         parts: dict = {}
-        png = (make_themed_banner(title, height, theme, art, logo, parts) if theme in THEME_DRAW
-               else make_banner(title, height, accent))
+        _LABEL.text, _LABEL.short = label, short
+        try:
+            png = (make_themed_banner(title, height, theme, art, logo, parts) if theme in THEME_DRAW
+                   else make_banner(title, height, accent))
+        finally:
+            _LABEL.text = _LABEL.short = ""
         if parts.get("art"):
             path.with_suffix(".art.png").write_bytes(parts["art"])
         path.write_bytes(png)
@@ -961,7 +1061,7 @@ def _banner_nick(title, bh, k, art=None, logo=None):
     d.polygon(_splat(cx, cy, sr), fill="#f57d0d")
     d.ellipse((cx + sr * 1.25, cy - sr * 1.0, cx + sr * 1.45, cy - sr * 0.8), fill="#f57d0d")  # flecks of paint
     d.ellipse((cx - sr * 1.75, cy + sr * 0.5, cx - sr * 1.58, cy + sr * 0.67), fill="#f57d0d")
-    label = "next"
+    label = _short("next")
     lw = big.getlength(label)
     lb = big.getbbox(label)
     d.text((cx - lw / 2, cy - (lb[3] + lb[1]) / 2), label, font=big, fill="white",
@@ -978,7 +1078,8 @@ def _banner_cn(title, bh, k, art=None, logo=None):
     t = _fit(title.upper(), tfont, bh * 7.5)
     sq = round(bh * 0.16)
     tw = round(tfont.getlength(t) + bh * 0.8)
-    lw = round(lab.getlength("COMING UP NEXT") + bh * 0.1)
+    said = _lab("COMING UP NEXT")
+    lw = round(lab.getlength(said) + bh * 0.1)
     w = max(tw, lw + bh) + sq * 2
     h = round(bh * 1.25) + sq * 2
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -991,7 +1092,7 @@ def _banner_cn(title, bh, k, art=None, logo=None):
             else:
                 d.rectangle((i * sq, j * sq, i * sq + sq - 1, j * sq + sq - 1), fill="white")
     d.rectangle((0, sq * 2, w, h), fill=(0, 0, 0, 235))
-    d.text((bh * 0.4, sq * 2 + bh * 0.1), "COMING UP NEXT", font=lab, fill="white")
+    d.text((bh * 0.4, sq * 2 + bh * 0.1), said, font=lab, fill="white")
     d.line((bh * 0.4, sq * 2 + bh * 0.5, bh * 0.4 + lw, sq * 2 + bh * 0.5), fill="white", width=k * 2)
     d.text((bh * 0.4, sq * 2 + bh * 0.55), t, font=tfont, fill="white")
     return img
@@ -1001,7 +1102,8 @@ def _banner_disney(title, bh, k, art=None, logo=None):
     lab = _font(round(bh * 0.32), "serif")
     tfont = _font(round(bh * 0.5), "sans")
     t = _fit(title, tfont, bh * 7.5)
-    w = round(max(tfont.getlength(t), lab.getlength("up next") + bh) + bh * 1.4)
+    said = _lab("up next")
+    w = round(max(tfont.getlength(t), lab.getlength(said) + bh) + bh * 1.4)
     h = round(bh * 1.3)
     pad = 24 * k
     img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
@@ -1022,7 +1124,7 @@ def _banner_disney(title, bh, k, art=None, logo=None):
     sx, sy, s = pad + bh * 0.62, pad + h * 0.36, bh * 0.16
     d.polygon([(sx, sy - s), (sx + s * 0.25, sy - s * 0.25), (sx + s, sy), (sx + s * 0.25, sy + s * 0.25), (sx, sy + s),
                (sx - s * 0.25, sy + s * 0.25), (sx - s, sy), (sx - s * 0.25, sy - s * 0.25)], fill="white")
-    d.text((pad + bh * 0.9, pad + h * 0.12), "up next", font=lab, fill=(220, 230, 255, 255))
+    d.text((pad + bh * 0.9, pad + h * 0.12), said, font=lab, fill=(220, 230, 255, 255))
     d.text((pad + bh * 0.62, pad + h * 0.43), t, font=tfont, fill="white")
     return img
 
@@ -1050,7 +1152,7 @@ def _banner_boomerang(title, bh, k, art=None, logo=None):
         a = math.pi * i / 12 - math.pi / 2
         pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
     d.polygon(pts, fill="#ef6f2e")
-    for i, label in enumerate(("next!",)):
+    for i, label in enumerate((_short("next!"),)):
         lw = lab.getlength(label)
         lb = lab.getbbox(label)
         d.text((cx - lw / 2, cy - (lb[3] + lb[1]) / 2), label, font=lab, fill="white", stroke_width=k, stroke_fill="#9b3a12")
@@ -1063,7 +1165,8 @@ def _banner_25days(title, bh, k, art=None, logo=None):
     lab = _font(round(bh * 0.3), "serif")
     tfont = _font(round(bh * 0.48), "serif")
     t = _fit(title, tfont, bh * 7.5)
-    w = round(max(tfont.getlength(t), lab.getlength("Coming up next")) + bh * 1.6)
+    said = _lab("Coming up next")
+    w = round(max(tfont.getlength(t), lab.getlength(said)) + bh * 1.6)
     h = round(bh * 1.3)
     pad = 14 * k
     img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
@@ -1072,14 +1175,14 @@ def _banner_25days(title, bh, k, art=None, logo=None):
                         outline=(222, 184, 98, 255), width=k * 3)
     import random as _r
     rng = _r.Random(25)
-    x_from = pad + bh * 0.5 + lab.getlength("Coming up next") + bh * 0.4
+    x_from = pad + bh * 0.5 + lab.getlength(said) + bh * 0.4
     for _ in range(6):  # a few snowflakes, above the title and right of the label
         x, y, s = rng.uniform(x_from, pad + w - bh * 0.25), pad + rng.uniform(bh * 0.18, h * 0.36), rng.uniform(3, 6) * k
         for a in range(3):
             ang = math.pi * a / 3
             d.line((x - s * math.cos(ang), y - s * math.sin(ang), x + s * math.cos(ang), y + s * math.sin(ang)),
                    fill=(255, 255, 255, 90), width=k)
-    d.text((pad + bh * 0.5, pad + h * 0.1), "Coming up next", font=lab, fill=(236, 205, 130, 255))
+    d.text((pad + bh * 0.5, pad + h * 0.1), said, font=lab, fill=(236, 205, 130, 255))
     d.text((pad + bh * 0.5, pad + h * 0.42), t, font=tfont, fill="white")
     return _shadowed(img, pad, bh * 0.07, 110, bh * 0.05)
 
@@ -1113,6 +1216,9 @@ def _banner_nick_bar(title, bh, k, art=None, logo=None, parts=None):
     d = ImageDraw.Draw(img)
     big = _font(round(bar_h * 0.42), "sans")
     small = _font(round(bar_h * 0.2), "sans")
+    said = _lab("UP NEXT")
+    if big.getlength(said) > W43 * 0.55:  # "TONIGHT AT 8:30" is longer than "UP NEXT"
+        big = _font(round(bar_h * 0.42 * W43 * 0.55 / big.getlength(said)), "sans")
     x0 = round(W43 * 0.07)
     art_w = 0
     if art:
@@ -1132,8 +1238,8 @@ def _banner_nick_bar(title, bh, k, art=None, logo=None, parts=None):
         except Exception:
             art_w = 0
     label_y = lift + bar_h * 0.12
-    d.text((x0 + k * 3, label_y + k * 3), "UP NEXT", font=big, fill=(150, 55, 0, 255))   # a hard drop shadow
-    d.text((x0, label_y), "UP NEXT", font=big, fill="white")
+    d.text((x0 + k * 3, label_y + k * 3), said, font=big, fill=(150, 55, 0, 255))   # a hard drop shadow
+    d.text((x0, label_y), said, font=big, fill="white")
     t = _fit(title, small, W43 - x0 - art_w - W43 * 0.1)
     d.text((x0 + k, lift + bar_h * 0.62), t, font=small, fill=(255, 248, 236, 255))
     return img
@@ -1157,7 +1263,7 @@ def _banner_disney_2000s(title, bh, k, art=None, logo=None):
     ring = max(3, round(r * 0.11))
     bar_h = round(H * 0.085)
     font = _font(round(bar_h * 0.52), "sans")
-    label, gap = "Coming next", bar_h * 0.6
+    label, gap = _lab("Coming next"), bar_h * 0.6
     bar_x0 = round(r * 1.55)
     text_x = round(r * 1.05) + r * 1.15 + bar_h * 0.6        # where the words start, just right of the ears
     room = H * 4 / 3 * 0.96 - text_x - font.getlength(label) - gap - bar_h * 0.9  # the bar fits a 4:3 picture

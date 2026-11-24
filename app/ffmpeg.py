@@ -215,14 +215,16 @@ class FFmpeg:
             audio = "0:a:0"
         can = "overlay" in self.filters
         logo = ov.get("logo") if can and os.path.isfile(ov.get("logo") or "") else None
-        banner = ov.get("banner") if can and os.path.isfile(ov.get("banner") or "") else None
-        art = ov.get("banner_art") if banner and os.path.isfile(ov.get("banner_art") or "") else None
+        # banners: "Up next", "After the break", promos; each {file, art, t0, t1, motion, place}
+        banners = list(ov.get("banners") or [])
+        if ov.get("banner"):  # the older single-banner form
+            banners.append({"file": ov["banner"], "art": ov.get("banner_art"), "t0": ov.get("t0"), "t1": ov.get("t1"),
+                            "motion": ov.get("motion"), "place": ov.get("place")})
+        banners = [b for b in banners if can and os.path.isfile(b.get("file") or "")]
         fit = f"bwdif=mode=send_frame:parity=auto:deint=interlaced,scale={W}:{H}:force_original_aspect_ratio=decrease"
         tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS},{self._vf_tail(hw)}"
         tpl = ov.get("template") if can and os.path.isfile((ov.get("template") or {}).get("file") or "") else None
-        if tpl:
-            banner = None  # your own template takes the banner's place
-        if not (logo or banner or tpl):
+        if not (logo or banners or tpl):
             args += ["-map", "0:v:0", "-vf", f"{fit},{tail}"]
         else:
             graph, cur = [f"[0:v:0]{fit}[pic]"], "pic"
@@ -231,10 +233,10 @@ class FFmpeg:
                 graph.append(f"[{cur}][{n}:v:0]overlay=x=main_w-overlay_w-main_w*0.045:"
                              f"y=main_h-overlay_h-main_h*0.065:eof_action=repeat[pb]")
                 cur, n = "pb", n + 1
-            if banner:
-                a, b = float(ov.get("t0") or 0), float(ov.get("t1") or 0)
+            for j, ban in enumerate(banners):
+                a, b = float(ban.get("t0") or 0), float(ban.get("t1") or 0)
                 rest = f"max(0,1-(t-{a:.2f})/0.45)"  # 1 when the banner appears, 0 once it's in place
-                motion = ov.get("motion") or "left"  # each style comes on its own way, ending where it sits
+                motion = ban.get("motion") or "left"  # each style comes on its own way, ending where it sits
 
                 def moved(x, y):
                     if motion == "left":
@@ -247,22 +249,22 @@ class FFmpeg:
                         return x, f"{y}+overlay_h*{rest}"
                     return x, y
 
-                place = ov.get("place") or ""
+                place = ban.get("place") or ""
                 x, y = "main_w*0.055", "main_h*0.73"
                 if place == "bottom":  # along the bottom edge of the picture
                     x, y = "main_w*0.012", "main_h-overlay_h"
                 elif place == "edge":  # from the picture's very left edge; whatever's wider runs off the right
                     x, y = "0", "main_h-overlay_h"
-                layers = [(banner, *moved(x, y))]
-                if art:  # its artwork, near the picture's right edge whatever shape the picture is
-                    layers.append((art, *moved("main_w*0.95-overlay_w", "main_h-overlay_h-4")))
+                layers = [(ban["file"], *moved(x, y))]
+                if ban.get("art") and os.path.isfile(ban["art"]):  # its artwork, near the picture's right edge
+                    layers.append((ban["art"], *moved("main_w*0.95-overlay_w", "main_h-overlay_h-4")))
                 for i, (pic, lx, ly) in enumerate(layers):
                     args += ["-loop", "1", "-framerate", "15", "-t", f"{duration + 1:.3f}", "-i", "file:" + pic]
                     graph.append(f"[{n}:v:0]format=rgba,fade=t=in:st={a:.2f}:d=0.4:alpha=1,"
-                                 f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban{i}]")
-                    graph.append(f"[{cur}][ban{i}]overlay=x='{lx}':y='{ly}':eval=frame:"
-                                 f"enable='between(t,{a:.2f},{b:.2f})'[pn{i}]")
-                    cur, n = f"pn{i}", n + 1
+                                 f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban{j}_{i}]")
+                    graph.append(f"[{cur}][ban{j}_{i}]overlay=x='{lx}':y='{ly}':eval=frame:"
+                                 f"enable='between(t,{a:.2f},{b:.2f})'[pn{j}_{i}]")
+                    cur, n = f"pn{j}_{i}", n + 1
             if tpl:
                 n, cur = self._template(args, graph, tpl, cur, n, W, H, duration)
                 graph.append(f"[{cur}]{self._vf_tail(hw)}[v]")

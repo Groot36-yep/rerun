@@ -769,8 +769,8 @@ function openPreview(ch) {
         const it = g.show;
         const name = it.title || it.block || "the show";
         const notes = [];
-        if (it.logo) notes.push("Logo in the corner");
-        if (it.up_next) notes.push(`“Up next: ${it.up_next}” from ${fmtStamp(it.e - 45)}`);
+        if (it.logo) notes.push(it.logo_year ? `${it.logo_year} logo in the corner` : "Logo in the corner");
+        (it.texts || []).forEach((g) => notes.push(`“${g.label}: ${g.title}” at ${fmtStamp(g.t0)}`));
         return h("div", { class: "pv-row is-show" },
           h("span", { class: "pv-t" }, fmtStamp(it.s)),
           h("span", { class: "pv-k k-show" }, "Show"),
@@ -778,9 +778,12 @@ function openPreview(ch) {
             it.block && it.block !== it.title ? h("small", null, it.block) : null,
             notes.length ? h("small", { class: "pv-notes" }, notes.join(". ")) : null),
           h("span", { class: "pv-len" }, fmtLen(it.e - it.s)),
-          btn(icon("play"), "icon-btn", () => (it.up_next
-            ? watch(it.e - 50, 65, `the end of ${name}, with “Up next”`)
-            : watch(Math.max(it.s, Date.now() / 1000), 30, name)), `Watch ${name}`));
+          btn(icon("play"), "icon-btn", () => {
+            const g = (it.texts || []).find((x) => x.kind === "promo") || (it.texts || [])[0];
+            if (it.up_next) watch(it.e - 50, 65, `the end of ${name}, with “Up next”`);
+            else if (g) watch(g.t0 - 6, g.t1 - g.t0 + 12, `${name}, with “${g.label}”`);
+            else watch(Math.max(it.s, Date.now() / 1000), 30, name);
+          }, `Watch ${name}`));
       }
       const b = g.brk;
       const s0 = b[0].s, e0 = b[b.length - 1].e;
@@ -2033,9 +2036,11 @@ async function viewSettings() {
         h("div", null, h("label", null, "Channels at once, max"), h("input", { type: "number", value: st.tuners, min: 1, max: 20, oninput: (e) => { st.tuners = parseInt(e.target.value, 10); } }))),
       checkbox("Even out the volume", st.even_volume, (val) => { st.even_volume = val; }, "Keeps commercials from being louder than the shows."),
       checkbox("Network logo in the corner", st.screen_bug !== false, (val) => { st.screen_bug = val; },
-        "A see-through logo during shows, like real channels had: the channel's own on a network's channel, each show's own network on a mixed one. To use a logo from your era, put it in Rerun's data folder under bugs/custom, named like Nickelodeon.png."),
+        "A see-through logo during shows, like real channels had: the channel's own on a network's channel, each show's own network on a mixed one, as it looked the year the episode aired (the Nick splat on a 2003 episode). For your own, put it in Rerun's data folder under bugs/custom, named like Nickelodeon.png, or Nickelodeon 1984-2009.png for certain years."),
       checkbox("“Up next” banner", st.up_next !== false, (val) => { st.up_next = val; },
         "Says what's on next, near the end of each show, in the network's own style. For the real thing, put a green-screen “Up next” template in Rerun's data folder under bugs/custom/upnext, named after a show or a network (see the README)."),
+      checkbox("Promos and “After the break”", st.promos !== false, (val) => { st.promos = val; },
+        "“After the break: more SpongeBob” going into a break, and early in a show a “Tonight at 8” promo for a movie or big show later on the same channel."),
       enc,
       saveStream),
     settingRow("Guide", "How far ahead the schedule and Plex's guide reach, and how Plex apps get channel logos and show pictures.",

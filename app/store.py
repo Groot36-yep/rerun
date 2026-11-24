@@ -115,6 +115,7 @@ DEFAULT_CONFIG = {
         "even_volume": True,
         "screen_bug": True,  # the network's logo in the corner during shows
         "up_next": True,  # "Up next" banner near the end of a show
+        "promos": True,  # "After the break" before mid-show breaks, and "Tonight at 8" promos
         "tuners": 4,
     },
     "security": {"lan_only": True, "extra_networks": []},

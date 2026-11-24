@@ -236,9 +236,16 @@ their programs.
 - **Network logo in the corner.** A see-through logo sits in the corner of the picture during shows (not
   during commercials), inside the picture even when an old 4:3 show has bars at the sides. A network's
   own channel shows its own logo; a mixed channel like *2000s Cartoons* shows each show's original
-  network. Rerun uses today's official logos; to use the logo a network had in your era, put a picture
-  in Rerun's data folder under `bugs/custom/`, named after the network or its tag (`Nickelodeon.png`,
-  `boomerang.png`).
+  network. It's the logo the network had the year the episode first aired: the orange splat on a 2003
+  *SpongeBob*, the checkerboard on a 1998 *Dexter's Laboratory*, Playhouse Disney's on a 2004 *JoJo's
+  Circus* (Nickelodeon, Cartoon Network, Disney Channel, Boomerang, Playhouse Disney, Toon Disney,
+  Nicktoons, Fox Kids and Kids' WB, from Wikipedia and Wikimedia Commons). To use your own, put a
+  picture in Rerun's data folder under `bugs/custom/`, named after the network or its tag
+  (`Nickelodeon.png`, `boomerang.png`), with years for the ones it had then (`Nickelodeon 1984-2009.png`,
+  `cn 1998.png`).
+- **Bumpers from the right year.** Bumpers and idents are matched to the episode's year as well as its
+  network: a 2003 episode gets bumpers from around 2003, going by the year in the bumper's (or its
+  tape's) name. Commercials lean the same way.
 - **"Up next" banner.** Near the end of a show, before its last break, a banner says what's on next,
   in the style of the network the show is on: Nickelodeon's 2000s orange plaid bar along the bottom
   with the next show's poster popping up out of it, Cartoon Network's checkerboard, Disney Channel's
@@ -255,7 +262,14 @@ their programs.
   in `.json`, e.g. `{"title": {"x": 0.42, "y": 0.9, "size": 0.05, "color": "#ffffff"}}` (positions as
   fractions of the picture).
 
-Both can be switched off in Settings → Picture & sound.
+- **"More after the break".** In the last seconds before a break in the middle of a show, a strip in the
+  network's style says the show continues after the break, or names the next episode when two share a
+  half hour.
+- **Promos.** Early in a show, a lower third promotes something later on the same channel: a movie
+  first, then whatever's on at 8, as in "Tonight at 8: Jimmy Neutron: Boy Genius".
+
+Each can be switched off in Settings → Picture & sound. The program log (see below) shows when each
+appears.
 
 ## Checking it without waiting
 
@@ -322,8 +336,11 @@ For anything odd, watch a channel in Plex for a minute, then run `rerun report` 
 report** on the Help page). It shows what Plex asked Rerun for, how fast channels started, how
 hard the computer is working and any recent problems, with no passwords in it.
 
-- **A channel shows "We'll be right back".** A file couldn't be read; "Recent activity" on
-  the Help page says which one.
+- **A blue card shows up ("We'll be right back", or just the channel's name).** A file couldn't be
+  found or played; "Recent activity" on the Help page says which one. A missing or broken
+  commercial is replaced by another of the same length, so a card means none fitted. A show whose
+  logo or banner can't be drawn plays without them rather than turning into a card. Removing a
+  network's commercials replans the breaks without them.
 - **Channel logos don't show in Plex.** Plex only reads channel logos when a DVR is set up, so
   after changing anything about logos, delete the Rerun DVR in Plex (Settings → Live TV & DVR)
   and set it up again, then fully restart the Plex app. Plex apps on a secure connection

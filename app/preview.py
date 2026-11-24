@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 
+from . import onair
 from .store import DATA_DIR
 
 log = logging.getLogger("rerun.preview")
@@ -36,7 +37,8 @@ async def rundown(app, ch: dict, start: float, hours: float = 3.0) -> list[dict]
     end = start + hours * 3600
     p = await app.schedules.ensure(ch, until=end + 600)
     s = app.cfg.data["stream"]
-    items = [x for x in p.items if x["e"] > start and x["s"] < end]
+    first_idx = next((j for j, x in enumerate(p.items) if x["e"] > start), len(p.items))
+    items = [x for x in p.items[first_idx:] if x["s"] < end]
     out = []
     for i, x in enumerate(items):
         block = p.block_at(x["s"]) or {}
@@ -47,11 +49,17 @@ async def rundown(app, ch: dict, start: float, hours: float = 3.0) -> list[dict]
             kind = "ident" if nxt and nxt["k"] == "c" and (i == 0 or items[i - 1]["k"] != "c") else "bumper"
         row = {"s": x["s"], "e": x["e"], "kind": kind, "title": x.get("t") or "", "block": block.get("title", "")}
         if kind == "show":
-            later = any(y["k"] == "c" for y in items[i + 1:] if y["s"] < block.get("e", 0))
-            nb = p.block_at(block.get("e", 0) + 1) if block else None
             row["logo"] = bool(s.get("screen_bug", True))
-            if s.get("up_next", True) and not later and nb and nb.get("title") and (nb.get("cats") or nb.get("img")):
-                row["up_next"] = nb["title"]
+            m = app.catalog.items.get(x.get("m") or "") or {}
+            year = (m.get("date") or "")[:4] or m.get("year") or (app.catalog.shows.get(m.get("show"), {}) or {}).get("year")
+            if row["logo"] and year:
+                row["logo_year"] = str(year)[:4]
+            texts = onair.plan(p, first_idx + i, x, block, s, block.get("title", ""))
+            row["texts"] = [{"kind": g["kind"], "t0": g["t0"], "t1": g["t1"], "title": g["title"],
+                             "label": g["label"] or "Up next"} for g in texts]
+            nxt = next((g for g in texts if g["kind"] == "up_next"), None)
+            if nxt:
+                row["up_next"] = nxt["title"]
         if kind in ("bumper", "commercial", "card") and (not out or out[-1]["kind"] in ("show",)):
             row["break_starts"] = True  # a good place to preview: the end of the show, then the break
         out.append(row)
@@ -100,17 +108,26 @@ async def _render(app, ch: dict, start: float, length: float, final) -> str:
             stand_in.cursor = t
             overlay = await stand_in._overlay(ch, p, idx, item, block, end) if item.get("k") == "c" else None
             src = app.media_input(item) if item.get("k") in ("c", "f") else None
+            if not src and item.get("k") == "f":  # gone missing: the same stand-in live TV would play
+                stand = app.streams._stand_in(ch["id"], item, (t - item["s"]) + dur)
+                if stand:
+                    item, src = stand
             out = os.path.join(work, f"{n:04d}.ts")
             if src:
                 cmd = ff.media_cmd(src, item.get("in", 0) + (t - item["s"]), dur, s, None, bool(item.get("a", True)),
                                    overlay=overlay)
-            else:
+            else:  # the same card live TV shows
                 with open(text_file, "w", encoding="utf-8") as fh:
-                    fh.write(f"{ch['name']}\n\n{item.get('t') or 'We will be right back'}")
+                    fh.write(f"{ch['name']}\n\n{item['t']}" if item.get("k") == "x" and item.get("t")
+                             else ch["name"] if item.get("k") in ("x", "f") else f"{ch['name']}\n\nWe'll be right back")
                 cmd = ff.slate_cmd(text_file, dur, s, None)
             res = await asyncio.to_thread(_run_to, cmd, out)
             if res != 0 and src:  # e.g. a file without sound: try once more with made-up silence
                 cmd = ff.media_cmd(src, item.get("in", 0) + (t - item["s"]), dur, s, None, False, overlay=overlay)
+                res = await asyncio.to_thread(_run_to, cmd, out)
+            if res != 0 and src and overlay:  # as live TV does: without the logo and banners
+                log.warning("Preview: couldn't draw over %s; showing it without the logo and banners", item.get("t"))
+                cmd = ff.media_cmd(src, item.get("in", 0) + (t - item["s"]), dur, s, None, bool(item.get("a", True)))
                 res = await asyncio.to_thread(_run_to, cmd, out)
             if res == 0 and os.path.getsize(out) > 0:
                 pieces.append(out)

@@ -348,6 +348,7 @@ async def put_settings(body: dict, app=Depends(signed_in)):
         cur["even_volume"] = bool(s.get("even_volume", cur["even_volume"]))
         cur["screen_bug"] = bool(s.get("screen_bug", cur.get("screen_bug", True)))
         cur["up_next"] = bool(s.get("up_next", cur.get("up_next", True)))
+        cur["promos"] = bool(s.get("promos", cur.get("promos", True)))
         cur["tuners"] = _num(s.get("tuners", cur["tuners"]), 1, 20, 4)
     if "security" in body:
         sec = body["security"]
@@ -1322,7 +1323,16 @@ async def finder_remove(key: str, app=Depends(signed_in)):
     if app.finder.task and not app.finder.task.done():
         raise HTTPException(400, "Wait for the search to finish first")
     app.finder.remove(key)
+    # once the library has been scanned again without them, the breaks are planned again
+    asyncio.create_task(_replan_after_scan(app))
     return app.finder.summary()
+
+
+async def _replan_after_scan(app):
+    await asyncio.sleep(1)
+    while app.scanner.progress.get("running"):
+        await asyncio.sleep(2)
+    await app.schedules.replan_breaks()
 
 
 @router.get("/report")

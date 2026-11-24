@@ -14,7 +14,9 @@ import asyncio
 import bisect
 import logging
 import math
+import os
 import random
+import re
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -107,6 +109,41 @@ class Playout:
 
     def blocks_between(self, a: float, b: float) -> list[dict]:
         return [x for x in self.blocks if x["e"] > a and x["s"] < b]
+
+
+_YEAR = re.compile(r"(?<!\d)(19[6-9]\d|20[0-3]\d)(?!\d)")
+_years: dict[str, int] = {}
+
+
+def _int_year(year) -> int:
+    try:
+        return int(str(year)[:4])
+    except (TypeError, ValueError):
+        return 0
+
+
+def item_year(f: dict) -> int:
+    """The year a commercial or bumper is from, from its name or its tape's ("2003 Nickelodeon Commercial
+    Break", "Nick bumpers 2004.mp4"), or 0. A range ("1998-2003") counts as its middle."""
+    key = f.get("id") or ""
+    if key in _years:
+        return _years[key]
+    text = f"{f.get('title') or ''} {os.path.basename(f.get('file') or '')}"
+    found = [int(y) for y in _YEAR.findall(text)]
+    y = round(sum(found[:2]) / len(found[:2])) if found else 0
+    if key:
+        _years[key] = y
+    return y
+
+
+def _year_match(by: int, ctx: dict, tags: set) -> float:
+    """How well a bumper's year suits the episode: one from the same year or so is best (the 2003 Nick
+    splat around a 2003 SpongeBob), the same decade next, and one from a different era least."""
+    ey = ctx.get("year") or 0
+    if by and ey:
+        d = abs(by - ey)
+        return 3.0 if d <= 1 else 2.0 if d <= 3 else 1.0 if d <= 6 else -2.0 if d > 9 else 0.0
+    return 1.0 if ctx.get("era") and ctx["era"] in tags else 0.0
 
 
 def _src(m: dict) -> dict:
@@ -328,7 +365,7 @@ class Builder:
         hol = self.ch.get("season") or next(
             (k for k in active if first.get("id") in self._holiday_ids(k)), None)
         return {"net": archive.tag_for_network(net), "has_net": bool(net), "era": archive.era_tag(year), "hol": hol,
-                "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower()}
+                "year": _int_year(year), "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower()}
 
     def _bumper(self, ctx: dict | None, room: float) -> dict | None:
         """A bumper or ident from the show's own network ("You're watching Disney Channel" before a Disney
@@ -352,8 +389,7 @@ class Builder:
             hol = tags & set(seasons.PRESETS)
             if hol and not hol & active:
                 continue  # a Christmas bumper in July
-            score = (3 if hol else 0) + (1 if ctx.get("era") and ctx["era"] in tags else 0) \
-                - (5 if b["id"] in recent else 0)
+            score = (3 if hol else 0) + _year_match(item_year(b), ctx, tags) - (5 if b["id"] in recent else 0)
             cands.append((score, b))
         if not cands:
             return None
@@ -386,6 +422,9 @@ class Builder:
             score += 1.5  # a tape recorded this time of year
         if ctx.get("era") and ctx["era"] in tags:
             score += 1  # 2000s ads around a 2000s episode
+        fy, ey = item_year(f), ctx.get("year")
+        if fy and ey and abs(fy - ey) <= 2:
+            score += 1.5  # and ads from around the year it aired
         for tag, weight in ctx.get("prefer", ()):
             if tag in tags:
                 score += weight  # e.g. the 25 Days channel wants that year's real 25 Days ads
@@ -548,6 +587,12 @@ class Builder:
                     break
                 prog = self._next_program()
             media = self._next_media(prog, t)
+            for _ in range(len(self.programs) * 2):  # a show with nothing it can play right now: try another
+                if media:
+                    break
+                prog = self._next_program()
+                if not self._all_shelved(prog, t):
+                    media = self._next_media(prog, t)
         if not media:
             return self._slate_block(t, 300, "Coming up", "")
         if self.quick:
@@ -853,6 +898,22 @@ class Schedules:
 
     def sig(self, ch: dict) -> str:
         return content_signature(ch, self.app.cfg.data.get("holidays"))
+
+    async def replan_breaks(self):
+        """Plan every channel with commercials again from the end of what's on now: after commercials were
+        removed, so no break is left pointing at files that are gone."""
+        now = time.time()
+        for ch in list(self.app.cfg.data["channels"]):
+            if not (ch.get("commercials") or {}).get("enabled"):
+                continue
+            p = self.get(ch["id"])
+            async with self.locks[ch["id"]]:
+                p.keep_until_current(now)
+                self.save(p)
+            try:
+                await self.ensure(ch, now + 6 * 3600)
+            except Exception:
+                log.exception("Could not rebuild the schedule for %s", ch.get("name"))
 
     def _start_time(self, ch: dict, now: float) -> float:
         slot = int(ch.get("slot_minutes") or 0) * 60
