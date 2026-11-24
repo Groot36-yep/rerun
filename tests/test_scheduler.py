@@ -185,6 +185,20 @@ async def main():
     rug = [x["m"] for x in p7.items if x["m"].startswith("p2e")]
     assert rug == sorted(rug, key=lambda m: int(m[3:])), "in-order episodes out of order"
 
+    # A test channel: the same shows a minute or so at a time, every break coming round within minutes,
+    # and the Christmas channel's test plays even out of season.
+    quick = normalize_channel({**nick, "id": "quick", "quick": {"of": "nick", "key": "network:Nickelodeon", "part": 60}})
+    pq, _ = await build(quick, cat, 1)
+    check(pq, "Test channel", 0)
+    assert all(b["e"] - b["s"] < 6 * 60 for b in pq.blocks), "test channel blocks should be minutes long"
+    assert all(x["e"] - x["s"] <= 60.01 for x in pq.items if x["k"] == "c"), "test channel show parts too long"
+    assert len(pq.blocks) >= 15 and sum(x["k"] == "f" for x in pq.items) > 40, "expected lots of breaks"
+    assert all(sum(1 for x in pq.items if x["k"] == "c" and b["s"] <= x["s"] < b["e"]) == 2 for b in pq.blocks)
+    xquick = normalize_channel({"id": "xq", "name": "T", "season": "christmas", "rules": [{"type": "holiday", "key": "christmas"}],
+                                "quick": {"of": "xmas"}})
+    pxq, _ = await build(xquick, cat, 1, when=datetime(2027, 7, 10, 12).timestamp())
+    assert any(x["k"] == "c" for x in pxq.items), "a test of a holiday channel should play out of season"
+
     # Holidays
     xmas = matches(cat, "christmas", DEFAULT_HOLIDAYS["christmas"])
     names = sorted(cat.items[e]["title"] for e in xmas["episodes"])

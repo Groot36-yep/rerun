@@ -39,6 +39,7 @@ const ICONS = {
   up: "M12 19V5 M6 11l6-6 6 6",
   search: "M10.5 17a6.5 6.5 0 1 1 0-13a6.5 6.5 0 0 1 0 13z M15.5 15.5L20 20",
   edit: "M4 20h4L19 9l-4-4L4 16z M13.5 6.5l4 4",
+  play: "M8 5.5v13l10.5-6.5z",
 };
 
 function icon(name) {
@@ -642,8 +643,180 @@ function listing(ch, reload) {
     nowCell, nextCell,
     h("div", { class: "l-actions" },
       onOff,
+      h("button", { class: "icon-btn", title: "Preview: watch what's coming up, breaks and all", "aria-label": `Preview ${ch.name}`, onclick: () => openPreview(ch) }, icon("play")),
       h("a", { class: "icon-btn", href: `#/channel/${ch.id}`, title: "Edit this channel", "aria-label": `Edit ${ch.name}` }, icon("edit")),
       h("button", { class: "icon-btn", title: "Copy the stream address (for VLC and other players)", "aria-label": `Copy the stream address for ${ch.name}`, onclick: () => copyText(`${location.origin}/stream/${ch.number}.ts`) }, icon("link"))));
+}
+
+// ================================================================ preview: watch what's coming up
+
+const KIND_LABEL = { show: "Show", ident: "Ident", bumper: "Bumper", commercial: "Commercial", card: "Card" };
+
+function fmtStamp(ts) {
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
+function fmtLen(s) {
+  s = Math.round(s);
+  if (s < 60) return `0:${String(s).padStart(2, "0")}`;
+  if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}
+
+/* "Test it in Plex": channel 999, a copy of this channel cut down so a whole block (ident, show, "Up next",
+   bumper, commercials) comes round every few minutes, watched in Plex itself. */
+function plexTest(ch) {
+  const box = h("div", { class: "pv-plex" });
+  const draw = async () => {
+    let t = { channel: null };
+    try { t = await api("GET", "/api/test-channel"); } catch { /* shown as not made yet */ }
+    const mine = t.channel && t.of === ch.id;
+    const make = h("button", { class: "btn", onclick: async () => {
+      make.disabled = true;
+      make.textContent = "Setting it up…";
+      try {
+        const r = await api("POST", "/api/test-channel", { of: ch.id });
+        toast(`Channel ${r.channel.number} is now a quick test of ${ch.name}`);
+        draw();
+        if (!r.plex_reloaded) toast("If it isn't in Plex yet, refresh the guide in Plex's Live TV & DVR settings.");
+      } catch (x) { toast(x.message, true); make.disabled = false; make.textContent = "Make a test channel"; }
+    } }, mine ? "Start it over" : "Make a test channel");
+    const remove = t.channel ? h("button", { class: "btn quiet", onclick: async () => {
+      try { await api("DELETE", "/api/test-channel"); toast("Test channel removed"); draw(); }
+      catch (x) { toast(x.message, true); }
+    } }, "Remove it") : null;
+    fill(box,
+      h("div", null,
+        h("b", null, "Test it in Plex"),
+        mine
+          ? h("p", null, `Tune Plex to channel ${t.channel.number}, “${t.channel.name}”. It plays ${ch.name}'s shows a minute or so at a time, so the ident, logo, “Up next”, bumpers and commercials all come round every few minutes, exactly as Plex will show them.`)
+          : h("p", null, `Makes channel 999, a sped-up copy of ${ch.name}: real shows a minute or so at a time with every break, so you can check it all in Plex within minutes.`,
+            t.channel ? " It replaces the current test channel." : "")),
+      h("div", { class: "pv-plex-act" }, make, remove));
+  };
+  draw();
+  return box;
+}
+
+/* The channel's program log: everything coming up, item by item, and a player that shows any part of it
+   exactly as live TV will (the logo, "Up next", bumpers and commercials), made on the spot. */
+function openPreview(ch) {
+  modal(async (box, close) => {
+    box.classList.add("wide", "pv");
+    const screen = h("div", { class: "pv-screen" });
+    const caption = h("p", { class: "pv-caption" });
+    const log = h("div", { class: "pv-log" }, h("p", { class: "muted" }, "Reading the schedule…"));
+    const btns = [];
+    let busy = false;
+
+    fill(screen, h("div", { class: "pv-idle" },
+      h("b", null, "Pick something to watch"),
+      h("span", null, "Play any break below as it will air: the end of the show with its “Up next”, the bumper, the commercials, and the ident into the next show.")));
+
+    async function watch(at, length, what) {
+      if (busy) return;
+      busy = true;
+      btns.forEach((b) => { b.disabled = true; });
+      at = Math.max(at, Date.now() / 1000 + 1);
+      fill(screen, h("div", { class: "pv-idle" }, h("div", { class: "spinner" }),
+        h("b", null, "Making the preview…"),
+        h("span", null, `${fmtLen(length)} of ${what}. The server makes it as fast as it can, so give it a moment.`)));
+      fill(caption);
+      try {
+        const r = await api("POST", `/api/channels/${ch.id}/watch`, { at, length });
+        fill(screen, h("video", { src: r.url, controls: true, autoplay: true, playsinline: true, preload: "auto" }));
+        fill(caption, `${what[0].toUpperCase()}${what.slice(1)}, airing ${fmtStamp(r.at)} to ${fmtStamp(r.at + r.length)}`);
+      } catch (x) {
+        fill(screen, h("div", { class: "pv-idle" }, h("b", null, "Couldn't make that preview"), h("span", null, x.message)));
+      } finally {
+        busy = false;
+        btns.forEach((b) => { b.disabled = false; });
+      }
+    }
+
+    const btn = (label, cls, onclick, aria) => {
+      const b = h("button", { class: cls, onclick, "aria-label": aria || null, title: aria || null }, label);
+      btns.push(b);
+      return b;
+    };
+
+    add(box,
+      h("div", { class: "pv-head" },
+        h("div", null, h("div", { class: "eyebrow" }, `Channel ${ch.number} program log`), h("h2", null, ch.name)),
+        h("button", { class: "icon-btn", "aria-label": "Close", title: "Close", onclick: close }, "×")),
+      screen, caption,
+      h("div", { class: "pv-bar" },
+        btn([icon("play"), " Watch right now"], "btn primary", () => watch(Date.now() / 1000, 60, "what's on now")),
+        h("span", { class: "muted" }, "Previews are made separately, so live TV carries on as normal.")),
+      ch.quick && ch.quick.of ? null : plexTest(ch),
+      log);
+
+    let data;
+    try { data = await api("GET", `/api/channels/${ch.id}/rundown?hours=4`); }
+    catch (x) { fill(log, h("p", { class: "error" }, x.message)); return; }
+
+    // A run of bumpers, commercials, idents and cards between two shows is one break.
+    const groups = [];
+    for (const it of data.items) {
+      const last = groups[groups.length - 1];
+      if (it.kind === "show") groups.push({ show: it });
+      else if (last && last.brk) last.brk.push(it);
+      else groups.push({ brk: [it] });
+    }
+
+    const rows = groups.map((g, gi) => {
+      if (g.show) {
+        const it = g.show;
+        const name = it.title || it.block || "the show";
+        const notes = [];
+        if (it.logo) notes.push("Logo in the corner");
+        if (it.up_next) notes.push(`“Up next: ${it.up_next}” from ${fmtStamp(it.e - 45)}`);
+        return h("div", { class: "pv-row is-show" },
+          h("span", { class: "pv-t" }, fmtStamp(it.s)),
+          h("span", { class: "pv-k k-show" }, "Show"),
+          h("div", { class: "pv-title" }, h("b", null, name),
+            it.block && it.block !== it.title ? h("small", null, it.block) : null,
+            notes.length ? h("small", { class: "pv-notes" }, notes.join(". ")) : null),
+          h("span", { class: "pv-len" }, fmtLen(it.e - it.s)),
+          btn(icon("play"), "icon-btn", () => (it.up_next
+            ? watch(it.e - 50, 65, `the end of ${name}, with “Up next”`)
+            : watch(Math.max(it.s, Date.now() / 1000), 30, name)), `Watch ${name}`));
+      }
+      const b = g.brk;
+      const s0 = b[0].s, e0 = b[b.length - 1].e;
+      const lead = gi > 0 && groups[gi - 1].show ? 40 : 0;  // start in the show, to see it go to the break
+      const counts = {};
+      b.forEach((it) => { counts[it.kind] = (counts[it.kind] || 0) + 1; });
+      const summary = ["bumper", "commercial", "ident", "card"].filter((k) => counts[k])
+        .map((k) => plural(counts[k], KIND_LABEL[k].toLowerCase())).join(", ");
+      return h("div", { class: "pv-break" },
+        h("div", { class: "pv-break-head" },
+          h("span", { class: "pv-t" }, fmtStamp(s0)),
+          h("div", null, h("b", null, `Break, ${fmtLen(e0 - s0)}`), h("small", null, summary)),
+          btn([icon("play"), " Watch this break"], "btn small", () =>
+            watch(s0 - lead, Math.min(e0 - s0 + lead + 15, 180), "this break"))),
+        b.map((it) => {
+          const name = it.title || KIND_LABEL[it.kind] || "this";
+          return h("div", { class: "pv-row" },
+            h("span", { class: "pv-t" }, fmtStamp(it.s)),
+            h("span", { class: `pv-k k-${it.kind}` }, KIND_LABEL[it.kind] || it.kind),
+            h("div", { class: "pv-title" }, h("span", null, it.title || (it.kind === "card" ? "Channel card" : "—"))),
+            h("span", { class: "pv-len" }, fmtLen(it.e - it.s)),
+            btn(icon("play"), "icon-btn", () => watch(it.s, Math.max(5, Math.min(it.e - it.s, 120)), name), `Watch ${name}`));
+        }));
+    });
+
+    const have = {};
+    data.items.forEach((i) => { have[i.kind] = (have[i.kind] || 0) + 1; });
+    const missing = [];
+    if (!have.bumper && !have.ident) missing.push("No bumpers or idents in the next four hours. Add a bumpers folder, or find some on the Commercials page.");
+    if (!have.commercial) missing.push("No commercials in the next four hours. Check this channel's commercial settings.");
+    fill(log,
+      h("div", { class: "pv-legend" }, Object.entries(KIND_LABEL).map(([k, l]) =>
+        h("span", null, h("i", { class: `pv-k k-${k}` }, l), ` ${have[k] || 0}`))),
+      missing.map((m) => h("p", { class: "notice" }, m)),
+      rows.length ? rows : h("p", { class: "muted" }, "Nothing scheduled yet."));
+  });
 }
 
 function summaryBar(items) {
@@ -881,7 +1054,7 @@ async function classicChannels() {
   let r;
   try { r = await api("GET", "/api/lineups"); } catch (x) { return null; }
   return h("section", { class: "block", style: { marginBottom: "34px" } }, blockHead("Classic channels", "Built from their real lineups"),
-    h("p", { class: "block-note" }, "Some channels ran other networks' shows: Plex lists Scooby-Doo under CBS, not Boomerang. These channels are built from what they really aired."),
+    h("p", { class: "block-note" }, "Some channels ran other networks' shows, or Plex files their shows elsewhere: Scooby-Doo under CBS rather than Boomerang, Blue's Clues under Nickelodeon rather than Nick Jr. These channels are built from what they really aired."),
     h("div", { class: "lineup-cards" }, r.lineups.map((l) => h("a", { class: "lineup-card", href: `#/lineup/${l.key}` },
       h("img", { src: l.logo_url, alt: "" }),
       h("div", null, h("b", null, l.name), h("span", null, `${l.years}. You have ${l.have} of its ${l.total} shows.`),
@@ -927,8 +1100,8 @@ async function viewLineup(key) {
       h("section", { class: "panel" },
         h("h2", null, `${r.name}'s bumpers, idents and commercials`),
         h("p", { class: "lede" }, r.bumpers
-          ? `You have ${plural(r.bumpers, "bumper or ident", "bumpers and idents")} and ${plural(r.commercials, "commercial")} from ${r.name}. Find more to add variety.`
-          : `The bits between the shows are most of what made ${r.name} feel like ${r.name}. Rerun can find them on the Internet Archive: bumper and ident collections, ${r.name} commercial breaks from the 2000s, and whole broadcasts (only their breaks are kept).`),
+          ? `You have ${plural(r.bumpers, "bumper or ident", "bumpers and idents")} and ${plural(r.commercials, "commercial")} from ${r.name.replace(/\.$/, "")}. Find more to add variety.`
+          : `The bits between the shows are most of what made ${r.name} feel like ${r.name.replace(/\.$/, "")}. Rerun can find them on the Internet Archive: bumper and ident collections, ${r.name} commercial breaks from the 2000s, and whole broadcasts (only their breaks are kept).`),
         busy ? h("p", { class: "hint" }, "Finding commercials… follow along on the Commercials page.")
           : h("div", { class: "row" },
             h("button", { class: "btn primary", onclick: async () => {
@@ -1173,6 +1346,7 @@ async function viewChannel(cid) {
   const main = h("div");
   add(v, pageHead(isNew ? "New channel" : `Channel ${ch.number}`, isNew ? "Build a channel" : ch.name,
     isNew ? "Name it, choose what plays, and it's on the air." : null,
+    isNew ? null : h("button", { class: "btn", onclick: () => openPreview(ch) }, icon("play"), " Preview"),
     h("a", { class: "btn", href: "#/channels" }, "All channels")),
   h("div", { class: "editor" }, main, side));
   let refresh = () => {};

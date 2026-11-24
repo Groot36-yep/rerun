@@ -13,6 +13,7 @@ import hashlib
 import io
 import logging
 import math
+from pathlib import Path
 import os
 import re
 from urllib.parse import urlencode
@@ -618,7 +619,7 @@ def logo_accent(raw: bytes) -> str | None:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-BANNER_V = 1
+BANNER_V = 2
 GOLD_ACCENT = "#d4a028"
 
 
@@ -685,10 +686,21 @@ def up_next_banner(title: str, height: int, accent: str | None = None, theme: st
     path = folder / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.png"
     if not path.exists():
         folder.mkdir(parents=True, exist_ok=True)
-        png = (make_themed_banner(title, height, theme, art, logo) if theme in THEME_DRAW
+        parts: dict = {}
+        png = (make_themed_banner(title, height, theme, art, logo, parts) if theme in THEME_DRAW
                else make_banner(title, height, accent))
+        if parts.get("art"):
+            path.with_suffix(".art.png").write_bytes(parts["art"])
         path.write_bytes(png)
     return str(path)
+
+
+def banner_art(banner: str | None) -> str | None:
+    """The artwork that goes with a banner, drawn as its own layer (Nick's poster), if it has one."""
+    if not banner:
+        return None
+    art = Path(banner).with_suffix(".art.png")
+    return str(art) if art.exists() else None
 
 
 def logo_ref(ch: dict, catalog=None) -> str:
@@ -889,7 +901,8 @@ def theme_for(tag: str | None, plan: bool = False) -> str:
 
 
 # where each style sits: "bottom" runs along the bottom edge of the picture, the rest sit low on the left
-PLACE = {"nick": "bottom", "disney": "bottom"}
+# ("edge": right up against the picture's left edge, running off its right edge)
+PLACE = {"nick": "edge", "disney": "bottom"}
 
 # how each style comes on screen: from where it slides
 MOTION = {"nick": "rise", "cn": "left", "disney": "left", "boomerang": "right", "25days": "up", "": "left"}
@@ -1072,10 +1085,12 @@ def _banner_25days(title, bh, k, art=None, logo=None):
 
 
 
-def _banner_nick_bar(title, bh, k, art=None, logo=None):
+def _banner_nick_bar(title, bh, k, art=None, logo=None, parts=None):
     """Nickelodeon in the 2000s: a full-width orange plaid bar along the bottom with a big white UP NEXT,
     the show's name under it, and the show's own artwork popping up out of the bar where Nick put its
-    characters. As wide as a widescreen picture; a 4:3 picture just shows the left part."""
+    characters. As wide as a widescreen picture; a 4:3 picture just shows the left part. With `parts`,
+    the artwork is handed back on its own (parts["art"]) so it can be placed from the picture's right
+    edge, whatever shape the picture is."""
     H = round(bh / 0.1)                     # the picture height this is drawn for
     W43, W = round(H * 4 / 3), round(H * 16 / 9)
     bar_h = round(H * 0.2)
@@ -1110,7 +1125,10 @@ def _banner_nick_bar(title, bh, k, art=None, logo=None):
             card = card.rotate(4, resample=Image.BICUBIC, expand=True)
             card = _shadowed(card, 0, bh * 0.06, 150, bh * 0.03)
             art_w = card.width
-            img.alpha_composite(card, (W43 - card.width - round(W43 * 0.05), img.height - card.height - k * 4))
+            if parts is not None:
+                parts["art"] = card
+            else:
+                img.alpha_composite(card, (W43 - card.width - round(W43 * 0.05), img.height - card.height - k * 4))
         except Exception:
             art_w = 0
     label_y = lift + bar_h * 0.12
@@ -1191,10 +1209,19 @@ THEME_DRAW = {"nick": _banner_nick_bar, "nick_splat": _banner_nick, "cn": _banne
               "25days": _banner_25days}
 
 
-def make_themed_banner(title: str, height: int, theme: str, art: bytes | None = None, logo: str | None = None) -> bytes:
+def make_themed_banner(title: str, height: int, theme: str, art: bytes | None = None, logo: str | None = None,
+                       parts: dict | None = None) -> bytes:
+    """The banner as a PNG. With `parts`, a style whose artwork is placed on its own (Nick's) leaves it out
+    and puts it in parts["art"] as a PNG."""
     k = 2
     bh = round(height * 0.1) * k
-    img = THEME_DRAW[theme](title, bh, k, art, logo)
+    if THEME_DRAW[theme] is _banner_nick_bar and parts is not None:
+        img = _banner_nick_bar(title, bh, k, art, logo, parts)
+        if parts.get("art") is not None:
+            a = parts["art"]
+            parts["art"] = _png(a.resize((max(1, a.width // k), max(1, a.height // k)), Image.LANCZOS))
+    else:
+        img = THEME_DRAW[theme](title, bh, k, art, logo)
     img = img.crop(img.getbbox() or (0, 0, 1, 1))
     return _png(img.resize((max(1, img.width // k), max(1, img.height // k)), Image.LANCZOS))
 

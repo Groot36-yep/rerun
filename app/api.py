@@ -13,7 +13,7 @@ import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from urllib.parse import quote
 
@@ -21,6 +21,7 @@ from . import __version__, seasons, xmas, xmasdata
 from . import archive as archive_mod
 from . import lineups as lineups_mod
 from . import youtube as youtube_mod
+from . import preview as preview_mod
 from . import channels as channels_mod
 from .archive import OWN as OWN_COMMERCIALS
 from .guide import logo_url as plex_logo_url, tuner_id
@@ -577,6 +578,109 @@ async def channel_schedule(cid: str, hours: int = 12, app=Depends(signed_in)):
     return [{k: b.get(k) for k in ("s", "e", "title", "sub", "sn", "en", "movie")}
             for b in p.blocks_between(now, now + min(hours, 72) * 3600)]
 
+
+
+@router.get("/channels/{cid}/rundown")
+async def channel_rundown(cid: str, hours: float = 3, start: float = 0, app=Depends(signed_in)):
+    """Everything coming up, item by item: shows, idents, bumpers, commercials, and where the logo and
+    "Up next" appear."""
+    ch = app.channel(cid)
+    if not ch:
+        raise HTTPException(404, "No such channel")
+    now = time.time()
+    return {"now": now, "items": await preview_mod.rundown(app, ch, start or now, hours)}
+
+
+@router.post("/channels/{cid}/watch")
+async def channel_watch_preview(cid: str, body: dict, app=Depends(signed_in)):
+    """Make a short video of the channel at any time, exactly as live TV will show it."""
+    ch = app.channel(cid)
+    if not ch:
+        raise HTTPException(404, "No such channel")
+    start = float(body.get("at") or 0) or time.time()
+    length = float(body.get("length") or 75)
+    if start < time.time() - 120:
+        raise HTTPException(400, "That's already been on")
+    if start > time.time() + 7 * 86400:
+        raise HTTPException(400, "Pick a time within the next week")
+    try:
+        path = await preview_mod.render(app, ch, start, length)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return {"url": f"/api/previews/{os.path.basename(path)}", "at": start, "length": length}
+
+
+@router.get("/previews/{name}")
+async def preview_file(name: str, app=Depends(signed_in)):
+    if not re.fullmatch(r"[\w.-]+\.mp4", name):
+        raise HTTPException(404, "No such preview")
+    path = preview_mod.PREVIEW_DIR / name
+    if not path.is_file():
+        raise HTTPException(404, "That preview has been cleared away; make it again")
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "private, max-age=3600"})
+
+
+# ---- the test channel: any channel, minutes long, to check everything in Plex itself -------------
+
+TEST_NAME = "Rerun Test"
+
+
+def _test_channel(app) -> dict | None:
+    return next((c for c in app.cfg.data["channels"] if c.get("quick")), None)
+
+
+@router.get("/test-channel")
+async def test_channel(app=Depends(signed_in)):
+    ch = _test_channel(app)
+    return {"channel": _channel_out(app, ch) if ch else None,
+            "of": (ch.get("quick") or {}).get("of") if ch else None}
+
+
+@router.post("/test-channel")
+async def make_test_channel(body: dict, app=Depends(signed_in)):
+    """A copy of a channel whose shows are cut to a minute or so each, so the logo, "Up next", bumpers,
+    commercials and idents all come round within a few minutes, in Plex, exactly as they will for real."""
+    from .images import logo_ref
+    src = app.channel(str(body.get("of") or ""))
+    if not src:
+        raise HTTPException(404, "No such channel")
+    if src.get("plan") and not src.get("rules"):
+        raise HTTPException(400, "This channel follows a fixed historical schedule, so it can't be sped up. "
+                                 "Use Preview on its page instead.")
+    old = _test_channel(app)
+    if old:
+        _remove_channel(app, old)
+        await app.streams.stop_channel(old["id"])
+    chans = app.cfg.data["channels"]
+    number = 999 if all(c["number"] != 999 for c in chans) else next_free_number(chans, 990)
+    ch = normalize_channel({
+        "number": number, "name": TEST_NAME, "group": "Testing", "enabled": True,
+        "rules": src.get("rules") or [], "exclude": src.get("exclude") or [], "order": "shuffle",
+        "slot_minutes": 0, "commercials": src.get("commercials") or {}, "season": src.get("season", ""),
+        "holiday_mix": src.get("holiday_mix", True), "style": "plain",
+        "logo": src.get("logo") or logo_ref(src, app.catalog),
+        "quick": {"of": src["id"], "key": src.get("auto_key") or "", "part": body.get("part") or 0},
+    })
+    chans.append(ch)
+    app.cfg.save()
+    await app.schedules.ensure(ch, time.time() + 3 * 3600)
+    plex, told = app.plex(), False
+    if plex:
+        try:
+            told = await asyncio.wait_for(plex.reload_guide(), 20) > 0
+        except Exception as e:
+            log.info("Couldn't ask Plex to reload the guide (%s)", e.__class__.__name__)
+    return {"channel": _channel_out(app, ch), "plex_reloaded": told}
+
+
+@router.delete("/test-channel")
+async def remove_test_channel(app=Depends(signed_in)):
+    ch = _test_channel(app)
+    if ch:
+        _remove_channel(app, ch)
+        await app.streams.stop_channel(ch["id"])
+        app.cfg.save()
+    return {"ok": True}
 
 # ---- catalog, guide, status ---------------------------------------------------------------
 

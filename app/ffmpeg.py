@@ -216,6 +216,7 @@ class FFmpeg:
         can = "overlay" in self.filters
         logo = ov.get("logo") if can and os.path.isfile(ov.get("logo") or "") else None
         banner = ov.get("banner") if can and os.path.isfile(ov.get("banner") or "") else None
+        art = ov.get("banner_art") if banner and os.path.isfile(ov.get("banner_art") or "") else None
         fit = f"bwdif=mode=send_frame:parity=auto:deint=interlaced,scale={W}:{H}:force_original_aspect_ratio=decrease"
         tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS},{self._vf_tail(hw)}"
         tpl = ov.get("template") if can and os.path.isfile((ov.get("template") or {}).get("file") or "") else None
@@ -232,25 +233,36 @@ class FFmpeg:
                 cur, n = "pb", n + 1
             if banner:
                 a, b = float(ov.get("t0") or 0), float(ov.get("t1") or 0)
-                args += ["-loop", "1", "-framerate", "15", "-t", f"{duration + 1:.3f}", "-i", "file:" + banner]
-                graph.append(f"[{n}:v:0]format=rgba,fade=t=in:st={a:.2f}:d=0.4:alpha=1,"
-                             f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban]")
                 rest = f"max(0,1-(t-{a:.2f})/0.45)"  # 1 when the banner appears, 0 once it's in place
-                x, y = "main_w*0.055", "main_h*0.73"
-                if ov.get("place") == "bottom":  # along the bottom edge of the picture
-                    x, y = "main_w*0.012", "main_h-overlay_h"
                 motion = ov.get("motion") or "left"  # each style comes on its own way, ending where it sits
-                if motion == "left":
-                    x = f"{x}-main_w*0.035*{rest}"
-                elif motion == "right":
-                    x = f"{x}+main_w*0.05*{rest}"
-                elif motion == "up":
-                    y = f"{y}+main_h*0.06*{rest}"
-                elif motion == "rise":  # comes up from below the picture
-                    y = f"{y}+overlay_h*{rest}"
-                graph.append(f"[{cur}][ban]overlay=x='{x}':y='{y}':eval=frame:"
-                             f"enable='between(t,{a:.2f},{b:.2f})'[pn]")
-                cur = "pn"
+
+                def moved(x, y):
+                    if motion == "left":
+                        return f"{x}-main_w*0.035*{rest}", y
+                    if motion == "right":
+                        return f"{x}+main_w*0.05*{rest}", y
+                    if motion == "up":
+                        return x, f"{y}+main_h*0.06*{rest}"
+                    if motion == "rise":  # comes up from below the picture
+                        return x, f"{y}+overlay_h*{rest}"
+                    return x, y
+
+                place = ov.get("place") or ""
+                x, y = "main_w*0.055", "main_h*0.73"
+                if place == "bottom":  # along the bottom edge of the picture
+                    x, y = "main_w*0.012", "main_h-overlay_h"
+                elif place == "edge":  # from the picture's very left edge; whatever's wider runs off the right
+                    x, y = "0", "main_h-overlay_h"
+                layers = [(banner, *moved(x, y))]
+                if art:  # its artwork, near the picture's right edge whatever shape the picture is
+                    layers.append((art, *moved("main_w*0.95-overlay_w", "main_h-overlay_h-4")))
+                for i, (pic, lx, ly) in enumerate(layers):
+                    args += ["-loop", "1", "-framerate", "15", "-t", f"{duration + 1:.3f}", "-i", "file:" + pic]
+                    graph.append(f"[{n}:v:0]format=rgba,fade=t=in:st={a:.2f}:d=0.4:alpha=1,"
+                                 f"fade=t=out:st={b - 0.4:.2f}:d=0.4:alpha=1[ban{i}]")
+                    graph.append(f"[{cur}][ban{i}]overlay=x='{lx}':y='{ly}':eval=frame:"
+                                 f"enable='between(t,{a:.2f},{b:.2f})'[pn{i}]")
+                    cur, n = f"pn{i}", n + 1
             if tpl:
                 n, cur = self._template(args, graph, tpl, cur, n, W, H, duration)
                 graph.append(f"[{cur}]{self._vf_tail(hw)}[v]")

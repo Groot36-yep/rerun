@@ -588,3 +588,49 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+
+/* ---- Preview: the channel's program log, with a little TV to watch any part of it ---- */
+.modal.pv { width: min(900px, 100%); }
+.pv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+.pv-head h2 { margin: 4px 0 0; font-size: 28px; }
+.pv-screen { aspect-ratio: 16 / 9; width: min(100%, calc(52vh * 16 / 9)); margin: 0 auto; background: var(--night); border-radius: 14px; border: 10px solid #2b231c; box-shadow: inset 0 0 0 1px #000, 0 2px 0 #00000022; overflow: hidden; display: grid; place-items: center; }
+.pv-screen video { width: 100%; height: 100%; display: block; background: #000; }
+.pv-idle { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 46ch; padding: 24px; text-align: center; color: var(--cream); }
+.pv-idle b { font: 600 19px var(--serif); }
+.pv-idle span { font-size: 14px; color: #cdbd9f; }
+.spinner { width: 30px; height: 30px; border-radius: 50%; border: 3px solid #ffffff30; border-top-color: var(--mustard); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pv-caption { min-height: 1.4em; margin: 8px 2px 0; font-size: 13.5px; color: var(--ink-2); }
+.pv-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 10px 0 18px; font-size: 13.5px; }
+.pv-plex { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 14px 18px; margin-bottom: 20px; background: var(--card); border: 1px solid var(--rule); border-left: 3px solid var(--teal); border-radius: 0 8px 8px 0; }
+.pv-plex p { margin: 3px 0 0; font-size: 14px; color: var(--ink-2); max-width: 62ch; }
+.pv-plex-act { display: flex; gap: 6px; flex-shrink: 0; }
+.pv-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.pv-log { border-top: 2px solid var(--ink); padding-top: 12px; }
+.pv-row { display: grid; grid-template-columns: 92px 92px 1fr 64px 32px; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px dotted var(--rule-2); font-size: 14px; }
+.pv-row.is-show { padding: 11px 4px; }
+.pv-t, .pv-len { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 13px; }
+.pv-len { text-align: right; }
+.pv-title { min-width: 0; }
+.pv-title b, .pv-title span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-title b { font: 600 16px var(--serif); }
+.pv-title small { display: block; font-size: 12.5px; color: var(--ink-3); }
+.pv-title small.pv-notes { color: var(--teal-2); }
+.pv-k { display: inline-block; justify-self: start; padding: 2px 7px; border-radius: 3px; font: 700 10px var(--caps); letter-spacing: .12em; text-transform: uppercase; color: #fffaf0; font-style: normal; }
+.k-show { background: var(--ink); }
+.k-ident { background: var(--teal); }
+.k-bumper { background: var(--mustard); color: var(--ink); }
+.k-commercial { background: var(--rust); }
+.k-card { background: var(--olive); }
+.pv-break { margin: 4px 0 4px 22px; padding-left: 12px; border-left: 3px solid var(--rule-2); }
+.pv-break .pv-row { grid-template-columns: 70px 92px 1fr 64px 32px; }
+.pv-break-head { display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 10px; padding: 10px 4px 6px; }
+.pv-break-head b { font: 600 14px var(--sans); }
+.pv-break-head small { display: block; font-size: 12.5px; color: var(--ink-3); }
+@media (max-width: 640px) {
+  .pv-plex { flex-direction: column; align-items: flex-start; }
+  .pv-row, .pv-break .pv-row { grid-template-columns: 62px 1fr 32px; }
+  .pv-row .pv-k, .pv-row .pv-len { display: none; }
+  .pv-break { margin-left: 6px; }
+  .pv-screen { border-width: 6px; }
+}

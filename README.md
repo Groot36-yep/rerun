@@ -225,6 +225,12 @@ not Boomerang. **Networks → Classic channels → Boomerang** builds the channe
 commercials on the Internet Archive. On the Boomerang channel every show opens with a Boomerang ident
 and goes into its breaks with a Boomerang bumper, whatever network the show first aired on.
 
+**Nick Jr.** and **Disney Junior** work the same way. Plex files *Blue's Clues* under Nickelodeon and
+*Bear in the Big Blue House* under Disney Channel, so each has its own lineup: Nick Jr. from the
+preschool mornings on Nickelodeon to the Nick Jr. channel (1994–2012, about 30 shows), and Disney
+Junior including Playhouse Disney before it (1997–2018, about 40 shows), from Wikipedia's lists of
+their programs.
+
 ## The look of real TV
 
 - **Network logo in the corner.** A see-through logo sits in the corner of the picture during shows (not
@@ -250,6 +256,19 @@ and goes into its breaks with a Boomerang bumper, whatever network the show firs
   fractions of the picture).
 
 Both can be switched off in Settings → Picture & sound.
+
+## Checking it without waiting
+
+- **Preview.** The ▶ button next to a channel (or **Preview** on its page) opens its program log: the
+  next four hours item by item, with every show, ident, bumper, commercial and card, and where the logo
+  and "Up next" appear. **Watch this break** makes a short video of the end of the show (with its "Up
+  next"), the bumper, the commercials and the ident into the next show, drawn by the same code as live
+  TV. It takes a few seconds to make and doesn't touch what's on the air.
+- **Test channel in Plex.** **Make a test channel** in the same window turns channel 999, *Rerun Test*,
+  into a sped-up copy of that channel: real shows a minute or so at a time with every break, so the
+  ident, logo, "Up next", bumpers and commercials come round every few minutes in Plex itself. Rerun
+  asks Plex to reload its guide; if the channel doesn't appear, refresh the guide (or scan for channels)
+  in Plex's Live TV & DVR settings. Remove it from the same window when you're done.
 
 ## Christmas, the 2000s way
 

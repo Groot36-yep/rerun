@@ -50,6 +50,10 @@ CHANNEL_DEFAULTS = {
     "holiday_mix": True,  # sprinkle in holiday episodes during the holidays
     "style": "",  # "2000s": a 2000s cable-style holiday day (see xmas.py) | "plain": just shuffle
     "plan": {},  # a fixed historical schedule, e.g. {"name": "abcfamily25", "year": 2008}
+    # A test channel: another channel's shows cut to a minute or two each, so the logo, "Up next",
+    # bumpers, commercials and idents all come round within minutes. {"of": channel id, "key": its
+    # auto_key, "part": seconds of show between breaks}
+    "quick": {},
     "seed": 0,
 }
 
@@ -95,8 +99,20 @@ def normalize_channel(ch: dict) -> dict:
                        "stand_ins": bool(plan.get("stand_ins", True)), "exact_breaks": bool(plan.get("exact_breaks", True))}
     else:
         out["plan"] = {}
+    q = out["quick"] if isinstance(out["quick"], dict) else {}
+    out["quick"] = ({"of": str(q["of"])[:32], "key": str(q.get("key") or "")[:120],
+                     "part": max(30, min(300, int(q.get("part") or QUICK_PART)))} if q.get("of") else {})
     out["seed"] = int(out["seed"] or random.randint(1, 2**31))
     return out
+
+
+QUICK_PART = 75  # seconds of show between breaks on a test channel
+
+
+def network_key(ch: dict) -> str:
+    """The channel's network or lineup ("network:Nickelodeon", "lineup:boomerang"); a test channel has the
+    one of the channel it copies, so it gets the same logo and bumpers."""
+    return ch.get("auto_key") or (ch.get("quick") or {}).get("key") or ""
 
 
 def christmas_style(ch: dict) -> str:
@@ -115,7 +131,7 @@ SCHEDULE_VERSION = 2  # 2: bumpers and idents in their own places, Christmas and
 def content_signature(ch: dict, holidays: dict | None = None) -> str:
     """Changes whenever an edit should rebuild the schedule."""
     keys = ("rules", "exclude", "order", "slot_minutes", "commercials", "seed", "season", "holiday_mix", "style",
-            "plan")
+            "plan", "quick")
     blob = (json.dumps({k: ch.get(k) for k in keys}, sort_keys=True) + json.dumps(holidays or {}, sort_keys=True)
             + ",".join(sorted(hidden_filler)) + f"|v{SCHEDULE_VERSION}")
     return hashlib.sha1(blob.encode()).hexdigest()[:16]

@@ -22,7 +22,7 @@ from datetime import datetime
 from . import seasons
 from . import archive
 from . import lineups, xmas
-from .channels import christmas_style, content_signature, filler_pool, resolve
+from .channels import christmas_style, content_signature, filler_pool, network_key, resolve
 from .xmasdata import title_info
 
 NETWORK_TAGS = set(archive.PROFILES)
@@ -131,7 +131,8 @@ class Builder:
         self.min_filler = min((f["dur"] for f in self.filler), default=0)
         # A network's own channel (Nickelodeon, or Boomerang built from its real lineup) shows its own
         # bumpers and logo whatever network a show first aired on; mixed channels use each show's.
-        auto = ch.get("auto_key") or ""
+        auto = network_key(ch)
+        self.quick = ch.get("quick") or {}
         self.lineup = auto[len("lineup:"):] if auto.startswith("lineup:") else ""
         self.home_net = (archive.tag_for_network(auto[len("network:"):]) if auto.startswith("network:")
                          else lineups.ads_tag(self.lineup) or None)
@@ -530,7 +531,7 @@ class Builder:
     async def build_block(self, t: float):
         if self.ch.get("plan"):
             return await self._plan_block(t)
-        if self.ch.get("season") and not seasons.in_window(self.holidays.get(self.ch["season"]) or {}, t):
+        if self.ch.get("season") and not self.quick and not seasons.in_window(self.holidays.get(self.ch["season"]) or {}, t):
             return self._off_season_block(t)
         if not self.programs:
             length = (ceil_slot(t + 1, self.slot) - t) if self.slot else 1800
@@ -549,6 +550,8 @@ class Builder:
             media = self._next_media(prog, t)
         if not media:
             return self._slate_block(t, 300, "Coming up", "")
+        if self.quick:
+            return self._quick_block(prog, media, t)
         dur = sum(m["dur"] for m in media)
         end = extra.get("end") or self._plan_end(t, dur)
         items, block = await self._layout(prog, media, t, end, extra=extra)
@@ -603,6 +606,31 @@ class Builder:
         notes = [x for x in (extra.get("note"), self._countdown(t)) if x]
         if notes:
             block["desc"] = " · ".join(notes) + ("\n" + block["desc"] if block["desc"] else "")
+        return items, block
+
+    def _quick_block(self, prog: dict, media: list[dict], t: float):
+        """A test channel's block: the show's ident, a short bit of the show, a bumper into a short break,
+        a little more of the show (with "Up next" near its end), then the closing break. The same pieces
+        as a real block, just minutes long, so everything can be checked in Plex without waiting."""
+        part = float(self.quick.get("part") or 75)
+        m = media[0]
+        ctx = self._break_context(prog, media, t) if self.filler or self.bumpers else None
+        items: list[dict] = []
+        pos = t
+        intro = self._bumper(ctx, 20.0)
+        if intro:
+            pos = self._put(items, pos, intro)
+        first = min(part, max(10.0, m["dur"] / 2))
+        start_in = min(max(0.0, m["dur"] * 0.1), max(0.0, m["dur"] - 2 * first))  # skip the cold open
+        pos = self._content(items, m, start_in, first, pos)
+        for last in (False, True):
+            lead = self._bumper(ctx, 15.0)
+            if lead:
+                pos = self._put(items, pos, lead)
+            pos, _ = self._ads(items, pos, 50.0 if not last else 70.0, final=last, ctx=ctx)
+            if not last:
+                pos = self._content(items, m, start_in + first, min(part, max(10.0, m["dur"] - start_in - first)), pos)
+        block = self._describe(prog, [m], t, items[-1]["e"])
         return items, block
 
     def _pod(self, items: list, pos: float, clips: list[dict], seconds: float) -> tuple[float, float]:

@@ -21,7 +21,7 @@ import tempfile
 import time
 
 from . import archive, images
-from .channels import network_logo
+from .channels import network_key, network_logo
 from .ffmpeg import RESOLUTIONS
 from .lineups import LINEUPS
 
@@ -360,6 +360,8 @@ class ChannelStream:
                         if banner:
                             out.update(banner=banner, t0=t0, t1=t1, motion=images.MOTION.get(theme, "left"),
                                        place=images.PLACE.get(theme, ""))
+                            if images.banner_art(banner):
+                                out["banner_art"] = images.banner_art(banner)
                     except Exception as e:
                         log.info("No Up next banner (%s)", e.__class__.__name__)
         return out or None
@@ -368,7 +370,7 @@ class ChannelStream:
         """Whose logo goes in the corner: the channel's own on a network's channel (Nickelodeon, Boomerang,
         the 25 Days channel), otherwise the network the show first aired on."""
         app = self.mgr.app
-        auto = ch.get("auto_key") or ""
+        auto = network_key(ch)
         if auto.startswith("lineup:"):
             return (LINEUPS.get(auto[7:]) or {}).get("network", "")
         if (ch.get("plan") or {}).get("name") == "abcfamily25":

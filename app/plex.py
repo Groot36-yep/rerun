@@ -151,6 +151,16 @@ class PlexClient:
         r.raise_for_status()
         return r.json().get("MediaContainer", {}) if r.content else {}
 
+    async def reload_guide(self) -> int:
+        """Ask Plex to read Rerun's guide again (so a new channel shows up). Returns how many DVRs it reloaded."""
+        dvrs = (await self.get("/livetv/dvrs")).get("Dvr", [])
+        n = 0
+        for d in dvrs:
+            if "xmltv" in (d.get("lineup") or "") and d.get("key"):
+                r = await self.http.post(f"/livetv/dvrs/{d['key']}/reloadGuide")
+                n += r.status_code < 400
+        return n
+
     async def identity(self) -> dict:
         return await self.get("/identity")
 

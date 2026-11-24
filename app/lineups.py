@@ -5,6 +5,9 @@ Boomerang ran other networks' cartoons: Plex lists Scooby-Doo under CBS and The 
 a Boomerang channel is built from Boomerang's own lineup instead. `wants()` says which of its shows you
 have and which you still need; `show_ids()` is what the channel plays.
 
+Preschool channels are the same: Plex files Blue's Clues under Nickelodeon and Bear in the Big Blue House
+under Disney Channel, so Nick Jr. and Disney Junior (Playhouse Disney before 2011) have lineups too.
+
 Boomerang's US lineup for 2000–2009 is from Wikipedia's "List of programs broadcast by Boomerang"
 (staples are the shows it ran year after year; occasional ones aired for a season or less).
 """
@@ -142,12 +145,105 @@ BOOMERANG = [
     ("The Munsters", 1964, "occasional", [], "2000s"),
 ]
 
+# Nick Jr.: the Nick Jr. block on Nickelodeon's weekday mornings (1988–2009), then the Nick Jr. channel
+# (from September 2009). From Wikipedia's "Nick Jr. (block)" and "List of programs broadcast by Nick Jr.".
+NICKJR = [
+    ("Blue's Clues", 1996, "staple", [], "1996–2006"),
+    ("Dora the Explorer", 2000, "staple", [], "from 2000"),
+    ("The Backyardigans", 2004, "staple", [], "from 2004"),
+    ("Go, Diego, Go!", 2005, "staple", [], "from 2005"),
+    ("Little Bill", 1999, "staple", [], "1999–2000s"),
+    ("Max & Ruby", 2002, "staple", ["Max and Ruby"], "2000s"),
+    ("Wonder Pets!", 2006, "staple", ["The Wonder Pets"], "from 2006"),
+    ("Little Bear", 1995, "staple", ["Maurice Sendak's Little Bear"], "from 1995"),
+    ("Franklin", 1997, "regular", [], "1999–2013"),
+    ("Oswald", 2001, "regular", [], "from 2001"),
+    ("Bob the Builder", 1999, "regular", [], "from 2001"),
+    ("Blue's Room", 2004, "regular", [], "2004–2011"),
+    ("Ni Hao, Kai-Lan", 2008, "regular", ["Ni Hao Kai-Lan"], "from 2008"),
+    ("LazyTown", 2004, "regular", ["Lazy Town"], "2000s"),
+    ("Gullah Gullah Island", 1994, "regular", [], "1994–2014"),
+    ("Maggie and the Ferocious Beast", 2000, "regular", [], "from 2000"),
+    ("Rupert", 1991, "regular", [], "from 1995"),
+    ("The Busy World of Richard Scarry", 1994, "regular", [], "from 1995"),
+    ("Allegra's Window", 1994, "occasional", [], "from 1994"),
+    ("Jack's Big Music Show", 2005, "occasional", [], "2009–2014"),
+    ("Oobi", 2000, "occasional", [], "2003, 2013"),
+    ("Tweenies", 1999, "occasional", [], "2003"),
+    ("The Upside Down Show", 2006, "occasional", [], "from 2012"),
+    ("Pinky Dinky Doo", 2005, "occasional", [], "from 2011"),
+    ("The Fresh Beat Band", 2009, "regular", [], "from 2009"),
+    ("Team Umizoomi", 2010, "regular", [], "from 2010"),
+    ("Bubble Guppies", 2011, "regular", [], "from 2011"),
+    ("Peppa Pig", 2004, "regular", [], "from 2011"),
+    ("Dino Dan", 2010, "occasional", [], "2010–2017"),
+    ("Pocoyo", 2005, "occasional", [], "2011–2014"),
+    ("Toot & Puddle", 2008, "occasional", ["Toot and Puddle"], "from 2012"),
+    ("Shining Time Station", 1989, "occasional", [], "2000"),
+]
+
+# Playhouse Disney (1997–2011) and Disney Junior after it (from 2011), up to about 2018. From Wikipedia's
+# "Playhouse Disney" and "List of programs broadcast by Disney Junior".
+DISNEYJR = [
+    ("Bear in the Big Blue House", 1997, "staple", [], "1997–2007"),
+    ("Rolie Polie Olie", 1998, "staple", [], "1998–2006, 2012–2014"),
+    ("The Book of Pooh", 2001, "staple", [], "2001–2006"),
+    ("Mickey Mouse Clubhouse", 2006, "staple", [], "from 2006"),
+    ("Little Einsteins", 2005, "staple", [], "2005–2011"),
+    ("Handy Manny", 2006, "staple", [], "from 2006"),
+    ("My Friends Tigger & Pooh", 2007, "staple", ["My Friends Tigger and Pooh"], "2007–2011, 2016–2020"),
+    ("JoJo's Circus", 2003, "staple", [], "2003–2009"),
+    ("Stanley", 2001, "regular", [], "2001–2008"),
+    ("PB&J Otter", 1998, "regular", ["PB and J Otter"], "1998–2006, 2012–2014"),
+    ("Out of the Box", 1998, "regular", [], "1998–2006"),
+    ("Higglytown Heroes", 2004, "regular", [], "2004–2009"),
+    ("The Wiggles", 1998, "regular", [], "2002–2009"),
+    ("Johnny and the Sprites", 2005, "regular", [], "2005–2009"),
+    ("Imagination Movers", 2008, "regular", [], "from 2008"),
+    ("Special Agent Oso", 2009, "regular", [], "from 2009"),
+    ("Charlie and Lola", 2005, "regular", ["Charlie & Lola"], "2005–2011"),
+    ("The Koala Brothers", 2003, "regular", [], "2004–2008"),
+    ("The Doodlebops", 2004, "regular", [], "2005–2009"),
+    ("Jungle Junction", 2009, "occasional", [], "from 2009"),
+    ("Bunnytown", 2007, "occasional", [], "2007–2008"),
+    ("Chuggington", 2008, "occasional", [], "from 2010"),
+    ("Timmy Time", 2009, "occasional", [], "from 2010"),
+    ("Madeline", 1993, "occasional", [], "from 2005"),
+    ("Anatole", 1998, "occasional", [], "2002–2004"),
+    ("The New Adventures of Winnie the Pooh", 1988, "occasional", [], "from 2006"),
+    ("The Little Mermaid", 1992, "occasional", [], "1997–2002"),
+    ("Jungle Cubs", 1996, "occasional", [], "1997–2000"),
+    ("Jake and the Never Land Pirates", 2011, "staple", [], "from 2011"),
+    ("Doc McStuffins", 2012, "staple", [], "from 2012"),
+    ("Sofia the First", 2012, "staple", [], "from 2012"),
+    ("Henry Hugglemonster", 2013, "regular", [], "2013–2015"),
+    ("Sheriff Callie's Wild West", 2014, "regular", [], "2014–2017"),
+    ("Miles from Tomorrowland", 2015, "regular", [], "2015–2018"),
+    ("The Lion Guard", 2015, "regular", [], "from 2015"),
+    ("Goldie & Bear", 2015, "occasional", ["Goldie and Bear"], "2015–2018"),
+    ("Elena of Avalor", 2016, "regular", [], "from 2016"),
+    ("Puppy Dog Pals", 2017, "regular", [], "from 2017"),
+    ("Vampirina", 2017, "regular", [], "from 2017"),
+]
+
 LINEUPS = {
     "boomerang": {
         "name": "Boomerang", "years": "2000–2009", "network": "Boomerang", "ads": "boomerang",
         "about": "Boomerang from Cartoon Network: Hanna-Barbera, Looney Tunes and Tom and Jerry all day, "
                  "and by the end of the decade the Cartoon Cartoons too.",
         "shows": BOOMERANG,
+    },
+    "nickjr": {
+        "name": "Nick Jr.", "years": "1994–2012", "network": "Nick Jr.", "ads": "nickjr",
+        "about": "Nick Jr.: the preschool mornings on Nickelodeon, then a channel of its own from 2009. Blue's "
+                 "Clues, Dora, the Backyardigans and Little Bear, with Face and later Moose and Zee between the shows.",
+        "shows": NICKJR,
+    },
+    "disneyjr": {
+        "name": "Disney Junior", "years": "1997–2018", "network": "Disney Junior", "ads": "playhouse",
+        "about": "Playhouse Disney, renamed Disney Junior in 2011: Bear in the Big Blue House, Rolie Polie Olie, "
+                 "Mickey Mouse Clubhouse, then Jake, Doc McStuffins and Sofia the First.",
+        "shows": DISNEYJR,
     },
 }
 
