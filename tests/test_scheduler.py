@@ -91,6 +91,26 @@ def check(p, label, slot):
     return kinds, total
 
 
+def check_recommend():
+    """Shows to get for Nick and Disney: matched by name and year, by decade; a show Plex files under
+    another network counts as in the library but not on the channel."""
+    from app import recommend
+    shows = {"s1": ("SpongeBob SquarePants", 1999, "Nickelodeon"), "s2": ("Danny Phantom", 2004, "Nicktoons"),
+             "s3": ("Teenage Mutant Ninja Turtles", 1987, "Syndication"), "s4": ("Kim Possible", 2002, "Disney Channel")}
+    cat = Catalog({"shows": {k: {"id": k, "title": t, "year": y, "network": n} for k, (t, y, n) in shows.items()},
+                   "episodes": {k: [{"id": k + "e", "show": k, "dur": 1320}] for k in shows}, "movies": {}, "filler": {},
+                   "music_videos": {}, "networks": {}})
+    rep = recommend.report(cat, "nick", on_channel={"s1"})
+    rows = {r["title"]: r for d in rep["decades"] for r in d["shows"]}
+    assert [d["decade"] for d in rep["decades"]] == ["90s", "2000s", "2010s"]
+    assert rows["SpongeBob SquarePants"]["on_channel"] and rows["Danny Phantom"]["have"]
+    assert not rows["Danny Phantom"]["on_channel"], "Nicktoons' Danny Phantom: in the library, not on the channel"
+    assert not rows["Teenage Mutant Ninja Turtles"]["have"], "the 1987 Turtles aren't the 2012 series"
+    assert recommend.report(cat, "disney")["have"] == 1
+    assert recommend.channel_networks({"auto_key": "network:Nicktoons"}) == ["nick"]
+    print("shows to get: OK")
+
+
 async def check_matching():
     """Breaks match the show: its network's ads first, plain ads before another network's, holiday ads
     only in season."""
@@ -143,9 +163,23 @@ async def check_matching():
 async def main():
     cat = make_catalog()
 
-    nick = normalize_channel({"id": "nick", "name": "Nick", "seed": 7, "rules": [
+    # By default shows and movies play straight through, with the commercials between them.
+    plain_nick = normalize_channel({"id": "pn", "name": "Nick", "seed": 7, "rules": [
         {"type": "filter", "media": "shows", "network": "Nickelodeon"},
         {"type": "filter", "media": "movies", "network": "Nickelodeon"}]})
+    assert plain_nick["commercials"]["break_style"] == "end"
+    pp, _ = await build(plain_nick, cat, 24)
+    check(pp, "Nick (between shows)", 30)
+    for b in pp.blocks:
+        parts = [x for x in pp.items if b["s"] <= x["s"] < b["e"] and x["k"] == "c"]
+        assert len({x["m"] for x in parts}) == len(parts), f"a show was cut by a break in {b['title']}"
+        # each episode or movie plays whole (a break may come between two short episodes sharing a slot)
+        assert all(x["in"] == 0 and abs((x["e"] - x["s"]) - cat.items[x["m"]]["dur"]) < 0.01 for x in parts),             f"a part of {b['title']} was cut short"
+
+    # Breaks inside shows, at their act breaks, for those who want them.
+    nick = normalize_channel({"id": "nick", "name": "Nick", "seed": 7, "commercials": {"enabled": True, "break_style": "chapters"},
+                              "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"},
+                                        {"type": "filter", "media": "movies", "network": "Nickelodeon"}]})
     p, _ = await build(nick, cat)
     kinds, total = check(p, "Nick (30-min slots)", 30)
     assert kinds["x"] / total < 0.02, "too much blank filler"
@@ -224,22 +258,8 @@ async def main():
     assert item_year({"id": "y1", "title": "Nickelodeon bumpers 2003"}) == 2003
     assert _year_match(2003, {"year": 2004}, set()) > _year_match(1999, {"year": 2004}, set()) > _year_match(2016, {"year": 2004}, set())
 
-    # Trivia on a kids' channel: "Guess the show!" early in a show's first break, its answer at the end of
-    # that same break, about another of the channel's shows.
-    quiz = [x for x in p.items if x["k"] == "q"]
-    assert quiz, "expected trivia in a kids' channel's breaks"
-    for i, x in enumerate(p.items):
-        if x["k"] == "q" and x["q"]["phase"] == "ask":
-            j = next(j for j in range(i + 1, len(p.items)) if p.items[j]["k"] == "q")
-            ans = p.items[j]
-            assert ans["q"]["phase"] == "answer" and ans["q"]["show"] == x["q"]["show"], (x, ans)
-            assert all(y["k"] != "c" for y in p.items[i:j]), "the answer should come in the same break"
-            assert p.items[j + 1]["k"] == "c", "the show should come back right after the answer"
-            here = next(y for y in reversed(p.items[:i]) if y["k"] == "c")
-            assert cat.items[here["m"]]["show"] != x["q"]["show"], "the question shouldn't be the show that's on"
-    per_block = Counter(p.block_at(x["s"])["s"] for x in quiz if x["q"]["phase"] == "ask")
-    assert max(per_block.values()) == 1
-    print("trivia questions:", sum(per_block.values()), "in", len(p.blocks), "blocks")
+    # Trivia is put away for now: none on the air.
+    assert not any(x["k"] == "q" for x in p.items), "trivia is switched off for now"
     assert not any(x["k"] == "q" for x in p5.items), "no trivia on a music channel"
 
     # Saturday mornings: on a kids' channel each show's next episode in order, marked new; on a general
@@ -278,6 +298,14 @@ async def main():
     print(f"Saturday morning: {len(new)} new blocks; cereal ads {cereal:.0%} on Saturday vs {weekday_cereal:.0%} on a weekday")
     assert cereal > 0.5 and cereal > weekday_cereal * 1.5
     assert not any(x["k"] == "q" for x in pg.items), "no trivia on a general channel"
+
+    # Test mode starting or stopping: the schedule ends right now, mid-show, and starts again from there.
+    cut = Playout("cut", {"items": [dict(x) for x in p.items], "blocks": [dict(b) for b in p.blocks]})
+    mid = p.items[len(p.items) // 2]
+    t_cut = (mid["s"] + mid["e"]) / 2
+    cut.cut(t_cut)
+    assert cut.items[-1]["e"] == t_cut and cut.blocks[-1]["e"] == t_cut and cut.end == t_cut
+    assert all(x["s"] < t_cut for x in cut.items) and cut.index_at(t_cut - 0.5) is not None
 
     # A test channel: the same shows a minute or so at a time, every break coming round within minutes,
     # and the Christmas channel's test plays even out of season.
@@ -322,6 +350,7 @@ async def main():
     assert "p2e3" not in rug_jan and "p2e7" not in rug_jan and rug_jan, "in-order channel should skip out-of-season episodes"
 
     await check_matching()
+    check_recommend()
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])

@@ -283,6 +283,8 @@ class ChannelStream:
         self.segments += 1
         if ch is None:
             return {"item": {"k": "x", "t": ""}, "offset": 0, "dur": 30, "burst": burst, "end": self.cursor + 30}
+        if (ch.get("quick") or {}).get("until") and now > ch["quick"]["until"]:
+            asyncio.ensure_future(app.schedules.end_test_if_over(ch))  # test mode is over: back to normal
         p = app.schedules.get(ch["id"])
         if p.end < self.cursor + 900 or p.sig != app.schedules.sig(ch):
             p = await app.schedules.ensure(ch, until=self.cursor + 3 * 3600)

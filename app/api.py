@@ -23,6 +23,7 @@ from . import lineups as lineups_mod
 from . import youtube as youtube_mod
 from . import preview as preview_mod
 from . import looks as looks_mod
+from . import recommend as recommend_mod
 from . import trivia as trivia_mod
 from . import channels as channels_mod
 from .archive import OWN as OWN_COMMERCIALS
@@ -567,6 +568,32 @@ def _remove_channel(app, ch):
         app.cfg.data["auto"]["dismissed"].append(key)  # so it isn't added back automatically
 
 
+@router.post("/channels/missing")
+async def channel_missing(body: dict, app=Depends(signed_in)):
+    """For a Nick or Disney channel (being edited): the network's best-known shows by decade, and which
+    you have, which are on the channel, and which to get."""
+    ch = normalize_channel(body)
+    keys = recommend_mod.channel_networks(ch)
+    if not keys:
+        return {"lists": []}
+    on = {p["show"] for p in channels_mod.resolve(ch, app.catalog, app.cfg.data["holidays"]) if p["kind"] == "show"}
+    return {"lists": [recommend_mod.report(app.catalog, k, on) for k in keys]}
+
+
+@router.get("/missing/{key}.txt")
+async def missing_text(key: str, app=Depends(signed_in)):
+    if key not in recommend_mod.LISTS:
+        raise HTTPException(404, "No list for that network")
+    return PlainTextResponse(recommend_mod.need_text(app.catalog, key))
+
+
+@router.get("/missing/{key}")
+async def missing_list(key: str, app=Depends(signed_in)):
+    if key not in recommend_mod.LISTS:
+        raise HTTPException(404, "No list for that network")
+    return recommend_mod.report(app.catalog, key)
+
+
 @router.post("/channels/preview")
 async def preview_channel(body: dict, app=Depends(signed_in)):
     return describe_content(normalize_channel(body), app.catalog, app.cfg.data["holidays"])
@@ -593,6 +620,39 @@ async def channel_rundown(cid: str, hours: float = 3, start: float = 0, app=Depe
         raise HTTPException(404, "No such channel")
     now = time.time()
     return {"now": now, "items": await preview_mod.rundown(app, ch, start or now, hours)}
+
+
+@router.post("/channels/{cid}/test")
+async def channel_test_start(cid: str, body: dict | None = None, app=Depends(signed_in)):
+    """Test mode: for a while the channel plays a minute or so of each show, so every bumper, break and
+    "Up next" comes round within minutes, on the channel Plex already has. Then it's back to normal."""
+    ch = app.channel(cid)
+    if not ch:
+        raise HTTPException(404, "No such channel")
+    if ch.get("plan"):
+        raise HTTPException(400, "This channel follows a fixed historical schedule, so it can't be sped up. "
+                                 "Use “Watch the next break” instead.")
+    if (ch.get("quick") or {}).get("of") and not (ch.get("quick") or {}).get("until"):
+        raise HTTPException(400, "This is already a test channel")
+    minutes = max(5, min(int((body or {}).get("minutes") or 30), 180))
+    ch["quick"] = {"of": cid, "key": ch.get("auto_key") or "", "part": 75, "until": time.time() + minutes * 60}
+    app.cfg.save()
+    await app.streams.stop_channel(cid)  # whoever's watching gets the test version when they tune back in
+    await app.schedules.restart_now(ch)
+    return {"ok": True, "until": ch["quick"]["until"], "number": ch["number"]}
+
+
+@router.delete("/channels/{cid}/test")
+async def channel_test_stop(cid: str, app=Depends(signed_in)):
+    ch = app.channel(cid)
+    if not ch:
+        raise HTTPException(404, "No such channel")
+    if (ch.get("quick") or {}).get("until"):
+        ch["quick"] = {}
+        app.cfg.save()
+        await app.streams.stop_channel(cid)
+        await app.schedules.restart_now(ch)
+    return {"ok": True}
 
 
 @router.post("/channels/{cid}/watch")
@@ -715,6 +775,7 @@ async def networks(app=Depends(signed_in)):
     for n in library_networks(app.catalog, d["auto"].get("min_shows", 2)):
         ch = _network_channel(app, n["name"])
         out.append({**n, "channel": ch["id"] if ch else "", "number": ch["number"] if ch else None,
+                    "missing": recommend_mod.which(n["name"]),
                     "logo_url": f"/netlogo/{quote(n['name'], safe='')}.png?v={LOGO_V}",
                     "dismissed": f"network:{n['name']}" in d["auto"]["dismissed"]})
     return {"networks": out, "auto": d["auto"]["networks"], "min_shows": d["auto"].get("min_shows", 2)}
@@ -1244,10 +1305,42 @@ def _need_youtube():
 
 @router.get("/looks")
 async def looks_page(app=Depends(signed_in)):
-    return {"networks": looks_mod.networks(app.cfg.data),
+    hidden = set(app.cfg.data.get("hidden_filler") or [])
+    nets = looks_mod.networks(app.cfg.data)
+    for n in nets:
+        n["bumpers"] = looks_mod.bumpers(app.catalog, n["tag"], hidden)
+        n["channels"] = looks_mod.channels_using(app.cfg.data, n["tag"])
+        n["in_use"] = looks_mod.in_use(app.cfg.data, n["tag"])
+    nets.sort(key=lambda n: (not (n["channels"] or n["bumpers"]), n["label"].lower()))
+    return {"networks": nets, "finder": app.finder.progress.get("running", False),
             "styles": [{"key": k, "label": l} for k, l in looks_mod.STYLES],
             "files": {"upnext": looks_mod.files("upnext"), "trivia": looks_mod.files("trivia")},
             "search": looks_mod.SEARCH, "youtube": youtube_mod.available()}
+
+
+@router.post("/looks/sample/{tag}")
+async def looks_sample(tag: str, app=Depends(signed_in)):
+    """A short clip of one of the network's shows ending with its "Up next", as live TV draws it."""
+    if tag not in archive_mod.PROFILES:
+        raise HTTPException(404, "No such network")
+    try:
+        path = await looks_mod.sample(app, tag)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return {"url": f"/api/previews/{os.path.basename(path)}"}
+
+
+@router.post("/looks/finder/{tag}")
+async def looks_finder(tag: str, app=Depends(signed_in)):
+    """Find this network's bumpers, idents and commercials on the Internet Archive."""
+    if tag not in archive_mod.PROFILES:
+        raise HTTPException(404, "No such network")
+    try:
+        eras = [e for e in ("90s", "2000s") if e in archive_mod.ERAS] or list(archive_mod.ERAS)[:1]
+        app.finder.start([tag], eras, int(2e9), [], 0, True)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @router.put("/looks/{tag}")

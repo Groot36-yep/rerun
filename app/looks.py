@@ -140,3 +140,115 @@ def trivia_preview(theme: str) -> bytes:
     out = io.BytesIO()
     Image.open(io.BytesIO(png)).convert("RGB").save(out, "JPEG", quality=88)
     return out.getvalue()
+
+
+def bumpers(cat, tag: str, hidden: set) -> list[dict]:
+    """The bumpers and idents Rerun has for a network: what plays before its shows and into its breaks."""
+    out = [{"id": f["id"], "title": f.get("title", ""), "dur": round(f["dur"], 1), "tags": f.get("tags", []),
+            "h": int(f.get("h") or 0), "q": f.get("q") or None, "hidden": f["id"] in hidden}
+           for f in cat.all_filler() if "bumper" in (f.get("tags") or []) and tag in (f.get("tags") or [])
+           and not f.get("dup")]
+    return sorted(out, key=lambda x: (x["hidden"], x["title"].lower()))
+
+
+def channels_using(cfg: dict, tag: str) -> list[dict]:
+    """The channels that are this network's own (its logo, bumpers and Up next on everything they play)."""
+    from .lineups import ads_tag
+    out = []
+    for ch in cfg.get("channels") or []:
+        key = ch.get("auto_key") or (ch.get("quick") or {}).get("key") or ""
+        t = archive.tag_for_network(key[8:]) if key.startswith("network:") else (
+            ads_tag(key[7:]) if key.startswith("lineup:") else None)
+        if t == tag:
+            out.append({"id": ch["id"], "name": ch["name"], "number": ch["number"]})
+    return out
+
+
+def in_use(cfg: dict, tag: str) -> dict:
+    """What "Up next" this network actually gets on the air, in words and a picture, for the page."""
+    tpl, style = upnext_override(cfg, tag)
+    label = archive.PROFILES.get(tag, (tag, "", "", [tag]))[0]
+    chans = archive.PROFILES.get(tag, (tag, "", "", []))[3]
+    if tpl is None and style is None:  # automatic: a template named after the network, else its drawing
+        tpl = images.find_template([*chans, tag, label])
+        style = None if tpl else (images.theme_for(tag) or "")
+    if tpl:
+        name = os.path.basename(tpl)
+        return {"kind": "file", "name": name, "label": os.path.splitext(name)[0],
+                "img": f"/api/looks/thumb/upnext/{name}"}
+    key = style or "plain"
+    return {"kind": "style", "name": key, "label": dict(STYLES).get(key, "Rerun's drawing"),
+            "img": f"/api/looks/style/{key}.jpg"}
+
+
+async def sample(app, tag: str) -> str:
+    """A short video of a real show of this network ending with its "Up next", drawn by live TV's code."""
+    import asyncio
+    import random
+    import shutil
+    import tempfile
+    import time as _time
+    from .ffmpeg import RESOLUTIONS
+    from .preview import PREVIEW_DIR, _run_to
+    cat = app.catalog
+    nets = {n.lower() for n in archive.PROFILES[tag][3]} | {archive.PROFILES[tag][0].lower()}
+    mine = [sid for sid, sh in cat.shows.items() if (sh.get("network") or "").lower() in nets and cat.episodes.get(sid)]
+    pool = mine or [sid for sid in cat.shows if cat.episodes.get(sid)]
+    if not pool:
+        raise RuntimeError("There are no shows in your library to try it on")
+    rng = random.Random()
+    sid = rng.choice(pool)
+    nxt = cat.shows[rng.choice([x for x in pool if x != sid] or pool)]
+    ep = rng.choice(cat.episodes[sid])
+    src = app.media_input({"f": ep.get("file") or "", "p": ep.get("part") or ""})
+    if not src:
+        raise RuntimeError(f"Couldn't open {cat.shows[sid]['title']}")
+    s = dict(app.cfg.data["stream"])
+    s["video_kbps"] = min(int(s.get("video_kbps") or 4000), 2500)
+    H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])[1]
+    length = 14.0
+    ov: dict = {}
+    year = (ep.get("date") or "")[:4] or cat.shows[sid].get("year")
+    try:
+        ref = images.era_logo(tag, year) or images.network_logo(archive.PROFILES[tag][3][0], cat)
+        logo = await images.screen_bug(ref, H, app.cfg.data["metadata"].get("online_lookups", True),
+                                       [archive.PROFILES[tag][3][0], tag], year)
+        if logo:
+            ov["logo"] = logo
+    except Exception:
+        pass
+    use = in_use(app.cfg.data, tag)
+    if use["kind"] == "file":
+        f = str(UPNEXT_DIR / use["name"])
+        tpl = await asyncio.to_thread(images.analyse_template, f, app.ffmpeg.ffmpeg)
+        if not tpl:
+            raise RuntimeError("Rerun can't use that template (no green or black to see through)")
+        ov["template"] = {**tpl, "file": f, "t0": 1.0, "t1": min(length - 0.5, 1.0 + (tpl["dur"] or 10.0))}
+        titled = images.template_title(nxt["title"], f, H)
+        if titled:
+            ov["template"].update(title_png=titled[0], title_x=titled[1]["x"], title_y=titled[1]["y"])
+    else:
+        theme = "" if use["name"] == "plain" else use["name"]
+        art = await images.artwork(app, nxt["id"]) if theme == "nick" else None
+        ban = await asyncio.to_thread(images.up_next_banner, nxt["title"], H, images.bug_accent(ov.get("logo")),
+                                      theme, art, nxt["id"], ov.get("logo"))
+        ov["banners"] = [{"file": ban, "art": images.banner_art(ban), "t0": 1.0, "t1": length - 2,
+                          "motion": images.MOTION.get(theme, "left"), "place": images.PLACE.get(theme, "")}]
+    work = tempfile.mkdtemp(prefix="rerun-look-")
+    try:
+        ts = os.path.join(work, "a.ts")
+        cmd = app.ffmpeg.media_cmd(src, max(0.0, ep["dur"] * 0.5), length, s, None, bool(ep.get("audio", True)), overlay=ov)
+        if await asyncio.to_thread(_run_to, cmd, ts) != 0:
+            cmd = app.ffmpeg.media_cmd(src, max(0.0, ep["dur"] * 0.5), length, s, None, False, overlay=ov)
+            if await asyncio.to_thread(_run_to, cmd, ts) != 0:
+                raise RuntimeError("Couldn't make the sample")
+        PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        out = PREVIEW_DIR / f"look-{tag}-{int(_time.time())}.mp4"
+        res = await asyncio.to_thread(subprocess.run, [app.ffmpeg.ffmpeg, "-v", "error", "-y", "-i", ts, "-c", "copy",
+                                                       "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", str(out)],
+                                      capture_output=True, timeout=60)
+        if res.returncode != 0:
+            raise RuntimeError("Couldn't make the sample")
+        return str(out)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)

@@ -112,8 +112,10 @@ Put them in folders inside a media folder. Sub-folders become tags each channel 
 /mnt/media/music-videos/80s/Artist - Song (1985).mp4
 ```
 
-Breaks go at chapter marks (where DVD and Blu-ray rips have act breaks), evenly through
-the show, or only between shows, and are sized so the next show starts on the half hour.
+Commercials go between shows: a show or movie plays straight through, and the break after it is
+sized so the next one starts on the half hour (two short episodes sharing a half hour get a break
+between them). To have breaks inside shows too, choose "At act breaks" (the chapter marks of DVD and
+Blu-ray rips) or "Evenly spaced" under the channel's **How it airs**.
 
 ## Classic commercials, found for you
 
@@ -268,9 +270,6 @@ their programs.
 - **Promos.** Early in a show, a lower third promotes something later on the same channel: a movie
   first, then whatever's on at 8, as in "Tonight at 8: Jimmy Neutron: Boy Genius".
 
-- **"Guess the show!"** On kids' channels, the first break of a show opens with a trivia card: a
-  close-up from one of the channel's other shows. The answer, with the whole picture, comes at the end
-  of the break, just before the show comes back. The stills come from your own episodes.
 - **Saturday mornings.** Until noon on Saturdays, kids' channels play each show's next episode in
   order, like that week's new ones, and the guide marks them new, so Plex shows them as NEW. "Up next"
   says "All-new". On every channel, the breaks fill up with cereal and toy commercials, and with ones
@@ -279,31 +278,46 @@ their programs.
 Each can be switched off in Settings → Picture & sound. The program log (see below) shows when each
 appears.
 
-## The On-air look page
+## Bumpers & Up next
 
-**On-air look** lets you choose, for each network, the "Up next" it uses and the look of its trivia:
-- **Rerun's drawings:** the network's own style, or any of the others.
-- **The real thing:** **Find on YouTube** searches for green-screen "Up next" templates and network
-  bumpers. **Use this** downloads one and puts it on the air for that network, with its original
-  animation and sound.
-- **Your own files:** templates in `bugs/custom/upnext/`, trivia backgrounds in `bugs/custom/trivia/`.
+**Bumpers & Up next** shows each network's bits between the shows:
+- **Bumpers and idents:** the ones Rerun has for the network (they play before its shows and going
+  into the breaks), to play, take off the air or put back. **Find bumpers on YouTube** downloads a
+  video of them (a compilation is split into single bumpers by itself); **Find them on the Internet
+  Archive** looks there.
+- **"Up next":** the one in use, and **See it on a show**, which makes a short clip of one of your
+  shows from that network ending with it, drawn the way live TV draws it. **Find a real one on YouTube**
+  downloads a real green-screen template and puts it on the air for that network. **Choose a different
+  one** lists Rerun's drawn styles and your templates (in `bugs/custom/upnext/`).
 
-A template named after a show still wins when that show is up next. A trivia background plays behind
-the question and the answer, with its own music, so a real bumper makes it look exactly like the
-network's.
+A template named after a show still wins when that show is up next.
+
+## Choosing what's on a channel
+
+A channel's page shows everything it plays as posters. Take a show or movie off with ×: it stays off
+even when its network or genre is on the channel, and **Taken off** puts it back. **Add shows or
+movies** searches your library. Changes take effect when you save.
+
+On a Nickelodeon or Disney Channel channel, **Shows to get** lists the network's best-known series of the
+90s, 2000s and 2010s (a tab for each) against your library: the ones to get, with those that aired all
+the time first (**Copy the list to get**), the ones you have that aren't on the channel because Plex files
+them under another network (Nicktoons' *Danny Phantom*: **Add**), and the ones already on it. The
+Networks page has the same list on the Nickelodeon, Nicktoons and Disney cards.
 
 ## Checking it without waiting
 
-- **Preview.** The ▶ button next to a channel (or **Preview** on its page) opens its program log: the
-  next four hours item by item, with every show, ident, bumper, commercial and card, and where the logo
-  and "Up next" appear. **Watch this break** makes a short video of the end of the show (with its "Up
-  next"), the bumper, the commercials and the ident into the next show, drawn by the same code as live
-  TV. It takes a few seconds to make and doesn't touch what's on the air.
-- **Test channel in Plex.** **Make a test channel** in the same window turns channel 999, *Rerun Test*,
-  into a sped-up copy of that channel: real shows a minute or so at a time with every break, so the
-  ident, logo, "Up next", bumpers and commercials come round every few minutes in Plex itself. Rerun
-  asks Plex to reload its guide; if the channel doesn't appear, refresh the guide (or scan for channels)
-  in Plex's Live TV & DVR settings. Remove it from the same window when you're done.
+The ▶ button next to a channel (or **Preview** on its page) opens a window with two ways to check it:
+
+- **Watch it here.** **Watch the next break** makes a short video of the next break as it will air:
+  the end of the show with its "Up next", the bumper, the commercials and the next show's intro. It's
+  made by the same code as live TV and takes a few seconds. Live TV isn't touched.
+- **Test it in Plex.** **Start a 30-minute test** speeds the channel itself up for half an hour: a
+  minute or so of each show, then its break, so every bumper, commercial and "Up next" comes round
+  within minutes. Nothing to set up in Plex: tune to the channel as usual. It goes back to normal by
+  itself (or **Stop the test**), and the channel list says when a channel is in test mode.
+
+Below them, **Coming up** lists the next three hours show by show, with each break's bumpers and
+commercials (**What's in it**) and a **Watch** button for that break.
 
 ## Christmas, the 2000s way
 

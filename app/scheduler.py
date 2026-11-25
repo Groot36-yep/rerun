@@ -108,6 +108,16 @@ class Playout:
     def clear(self):
         self.items, self.blocks, self._starts = [], [], None
 
+    def cut(self, t: float):
+        """End the schedule at t, part-way through whatever is on (to start something new right away)."""
+        self.items = [x for x in self.items if x["s"] < t]
+        if self.items and self.items[-1]["e"] > t:
+            self.items[-1]["e"] = t
+        self.blocks = [b for b in self.blocks if b["s"] < t]
+        if self.blocks and self.blocks[-1]["e"] > t:
+            self.blocks[-1]["e"] = t
+        self._starts = None
+
     def blocks_between(self, a: float, b: float) -> list[dict]:
         return [x for x in self.blocks if x["e"] > a and x["s"] < b]
 
@@ -147,6 +157,7 @@ def _year_match(by: int, ctx: dict, tags: set) -> float:
     return 1.0 if ctx.get("era") and ctx["era"] in tags else 0.0
 
 
+TRIVIA_ON = False  # "Guess the show!" is put away for now; trivia.py keeps it for later
 TRIVIA_ASK, TRIVIA_ANSWER = 8.0, 6.0  # seconds: the question card, and the answer card
 KIDS_TAGS = {"nick", "nickjr", "nicktoons", "cn", "boomerang", "disney", "playhouse", "toondisney", "foxkids",
              "kidswb"}
@@ -684,7 +695,7 @@ class Builder:
                     if lead:  # "we'll be right back" into the break
                         pos = self._put(items, pos, lead)
                         carry -= lead["dur"]
-                    quiz = self._trivia(prog, media) if (self.kids and bumpers and not quizzed
+                    quiz = self._trivia(prog, media) if (TRIVIA_ON and self.kids and bumpers and not quizzed
                                                          and share + carry >= 75) else None
                     if quiz:  # "Guess the show!" now, the answer at the end of the break
                         quizzed = True
@@ -1035,10 +1046,40 @@ class Schedules:
                     self.save(p)
         return p
 
+    async def restart_now(self, ch: dict):
+        """Throw away what's planned from now on and plan the channel afresh from this moment (test mode
+        starting or stopping), instead of waiting for the current show to end."""
+        now = time.time()
+        p = self.get(ch["id"])
+        async with self.locks[ch["id"]]:
+            p.cut(now + 1)
+            p.sig = self.sig(ch)
+            if p.end < now + 1:
+                p.blocks.append({"s": now + 1, "e": now + 1, "title": "", "sub": "", "desc": "", "sn": 0, "en": 0,
+                                 "img": "", "cats": [], "movie": False, "year": 0, "date": "", "rating": ""})
+            self.save(p)
+        await self.ensure(ch, now + 3 * 3600)
+
+    async def end_test_if_over(self, ch: dict) -> bool:
+        """Test mode switches itself off when its time is up. True if it just did."""
+        until = (ch.get("quick") or {}).get("until")
+        if not until or time.time() < until:
+            return False
+        ch["quick"] = {}
+        self.app.cfg.save()
+        await self.app.streams.stop_channel(ch["id"])
+        await self.restart_now(ch)
+        log.info("Test mode on %s is over", ch.get("name"))
+        return True
+
     async def ensure_all(self, horizon: float | None = None):
         for ch in list(self.app.cfg.data["channels"]):
             if not ch.get("enabled", True):
                 continue
+            try:
+                await self.end_test_if_over(ch)
+            except Exception:
+                log.exception("Couldn't end test mode on %s", ch.get("name"))
             try:
                 await self.ensure(ch, None if horizon is None else time.time() + horizon)
             except Exception:

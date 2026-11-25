@@ -662,3 +662,83 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 .look-yt img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--night); }
 .look-yt b { font-size: 13px; line-height: 1.3; }
 .look-yt small { font-size: 12px; color: var(--ink-3); }
+
+
+/* ---- a channel's shows and movies as posters ---- */
+.wall-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.wall-head h2 { margin: 4px 0 0; }
+.wall-head input[type=search] { width: 220px; }
+.wall h3 { font-size: 15px; margin: 18px 0 10px; }
+.posters { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 16px 14px; }
+.poster-card { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.poster-card b { font-size: 13px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.poster-card small { font-size: 11.5px; color: var(--ink-3); }
+.poster-card .btn { margin-top: 4px; }
+.poster { position: relative; aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden; background: var(--night); box-shadow: 0 1px 0 var(--rule-2); }
+.poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.poster-none { display: grid; place-items: center; height: 100%; padding: 10px; text-align: center; color: var(--cream); font: 600 13px var(--serif); }
+.poster-x { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; border-radius: 50%; border: 0; background: rgb(21 17 14 / 78%); color: #fff; font-size: 18px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.poster-card:hover .poster-x, .poster-x:focus-visible { opacity: 1; }
+.poster-x:hover { background: var(--maroon); }
+.posters.gone .poster img { filter: grayscale(1) brightness(.6); }
+.posters.gone .poster-x { opacity: 1; background: var(--teal); }
+@media (hover: none) { .poster-x { opacity: 1; } }
+
+
+/* ---- Bumpers & Up next ---- */
+.bump-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; margin-bottom: 12px; }
+.bump { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.bump b { font-size: 13px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bump small { font-size: 12px; color: var(--ink-3); }
+.bump .btn { align-self: flex-start; padding-left: 0; }
+.bump-play { position: relative; padding: 0; border: 0; border-radius: 6px; overflow: hidden; background: var(--night); aspect-ratio: 16 / 9; cursor: pointer; }
+.bump-play img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bump-play span { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 26px; text-shadow: 0 1px 6px rgb(0 0 0 / 70%); opacity: .85; }
+.bump-play:hover span { opacity: 1; }
+.bump.off img { filter: grayscale(1) brightness(.55); }
+.look-now { display: grid; grid-template-columns: minmax(0, 320px) 1fr; gap: 20px; align-items: center; padding: 14px; background: var(--white); border: 1px solid var(--rule); border-radius: 10px; }
+.look-now img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--night); }
+.look-now b { display: block; font: 600 20px var(--serif); margin: 2px 0 4px; }
+.look-now .hint { margin: 0 0 12px; }
+.look-more { margin-top: 14px; }
+.look-more > summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--ink-2); margin-bottom: 12px; }
+@media (max-width: 640px) { .look-now { grid-template-columns: 1fr; } }
+.add-results { margin-top: 18px; max-height: 60vh; overflow: auto; padding-top: 2px; }
+
+
+/* ---- the simpler check window ---- */
+.pv-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.pv-card { padding: 16px 18px; background: var(--card); border: 1px solid var(--rule); border-radius: 10px; display: flex; flex-direction: column; gap: 6px; }
+.pv-card > b { font: 600 18px var(--serif); }
+.pv-card p { margin: 0 0 8px; font-size: 14px; color: var(--ink-2); }
+.pv-card .row { margin-top: auto; }
+.pv-sub { font-size: 16px; margin: 18px 0 6px; }
+.pv-line { display: grid; grid-template-columns: 80px 1fr auto; gap: 12px; align-items: start; padding: 9px 2px; border-bottom: 1px dotted var(--rule-2); font-size: 14px; }
+.pv-line.show b { font: 600 16px var(--serif); display: block; }
+.pv-line small { display: block; font-size: 12.5px; color: var(--teal-2); }
+.pv-line.break { color: var(--ink-2); background: var(--paper-2); padding-left: 8px; padding-right: 8px; border-radius: 6px; border-bottom: 0; margin: 4px 0; }
+.pv-line details summary { cursor: pointer; font-size: 12.5px; color: var(--ink-3); margin-top: 2px; }
+.pv-items { margin: 6px 0 2px; padding-left: 20px; font-size: 13px; }
+.pv-items li { margin: 3px 0; }
+@media (max-width: 640px) { .pv-cards { grid-template-columns: 1fr; } .pv-line { grid-template-columns: 62px 1fr; } .pv-line .btn { grid-column: 2; justify-self: start; } }
+
+
+/* ---- shows to get, by decade ---- */
+.missing-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+.missing-head .lede { margin: 0; max-width: 60ch; }
+.decades { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin-top: 14px; }
+.decade h3 { font-size: 18px; margin: 0 0 8px; border-bottom: 2px solid var(--ink); padding-bottom: 4px; }
+.decade h3 .muted { font: 500 13px var(--sans); }
+.decade .want-list { margin: 0 0 10px; }
+.decade li.tier-staple b { color: var(--rust-2); }
+.decade li.elsewhere { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.decade details.got summary { cursor: pointer; font-size: 13px; color: var(--ink-3); }
+.net-missing { margin-top: 4px; align-self: flex-start; padding-left: 0; }
+@media (max-width: 860px) { .decades { grid-template-columns: 1fr; } }
+
+.decade-tabs { display: flex; gap: 8px; margin: 14px 0 6px; flex-wrap: wrap; }
+.decade-tabs button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 16px; border: 2px solid var(--rule-2); border-radius: 8px; background: var(--card); cursor: pointer; font: inherit; color: var(--ink); min-width: 110px; }
+.decade-tabs button b { font: 600 20px var(--serif); }
+.decade-tabs button small { font-size: 12px; color: var(--ink-3); }
+.decade-tabs button[aria-selected=true] { border-color: var(--rust); background: var(--white); box-shadow: 0 0 0 1px var(--rust); }
+.decade .want-list { max-height: none; overflow: visible; }

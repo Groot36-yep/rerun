@@ -42,7 +42,8 @@ CHANNEL_DEFAULTS = {
     "exclude": [],
     "order": "shuffle",  # shuffle | in_order
     "slot_minutes": 30,  # 0 = back to back
-    "commercials": {"enabled": True, "break_style": "chapters", "sources": [], "tags": []},
+    # commercials go between shows: a show or movie plays straight through ("chapters"/"even" break it up)
+    "commercials": {"enabled": True, "break_style": "end", "sources": [], "tags": []},
     "logo": "",  # "tmdb:/abc.png", "wiki:Article title", or "" for automatic
     "auto_key": "",
     "season": "",  # a holiday key: the channel only airs during that holiday
@@ -79,7 +80,7 @@ def normalize_channel(ch: dict) -> dict:
     out["order"] = out["order"] if out["order"] in ("shuffle", "in_order") else "shuffle"
     out["slot_minutes"] = int(out["slot_minutes"]) if int(out["slot_minutes"] or 0) in (0, 15, 30, 60) else 30
     if com["break_style"] not in BREAK_STYLES:
-        com["break_style"] = "chapters"
+        com["break_style"] = "end"
     com["enabled"] = bool(com["enabled"])
     com["sources"] = [str(s) for s in com["sources"] or []]
     com["tags"] = [str(t).lower() for t in com["tags"] or []]
@@ -102,6 +103,8 @@ def normalize_channel(ch: dict) -> dict:
     q = out["quick"] if isinstance(out["quick"], dict) else {}
     out["quick"] = ({"of": str(q["of"])[:32], "key": str(q.get("key") or "")[:120],
                      "part": max(30, min(300, int(q.get("part") or QUICK_PART)))} if q.get("of") else {})
+    if out["quick"] and q.get("until"):  # test mode on a channel: sped up until then, then back to normal
+        out["quick"]["until"] = float(q["until"])
     out["seed"] = int(out["seed"] or random.randint(1, 2**31))
     return out
 
@@ -125,7 +128,7 @@ def christmas_style(ch: dict) -> str:
 
 
 # Bump when the way schedules are built changes, so an update rebuilds them (from the show on now).
-SCHEDULE_VERSION = 3  # 2: bumpers and idents in their own places, Christmas and 25 Days channels; 3: Saturday mornings, trivia
+SCHEDULE_VERSION = 4  # 2: bumpers and idents in their own places, Christmas and 25 Days channels; 3: Saturday mornings; 4: breaks between shows
 
 
 def content_signature(ch: dict, holidays: dict | None = None) -> str:
@@ -247,14 +250,18 @@ def describe_content(ch: dict, cat: Catalog, holidays: dict | None = None) -> di
     secs += sum(cat.movies[m]["dur"] for m in movies if m in cat.movies)
     secs += sum(cat.items[v]["dur"] for v in videos + specials if v in cat.items)
     show_list = sorted(
-        ({"id": s, "title": cat.shows[s]["title"], "episodes": len(cat.episodes.get(s, []))} for s in shows),
+        ({"id": s, "title": cat.shows[s]["title"], "episodes": len(cat.episodes.get(s, [])),
+          "year": cat.shows[s].get("year") or 0, "network": cat.shows[s].get("network") or ""} for s in shows),
         key=lambda x: x["title"].lower(),
     )
+    movie_list = sorted(({"id": m, "title": cat.movies[m]["title"], "year": cat.movies[m].get("year") or 0}
+                         for m in movies if m in cat.movies), key=lambda x: x["title"].lower())
     return {
         "shows": len(shows), "movies": len(movies), "music_videos": len(videos), "specials": len(specials),
         "episodes": sum(x["episodes"] for x in show_list) + len(specials),
         "hours": round(secs / 3600, 1),
-        "show_list": show_list[:300],
+        "show_list": show_list[:600],
+        "movie_list": movie_list[:600],
         "commercials": len(filler_pool(ch, cat)),
     }
 

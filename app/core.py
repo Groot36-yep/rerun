@@ -93,6 +93,11 @@ class App:
         self.diag = Diagnostics()
         self.finder = Finder(self)
         channels_mod.hidden_filler = set(self.cfg.data.get("hidden_filler") or [])
+        if not self.cfg.data.get("breaks_between_shows"):  # once: shows and movies play straight through
+            for ch in self.cfg.data.get("channels") or []:
+                (ch.setdefault("commercials", {}))["break_style"] = "end"
+            self.cfg.data["breaks_between_shows"] = True
+            self.cfg.save()
         # "rerun report" on this computer shows the diagnostic report using this key.
         self.report_key = secrets.token_urlsafe(24)
         key_file = DATA_DIR / "report.key"
