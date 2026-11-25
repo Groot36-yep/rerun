@@ -22,6 +22,8 @@ from . import archive as archive_mod
 from . import lineups as lineups_mod
 from . import youtube as youtube_mod
 from . import preview as preview_mod
+from . import looks as looks_mod
+from . import trivia as trivia_mod
 from . import channels as channels_mod
 from .archive import OWN as OWN_COMMERCIALS
 from .guide import logo_url as plex_logo_url, tuner_id
@@ -349,6 +351,7 @@ async def put_settings(body: dict, app=Depends(signed_in)):
         cur["screen_bug"] = bool(s.get("screen_bug", cur.get("screen_bug", True)))
         cur["up_next"] = bool(s.get("up_next", cur.get("up_next", True)))
         cur["promos"] = bool(s.get("promos", cur.get("promos", True)))
+        cur["trivia"] = bool(s.get("trivia", cur.get("trivia", True)))
         cur["tuners"] = _num(s.get("tuners", cur["tuners"]), 1, 20, 4)
     if "security" in body:
         sec = body["security"]
@@ -1235,6 +1238,112 @@ async def youtube_status(app=Depends(signed_in)):
 def _need_youtube():
     if not youtube_mod.available():
         raise HTTPException(400, "The YouTube downloader isn't installed. Run “rerun update” on the server.")
+
+
+# ---- the On-air look page: each network's "Up next" and trivia look ------------------------------
+
+@router.get("/looks")
+async def looks_page(app=Depends(signed_in)):
+    return {"networks": looks_mod.networks(app.cfg.data),
+            "styles": [{"key": k, "label": l} for k, l in looks_mod.STYLES],
+            "files": {"upnext": looks_mod.files("upnext"), "trivia": looks_mod.files("trivia")},
+            "search": looks_mod.SEARCH, "youtube": youtube_mod.available()}
+
+
+@router.put("/looks/{tag}")
+async def looks_set(tag: str, body: dict, app=Depends(signed_in)):
+    if tag not in archive_mod.PROFILES:
+        raise HTTPException(404, "No such network")
+    cur = (app.cfg.data.setdefault("looks", {})).setdefault(tag, {})
+    up = str(body.get("up_next", cur.get("up_next", "auto")))
+    if up == "auto" or (up.startswith("style:") and up[6:] in looks_mod.STYLE_KEYS) or (
+            up.startswith("file:") and (looks_mod.UPNEXT_DIR / up[5:]).is_file() and "/" not in up[5:]):
+        cur["up_next"] = up
+    bg = str(body.get("trivia_bg", cur.get("trivia_bg", "")))
+    if bg in ("", "none") or (bg.startswith("file:") and (looks_mod.TRIVIA_DIR / bg[5:]).is_file() and "/" not in bg[5:]):
+        cur["trivia_bg"] = bg
+    app.cfg.save()
+    return {"ok": True, "look": cur}
+
+
+@router.get("/looks/style/{style}.jpg")
+async def looks_style(style: str, app=Depends(signed_in)):
+    if style not in looks_mod.STYLE_KEYS:
+        raise HTTPException(404, "No such style")
+    jpg = await asyncio.to_thread(looks_mod.style_preview, style, "")
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/looks/trivia/{theme}.jpg")
+async def looks_trivia(theme: str, app=Depends(signed_in)):
+    if theme not in trivia_mod.THEMES and theme != "plain":
+        raise HTTPException(404, "No such style")
+    jpg = await asyncio.to_thread(looks_mod.trivia_preview, "" if theme == "plain" else theme)
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/looks/thumb/{kind}/{name}")
+async def looks_thumb(kind: str, name: str, app=Depends(signed_in)):
+    if kind not in looks_mod.FOLDERS or "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(404, "Not found")
+    path = await asyncio.to_thread(looks_mod.thumb, kind, name, app.ffmpeg.ffmpeg, app.ffmpeg.ffprobe)
+    if not path:
+        raise HTTPException(404, "No picture")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get("/looks/file/{kind}/{name}")
+async def looks_file(kind: str, name: str, app=Depends(signed_in)):
+    """The template or background itself, to play on the page."""
+    if kind not in looks_mod.FOLDERS or "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(404, "Not found")
+    path = looks_mod.FOLDERS[kind] / name
+    if not path.is_file():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
+
+@router.delete("/looks/file/{kind}/{name}")
+async def looks_delete(kind: str, name: str, app=Depends(signed_in)):
+    if kind not in looks_mod.FOLDERS or "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(404, "Not found")
+    path = looks_mod.FOLDERS[kind] / name
+    if path.is_file():
+        path.unlink()
+        for side in (".rerun.json", ".rerun-audio.json", ".json"):
+            (path.parent / (path.name + side)).unlink(missing_ok=True)
+    what = "up_next" if kind == "upnext" else "trivia_bg"
+    for look in (app.cfg.data.get("looks") or {}).values():
+        if look.get(what) == f"file:{name}":
+            look[what] = "auto" if kind == "upnext" else ""
+    app.cfg.save()
+    return {"ok": True}
+
+
+@router.post("/looks/youtube")
+async def looks_youtube(body: dict, app=Depends(signed_in)):
+    """Download a real "Up next" template or bumper from YouTube, and use it for that network."""
+    _need_youtube()
+    kind, tag, url = body.get("kind"), str(body.get("tag") or ""), str(body.get("url") or "")
+    if kind not in looks_mod.FOLDERS or tag not in archive_mod.PROFILES:
+        raise HTTPException(400, "Pick a network and what it's for")
+    if not re.match(r"^https://(www\.|m\.)?(youtube\.com|youtu\.be)/", url):
+        raise HTTPException(400, "That isn't a YouTube link")
+    label = archive_mod.PROFILES[tag][0]
+    name = looks_mod.safe_name(f"{label} - {body.get('title') or 'from YouTube'}")
+    folder = looks_mod.FOLDERS[kind]
+    try:
+        path, _info = await asyncio.to_thread(youtube_mod.download, url, str(folder), name, app.ffmpeg.ffmpeg)
+    except Exception as e:
+        raise HTTPException(502, f"The download didn't work: {str(e)[:200]}")
+    fname = os.path.basename(path)
+    look = app.cfg.data.setdefault("looks", {}).setdefault(tag, {})
+    look["up_next" if kind == "upnext" else "trivia_bg"] = f"file:{fname}"
+    app.cfg.save()
+    if kind == "upnext":  # works out its see-through colour and window now, not on the air
+        from . import images as images_mod
+        await asyncio.to_thread(images_mod.analyse_template, path, app.ffmpeg.ffmpeg)
+    return {"ok": True, "name": fname}
 
 
 @router.get("/youtube/search")

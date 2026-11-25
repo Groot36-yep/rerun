@@ -21,7 +21,7 @@ import secrets
 import tempfile
 import time
 
-from . import archive, images, onair
+from . import archive, images, looks, onair, trivia
 from .channels import filler_pool, network_key, network_logo
 from .ffmpeg import RESOLUTIONS
 from .lineups import LINEUPS
@@ -333,13 +333,16 @@ class ChannelStream:
                 out["logo"] = logo
         rel_end = end - self.cursor - 1
         banners = []
+        chosen_tpl, chosen_style = looks.upnext_override(app.cfg.data, tag)  # the On-air look page's pick
         for g in onair.plan(p, idx, item, block, s, block.get("title", "")):
             t0, t1 = max(0.5, g["t0"] - self.cursor), min(g["t1"] - self.cursor, rel_end)
             if t1 - t0 < (6 if g["kind"] == "up_next" else 4):
                 continue  # this piece only has a sliver of it (a late start or a quick-start piece)
             if g["kind"] == "up_next":
                 nxt = g["block"]
-                tpl_file = images.find_template([nxt["title"], net, tag or ""] if net else [nxt["title"]])
+                # a template named after the next show first, then the network's pick, then one named after it
+                tpl_file = images.find_template([nxt["title"]]) or chosen_tpl or (
+                    None if chosen_style is not None else images.find_template([net, tag or ""] if net else []))
                 tpl = await asyncio.to_thread(images.analyse_template, tpl_file, self.mgr.ffmpeg.ffmpeg) \
                     if tpl_file else None
                 if tpl:  # your own template: it plays for its own length (pictures for 10 seconds)
@@ -353,7 +356,7 @@ class ChannelStream:
                                                    title_y=titled[1]["y"])
                     continue
             try:  # in the network's 2000s style, or in the colour of its logo
-                theme = images.theme_for(tag, plan=bool(ch.get("plan")))
+                theme = chosen_style if chosen_style is not None else images.theme_for(tag, plan=bool(ch.get("plan")))
                 about = g["block"] or {}
                 art = await images.artwork(app, about["img"]) \
                     if about.get("img") and theme == "nick" and g["kind"] != "teaser" else None
@@ -464,6 +467,23 @@ class StreamManager:
         exp = self.bad.get(path)
         return bool(exp and exp > time.time())
 
+    async def _trivia_cmd(self, st, item: dict, dur: float, burst, s: dict) -> list[str] | None:
+        """The trivia card for this piece, in the network's style or over its chosen background."""
+        ch = self.app.channel(st.cid)
+        if not ch:
+            return None
+        net = st._bug_network(ch, item)
+        tag = archive.tag_for_network(net) if net else None
+        look = (self.app.cfg.data.get("looks") or {}).get(tag or "", {})
+        bg = trivia.background([net, tag or ""], look.get("trivia_bg", ""))
+        theme = images.theme_for(tag, plan=bool(ch.get("plan")))
+        W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])
+        png = await trivia.make(self.app, item, theme, W, H, bg)
+        if not png:
+            return None
+        bg_audio = await asyncio.to_thread(trivia.has_audio, bg, self.ffmpeg.ffprobe) if bg else False
+        return self.ffmpeg.still_cmd(png, dur, s, burst, bg, bg_audio)
+
     def _stand_in(self, cid: str, item: dict, need: float):
         """Another commercial (or bumper, for a bumper) from the channel's own, at least `need` seconds
         long and as close to it as can be, whose file is there and plays. (item, source) or None."""
@@ -525,12 +545,25 @@ class StreamManager:
                 stand = self._stand_in(st.cid, item, plan["offset"] + dur)
                 if stand:
                     item, src, swapped = stand[0], stand[1], True
+        card_cmd = None
+        if item.get("k") == "q":  # "Guess the show!"
+            try:
+                card_cmd = await self._trivia_cmd(st, item, dur, burst, s) if s.get("trivia", True) else None
+            except Exception as e:
+                log.warning("Couldn't make the trivia card (%s)", e)
+            if not card_cmd:  # trivia switched off, or no picture to show: a commercial instead
+                stand = self._stand_in(st.cid, {**item, "k": "f", "m": ""}, plan["offset"] + dur)
+                if stand:
+                    item, src, swapped = stand[0], stand[1], True
         has_audio = bool(item.get("a", True))
-        if src:
+        if card_cmd:
+            cmd, kind = card_cmd, "card"
+        elif src:
             cmd, kind = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
                                               overlay=ov), "media"
         else:
-            text = st.name if item.get("k") == "x" and not item.get("t") else f"{st.name}\n\nWe'll be right back"
+            text = (st.name if (item.get("k") == "x" and not item.get("t")) or item.get("k") == "q"
+                    else f"{st.name}\n\nWe'll be right back")
             if item.get("k") == "x" and item.get("t"):
                 text = f"{st.name}\n\n{item['t']}"
             cmd, kind = self._slate(st, text, dur, burst), "slate"
@@ -581,6 +614,17 @@ class StreamManager:
                     hw_decode = False  # some files only decode on the processor; try that before giving up
                     cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio, False,
                                                 overlay=ov)
+                    continue
+                if kind == "card":
+                    log.warning("Couldn't show the trivia card (%s)", msg[-200:] or "unknown error")
+                    stand = self._stand_in(st.cid, {**item, "k": "f", "m": ""}, plan["offset"] + dur)
+                    if stand:
+                        item, src, swapped = stand[0], stand[1], True
+                        has_audio = bool(item.get("a", True))
+                        cmd, kind = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst,
+                                                          has_audio, hw_decode), "media"
+                    else:
+                        cmd, kind = self._slate(st, st.name, dur, burst), "slate"
                     continue
                 if kind == "media" and ov:
                     # the logo or a banner is what failed, most likely: the show plays without them

@@ -322,6 +322,41 @@ class FFmpeg:
             n, cur = n + 1, "tt"
         return n, cur
 
+    def still_cmd(self, png: str, duration: float, s: dict, burst: float | None, bg: str | None = None,
+                  bg_audio: bool = False) -> list[str]:
+        """A drawn card (a trivia question) as a piece of live TV: on its own with a slow camera move, or
+        laid over a background clip or picture (looped, with the clip's own sound)."""
+        hw = self.encoder_status.get("using") or "none"
+        W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])
+        args = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", *self._hw_prefix(s, hw)]
+        args += self._input_pacing(burst)
+        fit = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,fps={FPS}"
+        if bg and os.path.isfile(bg):
+            still_bg = bg.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+            args += (["-loop", "1", "-framerate", "30", "-i", "file:" + bg] if still_bg
+                     else ["-stream_loop", "-1", "-i", "file:" + bg])
+            args += ["-loop", "1", "-framerate", "30", "-i", "file:" + png]
+            graph = (f"[0:v:0]{fit}[b];[1:v:0]format=rgba,scale={W}:{H},fade=t=in:st=0.2:d=0.5:alpha=1[c];"
+                     f"[b][c]overlay=0:0,{self._vf_tail(hw)}[v]")
+            audio_in = 2
+            if bg_audio and not still_bg:
+                audio = "0:a:0"
+            else:
+                args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+                audio = f"{audio_in}:a:0"
+        else:
+            args += ["-loop", "1", "-framerate", "30", "-i", "file:" + png]
+            args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+            d = max(1.0, duration)
+            # a slow drift across a slightly bigger picture, the way the card would have moved on air
+            graph = (f"[0:v:0]scale={int(W * 1.06) // 2 * 2}:{int(H * 1.06) // 2 * 2},"
+                     f"crop={W}:{H}:x='(iw-ow)*t/{d:.2f}':y='(ih-oh)/2',setsar=1,fps={FPS},"
+                     f"fade=t=in:st=0:d=0.3,{self._vf_tail(hw)}[v]")
+            audio = "1:a:0"
+        args += ["-filter_complex", graph, "-map", "[v]", "-map", audio, *self._video_codec(s, hw),
+                 *self._audio_out(s), *self._ts_out(duration)]
+        return args
+
     def slate_cmd(self, text_file: str | None, duration: float, s: dict, burst: float) -> list[str]:
         hw = self.encoder_status.get("using") or "none"
         W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])

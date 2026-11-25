@@ -25,6 +25,7 @@ from . import seasons
 from . import archive
 from . import lineups, xmas
 from .channels import christmas_style, content_signature, filler_pool, network_key, resolve
+from .networks import family_for
 from .xmasdata import title_info
 
 NETWORK_TAGS = set(archive.PROFILES)
@@ -146,6 +147,24 @@ def _year_match(by: int, ctx: dict, tags: set) -> float:
     return 1.0 if ctx.get("era") and ctx["era"] in tags else 0.0
 
 
+TRIVIA_ASK, TRIVIA_ANSWER = 8.0, 6.0  # seconds: the question card, and the answer card
+KIDS_TAGS = {"nick", "nickjr", "nicktoons", "cn", "boomerang", "disney", "playhouse", "toondisney", "foxkids",
+             "kidswb"}
+KIDS_AD = re.compile(
+    r"\b(?:cereal|cheerios|frosted|flakes|trix|lucky charms|cocoa (puffs|pebbles)|fruity pebbles|cinnamon toast|"
+    r"pop-?tarts|eggo|lunchables|gushers|fruit by the foot|fruit roll|go-?gurt|kool-?aid|capri sun|sunny ?d|"
+    r"happy meal|chuck e\.? cheese|toys?|hasbro|mattel|lego|barbie|bratz|polly pocket|hot wheels|"
+    r"nerf|furby|tamagotchi|beyblade|bakugan|yu-?gi-?oh|pok[eé]mon|game ?boy|nintendo|playstation|xbox|"
+    r"crayola|play-?doh|easy-?bake|super soaker|tonka|fisher-?price|leapfrog|vtech|kid cuisine|bagel bites)\b",
+    re.I)
+
+
+def saturday_morning(t: float) -> bool:
+    """Saturday from 6am until noon, when the cartoons were new and the commercials were for cereal."""
+    lt = time.localtime(t)
+    return lt.tm_wday == 5 and 6 <= lt.tm_hour < 12
+
+
 def _src(m: dict) -> dict:
     return {"f": m.get("file") or "", "p": m.get("part") or "", "a": bool(m.get("audio", True))}
 
@@ -175,6 +194,7 @@ class Builder:
                          else lineups.ads_tag(self.lineup) or None)
         self.style = com.get("break_style", "chapters")
         self.xstyle = christmas_style(ch)
+        self.kids = self._is_kids()
         self._groups: dict | None = None
         self._airings: list | None = None
         self._by_file: dict | None = None
@@ -184,6 +204,19 @@ class Builder:
             self.st.setdefault(k, {})
         self.st.setdefault("recent", [])
         self.st.setdefault("recent_b", [])
+
+    def _is_kids(self) -> bool:
+        """A kids' channel: a kids' network's own (Nickelodeon, Boomerang, Nick Jr.), or one whose shows
+        mostly first aired on kids' networks (a "Saturday Morning" channel of your own)."""
+        auto = network_key(self.ch)
+        if auto.startswith("lineup:"):
+            return True
+        if auto.startswith("network:"):
+            return family_for(auto[len("network:"):])[1] == "kids"
+        nets = [(self.cat.shows.get(p.get("show"), {}) or {}).get("network") for p in self.programs.values()
+                if p["kind"] == "show"]
+        nets = [n for n in nets if n]
+        return bool(nets) and sum(family_for(n)[1] == "kids" for n in nets) >= len(nets) * 0.6
 
     # ---- deterministic randomness -------------------------------------------------
     def _rng(self) -> random.Random:
@@ -313,7 +346,9 @@ class Builder:
             special = self._holiday_pick(t, ids, prog["show"])
             if special:
                 return [items[special]]
-            in_order = self.ch.get("order") == "in_order"
+            # Saturday mornings on a kids' channel: each show's next episode in order, like that week's
+            # new ones, rather than a random rerun
+            in_order = self.ch.get("order") == "in_order" or (self.kids and saturday_morning(t))
             first = self._take(prog["key"], ids, in_order, shelf)
             if not first:
                 return []
@@ -352,6 +387,8 @@ class Builder:
             ctx.update(hol=ctx["hol"] or "christmas", prefer=[("2000s", 2.5)])
         if self.lineup and self.home_net:  # Boomerang ads around Scooby-Doo, not CBS-era ones
             ctx.update(net=self.home_net, has_net=True)
+        if saturday_morning(t):  # cereal and toys take over the breaks, on every channel
+            ctx["kids_ads"] = 4.0 if not self.kids else 1.5
         return ctx
 
     def _base_context(self, prog: dict, media: list[dict], t: float) -> dict:
@@ -428,6 +465,11 @@ class Builder:
         for tag, weight in ctx.get("prefer", ()):
             if tag in tags:
                 score += weight  # e.g. the 25 Days channel wants that year's real 25 Days ads
+        if ctx.get("kids_ads"):
+            if KIDS_AD.search(f.get("title") or ""):
+                score += ctx["kids_ads"]  # a cereal or toy commercial
+            elif tags & KIDS_TAGS:
+                score += ctx["kids_ads"] * 0.6  # one taped off a kids' network
         return score
 
     def _pick_filler(self, seconds: float, ctx: dict | None = None) -> tuple[list[dict], float]:
@@ -600,6 +642,9 @@ class Builder:
         dur = sum(m["dur"] for m in media)
         end = extra.get("end") or self._plan_end(t, dur)
         items, block = await self._layout(prog, media, t, end, extra=extra)
+        if self.kids and saturday_morning(t) and prog["kind"] in ("show", "episodes") and not self.quick:
+            block["new"] = True  # Plex shows these as NEW in its guide; promos say "All-new!"
+            block["desc"] = "All-new! " + block["desc"] if block["desc"] else "All-new!"
         return items, block
 
     async def _layout(self, prog: dict, media: list[dict], t: float, end: float, *, first_in: float = 0.0,
@@ -621,6 +666,7 @@ class Builder:
         items: list[dict] = []
         pos, acc, carry = t, 0.0, 0.0
         bumpers = prog["kind"] != "music" and not first_in
+        quizzed = False  # one trivia question a show, in its first break
         if bumpers:  # the network's ident right before the show starts
             intro = self._bumper(ctx, min(20.0, ad_time / 3))
             if intro:
@@ -638,7 +684,16 @@ class Builder:
                     if lead:  # "we'll be right back" into the break
                         pos = self._put(items, pos, lead)
                         carry -= lead["dur"]
-                    pos, carry = self._ads(items, pos, share + carry, final=False, ctx=ctx)
+                    quiz = self._trivia(prog, media) if (self.kids and bumpers and not quizzed
+                                                         and share + carry >= 75) else None
+                    if quiz:  # "Guess the show!" now, the answer at the end of the break
+                        quizzed = True
+                        pos = self._quiz_card(items, pos, quiz, "ask")
+                        pos, carry = self._ads(items, pos, share + carry - TRIVIA_ASK - TRIVIA_ANSWER, final=False,
+                                               ctx=ctx)
+                        pos = self._quiz_card(items, pos, quiz, "answer")
+                    else:
+                        pos, carry = self._ads(items, pos, share + carry, final=False, ctx=ctx)
             if m["dur"] - seg > 0.05:
                 pos = self._content(items, m, seg, m["dur"] - seg, pos)
             acc += m["dur"]
@@ -677,6 +732,28 @@ class Builder:
                 pos = self._content(items, m, start_in + first, min(part, max(10.0, m["dur"] - start_in - first)), pos)
         block = self._describe(prog, [m], t, items[-1]["e"])
         return items, block
+
+    def _trivia(self, prog: dict, media: list[dict]) -> dict | None:
+        """A show for "Guess the show!": another of this channel's shows, and a moment from one of its
+        episodes to show (a third to two thirds of the way in, past the opening titles)."""
+        now_show = (media[0] if media else {}).get("show") or prog.get("show")
+        shows = sorted({p["show"] for p in self.programs.values() if p["kind"] == "show" and p.get("show")
+                        and p["show"] != now_show and self.cat.episodes.get(p["show"])})
+        if not shows:
+            return None
+        rng = self._rng()
+        sid = rng.choice(shows)
+        ep = rng.choice(self.cat.episodes[sid])
+        show = self.cat.shows.get(sid, {})
+        return {"show": sid, "answer": show.get("title", ""), "ep": ep,
+                "at": round(ep["dur"] * rng.uniform(0.33, 0.66), 1)}
+
+    def _quiz_card(self, items: list, pos: float, quiz: dict, phase: str) -> float:
+        dur = TRIVIA_ASK if phase == "ask" else TRIVIA_ANSWER
+        items.append({"s": pos, "e": pos + dur, "k": "q", "m": quiz["ep"]["id"], "in": quiz["at"],
+                      "t": "Guess the show!" if phase == "ask" else f"It's {quiz['answer']}!",
+                      "q": {"phase": phase, "show": quiz["show"], "answer": quiz["answer"]}, **_src(quiz["ep"])})
+        return pos + dur
 
     def _pod(self, items: list, pos: float, clips: list[dict], seconds: float) -> tuple[float, float]:
         """A recorded break, in its original order, as much of it as there's room for."""

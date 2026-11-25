@@ -42,7 +42,7 @@ async def rundown(app, ch: dict, start: float, hours: float = 3.0) -> list[dict]
     out = []
     for i, x in enumerate(items):
         block = p.block_at(x["s"]) or {}
-        kind = {"c": "show", "f": "commercial", "x": "card"}.get(x["k"], "card")
+        kind = {"c": "show", "f": "commercial", "x": "card", "q": "trivia"}.get(x["k"], "card")
         nxt = items[i + 1] if i + 1 < len(items) else None
         if kind == "commercial" and _is_bumper(app, x):
             # an ident sits right before a show starts; a bumper leads into a break
@@ -91,6 +91,7 @@ async def _render(app, ch: dict, start: float, length: float, final) -> str:
     # whose clock is set to each piece's start lets the preview use it unchanged.
     stand_in = ChannelStream.__new__(ChannelStream)
     stand_in.mgr = app.streams
+    stand_in.cid = ch["id"]
     pieces, t, n = [], start, 0
     text_file = os.path.join(work, "card.txt")
     try:
@@ -107,13 +108,21 @@ async def _render(app, ch: dict, start: float, length: float, final) -> str:
             block = p.block_at(t) or {}
             stand_in.cursor = t
             overlay = await stand_in._overlay(ch, p, idx, item, block, end) if item.get("k") == "c" else None
+            card_cmd = None
+            if item.get("k") == "q":  # "Guess the show!", as live TV makes it
+                if s.get("trivia", True):
+                    card_cmd = await app.streams._trivia_cmd(stand_in, item, dur, None, s)
+                if not card_cmd:
+                    item = {**item, "k": "f", "m": "", "f": "", "p": ""}  # trivia off: a commercial takes its place, as on TV
             src = app.media_input(item) if item.get("k") in ("c", "f") else None
             if not src and item.get("k") == "f":  # gone missing: the same stand-in live TV would play
                 stand = app.streams._stand_in(ch["id"], item, (t - item["s"]) + dur)
                 if stand:
                     item, src = stand
             out = os.path.join(work, f"{n:04d}.ts")
-            if src:
+            if card_cmd:
+                cmd = card_cmd
+            elif src:
                 cmd = ff.media_cmd(src, item.get("in", 0) + (t - item["s"]), dur, s, None, bool(item.get("a", True)),
                                    overlay=overlay)
             else:  # the same card live TV shows

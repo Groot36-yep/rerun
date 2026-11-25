@@ -26,10 +26,13 @@ def _clock(t: float) -> str:
     return f"{h}" if lt.tm_min == 0 else f"{h}:{lt.tm_min:02d}"
 
 
-def when_label(target: float, now: float) -> tuple[str, str]:
-    """("Tonight at 8", "at 8") for a time later today, or tomorrow."""
+def when_label(target: float, now: float, new: bool = False) -> tuple[str, str]:
+    """("Tonight at 8", "at 8") for a time later today, or tomorrow; ("All-new at 10", ...) for one of
+    Saturday morning's new episodes."""
     a, b = time.localtime(now), time.localtime(target)
     c = _clock(target)
+    if new:
+        return f"All-new at {c}", f"at {c}"
     if (a.tm_year, a.tm_yday) == (b.tm_year, b.tm_yday):
         return (f"Tonight at {c}" if b.tm_hour >= 17 else f"Today at {c}"), f"at {c}"
     return f"Tomorrow at {c}", f"at {c}"
@@ -62,8 +65,10 @@ def plan(p, idx: int, item: dict, block: dict, s: dict, show_title: str = "") ->
     if s.get("up_next", True) and not later:
         nb = p.block_at(block["e"] + 1)
         if nb and nb.get("title") and (nb.get("cats") or nb.get("img")):
+            new = bool(nb.get("new"))  # Saturday morning: "All-new, up next"
             out.append({"kind": "up_next", "t0": item["e"] - UP_NEXT[0], "t1": item["e"] - UP_NEXT[1],
-                        "title": nb["title"], "label": "", "short": "", "block": nb})
+                        "title": nb["title"], "label": "All-new, up next" if new else "",
+                        "short": "new!" if new else "", "block": nb})
     if not s.get("promos", True) or length < MIN_PART:
         return out
     if later and in_block and in_block[0]["k"] != "c":  # a break comes after this part
@@ -82,7 +87,7 @@ def plan(p, idx: int, item: dict, block: dict, s: dict, show_title: str = "") ->
             t1 = t0 + PROMO_LEN
             busy = [(o["t0"], o["t1"]) for o in out]
             if t1 < item["e"] - 5 and all(t1 + 3 < a or t0 > b + 3 for a, b in busy):
-                label, short = when_label(target["s"], item["s"])
+                label, short = when_label(target["s"], item["s"], bool(target.get("new")))
                 out.append({"kind": "promo", "t0": t0, "t1": t1, "title": target["title"], "label": label,
                             "short": short, "block": target})
     return out

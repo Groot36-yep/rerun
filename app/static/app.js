@@ -165,7 +165,7 @@ function describeInfo(i) {
 // ================================================================ page frames
 
 const NAV = [["#/channels", "Channels"], ["#/networks", "Networks"], ["#/holidays", "Holidays"], ["#/25days", "25 Days"], ["#/commercials", "Commercials"],
-  ["#/guide", "TV Guide"], ["#/settings", "Settings"], ["#/help", "Help"]];
+  ["#/looks", "On-air look"], ["#/guide", "TV Guide"], ["#/settings", "Settings"], ["#/help", "Help"]];
 
 function shell(active) {
   const page = NAV.find(([href]) => href === active);
@@ -650,7 +650,7 @@ function listing(ch, reload) {
 
 // ================================================================ preview: watch what's coming up
 
-const KIND_LABEL = { show: "Show", ident: "Ident", bumper: "Bumper", commercial: "Commercial", card: "Card" };
+const KIND_LABEL = { show: "Show", ident: "Ident", bumper: "Bumper", commercial: "Commercial", trivia: "Trivia", card: "Card" };
 
 function fmtStamp(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
@@ -790,7 +790,7 @@ function openPreview(ch) {
       const lead = gi > 0 && groups[gi - 1].show ? 40 : 0;  // start in the show, to see it go to the break
       const counts = {};
       b.forEach((it) => { counts[it.kind] = (counts[it.kind] || 0) + 1; });
-      const summary = ["bumper", "commercial", "ident", "card"].filter((k) => counts[k])
+      const summary = ["bumper", "commercial", "trivia", "ident", "card"].filter((k) => counts[k])
         .map((k) => plural(counts[k], KIND_LABEL[k].toLowerCase())).join(", ");
       return h("div", { class: "pv-break" },
         h("div", { class: "pv-break-head" },
@@ -1947,6 +1947,124 @@ async function openFinder(onStart) {
 
 // ================================================================ settings
 
+// ================================================================ the On-air look page
+
+/* For each network: which "Up next" it uses (one of Rerun's drawn styles, or a real template), and the
+   look of its "Guess the show!" trivia; and finding real ones on YouTube. */
+async function viewLooks() {
+  const v = shell("#/looks");
+  const body = h("div");
+  add(v, pageHead("On-air look", "How each network looks on the air",
+    "Pick each network's “Up next” and trivia look: Rerun's own drawing, or the real thing. Real green-screen “Up next” templates and bumpers are on YouTube; find one here and Rerun downloads it and uses it."), body);
+  const load = async () => {
+    let r;
+    try { r = await api("GET", "/api/looks"); } catch (x) { fill(body, h("p", { class: "error" }, x.message)); return; }
+    const styleName = Object.fromEntries(r.styles.map((s) => [s.key, s.label]));
+    fill(body, r.networks.map((n) => lookPanel(n, r, styleName, load)));
+  };
+  load();
+}
+
+function lookOption(picked, value, img, label, sub, onPick, extra) {
+  return h("div", { class: "look-opt" + (picked === value ? " on" : "") },
+    h("button", { class: "look-pick", "aria-pressed": picked === value ? "true" : "false", onclick: () => onPick(value) },
+      img ? h("img", { src: img, alt: "", loading: "lazy" }) : h("span", { class: "look-auto" }, "Auto"),
+      h("b", null, label), sub ? h("small", null, sub) : null),
+    extra || null);
+}
+
+function lookPanel(n, r, styleName, reload) {
+  const save = async (what, value) => {
+    try { await api("PUT", `/api/looks/${n.tag}`, { [what]: value }); toast(`${n.label} updated`); reload(); }
+    catch (x) { toast(x.message, true); }
+  };
+  const fileOpts = (kind, what, picked) => r.files[kind]
+    .slice().sort((a, b) => (b.name.startsWith(n.label) ? 1 : 0) - (a.name.startsWith(n.label) ? 1 : 0))
+    .map((f) => lookOption(picked, `file:${f.name}`, `/api/looks/thumb/${kind}/${encodeURIComponent(f.name)}`,
+      f.name.replace(/\.[^.]+$/, ""), f.video ? "Your video" : "Your picture", (val) => save(what, val),
+      h("div", { class: "look-acts" },
+        f.video ? h("button", { class: "btn quiet small", onclick: () => playLook(kind, f.name) }, "Play") : null,
+        h("button", { class: "btn quiet small", onclick: async () => {
+          if (!confirm(`Delete “${f.name}”?`)) return;
+          try { await api("DELETE", `/api/looks/file/${kind}/${encodeURIComponent(f.name)}`); reload(); } catch (x) { toast(x.message, true); }
+        } }, "Delete"))));
+  const own = n.style;
+  const others = r.styles.filter((s) => s.key !== own);
+  const up = n.up_next;
+  return h("section", { class: "panel look" },
+    h("header", { class: "look-head" },
+      h("img", { src: n.logo_url, alt: "" }),
+      h("div", null, h("h2", null, n.label), n.has_channel ? h("small", { class: "muted" }, "You have a channel for it") : null)),
+    h("h3", null, "“Up next”"),
+    h("div", { class: "look-row" },
+      lookOption(up, "auto", null, "Automatic", "A template named after the show or network, otherwise its drawing", (val) => save("up_next", val)),
+      lookOption(up, `style:${own}`, `/api/looks/style/${own}.jpg`, styleName[own] || "Drawn", "Rerun's drawing", (val) => save("up_next", val)),
+      fileOpts("upnext", "up_next", up),
+      h("div", { class: "look-find" },
+        h("button", { class: "btn", disabled: !r.youtube, onclick: () => findLook(n, "upnext", r.search.upnext, reload) }, "Find on YouTube"),
+        h("details", null, h("summary", null, "Other drawn styles"),
+          h("div", { class: "look-row small" }, others.map((s) => lookOption(up, `style:${s.key}`, `/api/looks/style/${s.key}.jpg`, s.label, null, (val) => save("up_next", val)))))),
+    ),
+    h("h3", null, "“Guess the show!” trivia"),
+    h("div", { class: "look-row" },
+      lookOption(n.trivia_bg || "", "", `/api/looks/trivia/${own === "nick_splat" ? "nick" : own}.jpg`, "Rerun's drawing", `In ${n.label}'s colours`, (val) => save("trivia_bg", val)),
+      fileOpts("trivia", "trivia_bg", n.trivia_bg || ""),
+      h("div", { class: "look-find" },
+        h("button", { class: "btn", disabled: !r.youtube, onclick: () => findLook(n, "trivia", r.search.trivia, reload) }, "Find a background on YouTube"),
+        h("p", { class: "hint" }, "A clip that plays behind the question and the answer, with its own music: a real bumper makes it look exactly like the network's."))));
+}
+
+function playLook(kind, name) {
+  modal((box, close) => {
+    box.classList.add("wide");
+    add(box, h("div", { class: "pv-head" }, h("h2", null, name.replace(/\.[^.]+$/, "")),
+      h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, "×")),
+    h("div", { class: "pv-screen" }, h("video", { src: `/api/looks/file/${kind}/${encodeURIComponent(name)}`, controls: true, autoplay: true, loop: true, playsinline: true })));
+  });
+}
+
+function findLook(n, kind, pattern, reload) {
+  modal((box, close) => {
+    box.classList.add("wide", "finder-dialog");
+    const q = h("input", { value: pattern.replace("{label}", n.label), "aria-label": "Search YouTube" });
+    const results = h("div", { class: "look-grid" });
+    const status = h("p", { class: "hint" });
+    const search = async () => {
+      fill(status, "Searching YouTube…");
+      fill(results);
+      try {
+        const r = await api("GET", "/api/youtube/search?q=" + encodeURIComponent(q.value));
+        fill(status, r.results.length ? "Pick one: Rerun downloads it and uses it for " + n.label + "." : "Nothing found. Try other words.");
+        fill(results, r.results.map((it) => {
+          const use = h("button", { class: "btn small primary", onclick: async () => {
+            results.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+            use.textContent = "Downloading…";
+            try {
+              await api("POST", "/api/looks/youtube", { kind, tag: n.tag, url: it.url, title: it.title });
+              toast(`${n.label} now uses “${it.title}”`);
+              close();
+              reload();
+            } catch (x) { toast(x.message, true); results.querySelectorAll("button").forEach((b) => { b.disabled = false; }); use.textContent = "Use this"; }
+          } }, "Use this");
+          return h("div", { class: "look-yt" },
+            h("img", { src: `/api/youtube/thumb/${it.id}.jpg`, alt: "", loading: "lazy" }),
+            h("b", null, it.title), h("small", null, `${it.uploader || ""}${it.duration ? " · " + fmtDur(it.duration) : ""}`),
+            h("div", { class: "row" }, use, h("a", { class: "btn small quiet", href: it.url, target: "_blank", rel: "noopener" }, "Watch")));
+        }));
+      } catch (x) { fill(status, h("span", { class: "error" }, x.message)); }
+    };
+    add(box, h("div", { class: "pv-head" },
+      h("div", null, h("div", { class: "eyebrow" }, n.label), h("h2", null, kind === "upnext" ? "Find a real “Up next”" : "Find a trivia background")),
+      h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, "×")),
+    h("p", { class: "lede" }, kind === "upnext"
+      ? "Green-screen templates work best: Rerun makes the green see-through and plays the show behind it, squeezing it into the window if there is one."
+      : "Any short clip: it plays behind the trivia question and answer."),
+    h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); search(); } }, q, h("button", { class: "btn primary" }, "Search")),
+    status, results);
+    search();
+  });
+}
+
 function settingRow(title, about, ...controls) {
   return h("div", { class: "setting" }, h("div", { class: "about" }, h("h2", null, title), about ? h("p", null, about) : null), h("div", null, controls));
 }
@@ -2041,6 +2159,8 @@ async function viewSettings() {
         "Says what's on next, near the end of each show, in the network's own style. For the real thing, put a green-screen “Up next” template in Rerun's data folder under bugs/custom/upnext, named after a show or a network (see the README)."),
       checkbox("Promos and “After the break”", st.promos !== false, (val) => { st.promos = val; },
         "“After the break: more SpongeBob” going into a break, and early in a show a “Tonight at 8” promo for a movie or big show later on the same channel."),
+      checkbox("“Guess the show!” trivia", st.trivia !== false, (val) => { st.trivia = val; },
+        "On kids' channels, a still from one of the channel's shows at the start of a break, and the answer at the end of it. Pick its look on the On-air look page."),
       enc,
       saveStream),
     settingRow("Guide", "How far ahead the schedule and Plex's guide reach, and how Plex apps get channel logos and show pictures.",
@@ -2167,7 +2287,7 @@ async function route() {
   if (ch) return viewChannel(ch[1]);
   const lineupRoute = hash.match(/^#\/lineup\/([a-z0-9]+)$/);
   if (lineupRoute) return viewLineup(lineupRoute[1]);
-  const views = { "#/channels": viewChannels, "#/networks": viewNetworks, "#/holidays": viewHolidays, "#/25days": viewTwentyFive, "#/commercials": viewCommercials, "#/guide": viewGuide,
+  const views = { "#/channels": viewChannels, "#/networks": viewNetworks, "#/holidays": viewHolidays, "#/25days": viewTwentyFive, "#/commercials": viewCommercials, "#/looks": viewLooks, "#/guide": viewGuide,
     "#/settings": viewSettings, "#/help": viewHelp, "#/plex": viewHelp, "#/status": viewHelp };
   if (views[hash]) return views[hash]();
   location.hash = "#/channels";

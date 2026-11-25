@@ -268,8 +268,29 @@ their programs.
 - **Promos.** Early in a show, a lower third promotes something later on the same channel: a movie
   first, then whatever's on at 8, as in "Tonight at 8: Jimmy Neutron: Boy Genius".
 
+- **"Guess the show!"** On kids' channels, the first break of a show opens with a trivia card: a
+  close-up from one of the channel's other shows. The answer, with the whole picture, comes at the end
+  of the break, just before the show comes back. The stills come from your own episodes.
+- **Saturday mornings.** Until noon on Saturdays, kids' channels play each show's next episode in
+  order, like that week's new ones, and the guide marks them new, so Plex shows them as NEW. "Up next"
+  says "All-new". On every channel, the breaks fill up with cereal and toy commercials, and with ones
+  taped off kids' networks.
+
 Each can be switched off in Settings → Picture & sound. The program log (see below) shows when each
 appears.
+
+## The On-air look page
+
+**On-air look** lets you choose, for each network, the "Up next" it uses and the look of its trivia:
+- **Rerun's drawings:** the network's own style, or any of the others.
+- **The real thing:** **Find on YouTube** searches for green-screen "Up next" templates and network
+  bumpers. **Use this** downloads one and puts it on the air for that network, with its original
+  animation and sound.
+- **Your own files:** templates in `bugs/custom/upnext/`, trivia backgrounds in `bugs/custom/trivia/`.
+
+A template named after a show still wins when that show is up next. A trivia background plays behind
+the question and the answer, with its own music, so a real bumper makes it look exactly like the
+network's.
 
 ## Checking it without waiting
 

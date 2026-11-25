@@ -125,7 +125,9 @@ def xmltv(app, base: str, for_plex: bool = False) -> str:
                 out.append(f'    <episode-num system="onscreen">S{sn:02d}E{en:02d}</episode-num>')
             if b.get("rating"):
                 out.append(f'    <rating system="MPAA"><value>{_x(b["rating"])}</value></rating>')
-            if not b.get("movie"):
+            if b.get("new"):  # Saturday morning's "all-new" episodes: Plex marks them NEW
+                out.append("    <new />")
+            elif not b.get("movie"):
                 out.append("    <previously-shown />")
             out.append("  </programme>")
     out.append("</tv>")

@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -205,7 +206,8 @@ async def main():
             assert nxt and nxt["k"] != "c" and nxt["e"] <= b["e"], "a teaser should lead into a mid-show break"
         for g in texts:
             if g["kind"] == "promo":
-                assert g["block"]["s"] > b["e"] + 1 and g["label"].split()[0] in ("Tonight", "Today", "Tomorrow")
+                assert g["block"]["s"] > b["e"] + 1 and g["label"].split()[0] in ("Tonight", "Today", "Tomorrow",
+                                                                                   "All-new")
     promos_per_block = Counter(p.block_at(x["s"])["s"] for i, x in enumerate(p.items) if x["k"] == "c"
                                for g in onair.plan(p, i, x, p.block_at(x["s"]), s_on) if g["kind"] == "promo")
     assert max(promos_per_block.values(), default=0) <= 1
@@ -221,6 +223,61 @@ async def main():
     from app.scheduler import _year_match, item_year
     assert item_year({"id": "y1", "title": "Nickelodeon bumpers 2003"}) == 2003
     assert _year_match(2003, {"year": 2004}, set()) > _year_match(1999, {"year": 2004}, set()) > _year_match(2016, {"year": 2004}, set())
+
+    # Trivia on a kids' channel: "Guess the show!" early in a show's first break, its answer at the end of
+    # that same break, about another of the channel's shows.
+    quiz = [x for x in p.items if x["k"] == "q"]
+    assert quiz, "expected trivia in a kids' channel's breaks"
+    for i, x in enumerate(p.items):
+        if x["k"] == "q" and x["q"]["phase"] == "ask":
+            j = next(j for j in range(i + 1, len(p.items)) if p.items[j]["k"] == "q")
+            ans = p.items[j]
+            assert ans["q"]["phase"] == "answer" and ans["q"]["show"] == x["q"]["show"], (x, ans)
+            assert all(y["k"] != "c" for y in p.items[i:j]), "the answer should come in the same break"
+            assert p.items[j + 1]["k"] == "c", "the show should come back right after the answer"
+            here = next(y for y in reversed(p.items[:i]) if y["k"] == "c")
+            assert cat.items[here["m"]]["show"] != x["q"]["show"], "the question shouldn't be the show that's on"
+    per_block = Counter(p.block_at(x["s"])["s"] for x in quiz if x["q"]["phase"] == "ask")
+    assert max(per_block.values()) == 1
+    print("trivia questions:", sum(per_block.values()), "in", len(p.blocks), "blocks")
+    assert not any(x["k"] == "q" for x in p5.items), "no trivia on a music channel"
+
+    # Saturday mornings: on a kids' channel each show's next episode in order, marked new; on a general
+    # channel, kids' commercials take over the breaks.
+    sat = datetime(2027, 3, 13, 6, 0).timestamp()
+    assert time.localtime(sat).tm_wday == 5
+    ps, start = await build(nick, cat, 6, when=sat)
+    new = [b for b in ps.blocks if b.get("new")]
+    morning = [b for b in ps.blocks if time.localtime(b["s"]).tm_hour < 12 and not b.get("movie")]
+    afternoon = [b for b in ps.blocks if time.localtime(b["s"]).tm_hour >= 12]
+    assert new and all(b.get("new") for b in morning) and not any(b.get("new") for b in afternoon)
+    by_show = {}
+    for x in ps.items:
+        b = ps.block_at(x["s"])
+        if x["k"] == "c" and b.get("new") and x["m"].startswith("p2e"):
+            by_show.setdefault("p2", []).append(int(x["m"][3:]))
+    eps = list(dict.fromkeys(by_show.get("p2", [])))
+    assert eps == sorted(eps) or eps == sorted(eps)[eps.index(min(eps)):] + sorted(eps)[:eps.index(min(eps))], eps
+    general_cat = make_catalog()
+    for i, f in enumerate(general_cat.filler.get("folder:/m/ads", [])):
+        f["title"] = (f"Kellogg's Frosted Flakes {i}" if i % 4 == 0 else f"Ford Trucks {i}")
+        f["tags"] = []
+    for s in general_cat.shows.values():
+        s["network"] = "NBC"
+    general_cat = Catalog({"shows": general_cat.shows, "episodes": general_cat.episodes, "movies": {},
+                           "filler": general_cat.filler, "music_videos": {}, "networks": {}})
+    gen = normalize_channel({"id": "gen", "name": "Comedy", "seed": 5, "rules": [{"type": "filter", "media": "shows"}]})
+    pg, _ = await build(gen, general_cat, 6, when=sat)
+    morning_ads = [general_cat.items[x["m"]]["title"] for x in pg.items if x["k"] == "f"
+                   and time.localtime(x["s"]).tm_hour < 12]
+    cereal = sum("Frosted" in t for t in morning_ads) / max(1, len(morning_ads))
+    pw, _ = await build(normalize_channel({**gen, "id": "gen2"}), general_cat, 6,
+                        when=datetime(2027, 3, 10, 6, 0).timestamp())
+    weekday_ads = [general_cat.items[x["m"]]["title"] for x in pw.items if x["k"] == "f"]
+    weekday_cereal = sum("Frosted" in t for t in weekday_ads) / max(1, len(weekday_ads))
+    print(f"Saturday morning: {len(new)} new blocks; cereal ads {cereal:.0%} on Saturday vs {weekday_cereal:.0%} on a weekday")
+    assert cereal > 0.5 and cereal > weekday_cereal * 1.5
+    assert not any(x["k"] == "q" for x in pg.items), "no trivia on a general channel"
 
     # A test channel: the same shows a minute or so at a time, every break coming round within minutes,
     # and the Christmas channel's test plays even out of season.

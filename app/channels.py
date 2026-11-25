@@ -125,7 +125,7 @@ def christmas_style(ch: dict) -> str:
 
 
 # Bump when the way schedules are built changes, so an update rebuilds them (from the show on now).
-SCHEDULE_VERSION = 2  # 2: bumpers and idents in their own places, Christmas and 25 Days channels
+SCHEDULE_VERSION = 3  # 2: bumpers and idents in their own places, Christmas and 25 Days channels; 3: Saturday mornings, trivia
 
 
 def content_signature(ch: dict, holidays: dict | None = None) -> str:
