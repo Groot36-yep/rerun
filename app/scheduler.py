@@ -39,6 +39,7 @@ CHUNK = 2 * 3600          # build in pieces this big so live streams never wait 
 OFFGRID_BREAK = 60        # ad time after a show that couldn't land on the half hour
 MAX_GAP_FRACTION = 0.4    # never fill more than 40% of a block with ads
 MIN_ALIGN_GAP = 300       # ...but it's always fine to fill up to 5 minutes
+OVERFILL_MAX = 30         # a break may run this many seconds long rather than end on a filler card
 RECENT_FILLER = 40
 
 
@@ -204,6 +205,10 @@ class Builder:
         self.home_net = (archive.tag_for_network(auto[len("network:"):]) if auto.startswith("network:")
                          else lineups.ads_tag(self.lineup) or None)
         self.style = com.get("break_style", "chapters")
+        try:  # your limit on commercial time, minutes per half hour of show (0: none)
+            self.per_half_hour = max(0.0, float(com.get("per_half_hour") or 0)) * 60
+        except (TypeError, ValueError):
+            self.per_half_hour = 0.0
         self.xstyle = christmas_style(ch)
         self.kids = self._is_kids()
         self._groups: dict | None = None
@@ -447,6 +452,27 @@ class Builder:
         self.st["recent_b"] = (self.st["recent_b"] + [pick["id"]])[-keep:]
         return pick
 
+    def _overfill(self, left: float, ctx: dict | None) -> dict | None:
+        """The commercial (or bumper) that fills `left` seconds while running over by the least, and at
+        most OVERFILL_MAX: the next show then starts a few seconds after the half hour (the guide still
+        says the half hour) instead of the break ending on a filler card."""
+        ctx = ctx or {}
+        active = ctx.get("active", set())
+        recent = set(self.st["recent"])
+        best = None
+        for f in self.filler:
+            if not left <= f["dur"] <= left + OVERFILL_MAX:
+                continue
+            tags = {str(x).lower() for x in f.get("tags") or []}
+            if (tags & set(seasons.PRESETS)) - active and not tags & active:
+                continue  # a Christmas commercial in July
+            key = (f["id"] in recent, round(f["dur"] - left), -(self._ad_score(f, ctx) if ctx else 0))
+            if best is None or key < best[0]:
+                best = (key, f)
+        if best:
+            self.st["recent"] = (self.st["recent"] + [best[1]["id"]])[-max(1, min(RECENT_FILLER, len(self.filler) // 2)):]
+        return best[1] if best else None
+
     def _put(self, items: list, pos: float, f: dict) -> float:
         items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
                       "t": f.get("title", ""), **_src(f)})
@@ -535,13 +561,19 @@ class Builder:
         return chosen, remaining
 
     def _plan_end(self, t: float, dur: float) -> float:
+        # your limit: so many minutes a half hour of show (a 22-minute episode counts as one half hour)
+        cap = self.per_half_hour * max(1, round(dur / 1800)) if self.per_half_hour else None
         if self.slot and self.filler:
             end = ceil_slot(t + dur, self.slot)
-            if end - (t + dur) > max(MIN_ALIGN_GAP, MAX_GAP_FRACTION * (end - t)):
-                end = t + dur + OFFGRID_BREAK
+            limit = max(MIN_ALIGN_GAP, MAX_GAP_FRACTION * (end - t))
+            if cap is not None:
+                limit = min(limit, cap)
+            if end - (t + dur) > limit:  # it can't reach the half hour: a break of its own length
+                end = t + dur + (min(OFFGRID_BREAK, cap) if cap is not None else OFFGRID_BREAK)
             return end
         if self.filler:
-            return t + dur + max(OFFGRID_BREAK, round(dur / 900) * 120)
+            base = max(OFFGRID_BREAK, round(dur / 900) * 120)
+            return t + dur + (min(base, cap) if cap is not None else base)
         return t + dur
 
     async def _break_points(self, media: list[dict], dur: float, ad_time: float) -> list[float]:
@@ -593,12 +625,20 @@ class Builder:
                           "t": f.get("title", ""),
                           **_src(f)})
             pos += f["dur"]
-        if final and left >= 3:  # time the commercials can't fill: one of the network's bumpers, if one fits
-            b = self._bumper(ctx, left)
-            if b:
-                pos = self._put(items, pos, b)
-                left -= b["dur"]
-        if final and left > 0.05:  # what's still left: the network's logo (a station ID), see streaming
+        # Time the commercials can't fill: one of the network's bumpers if one fits, and if some is still
+        # left, one more commercial with the break running a little long. The bumper goes last, coming out
+        # of the break into the show.
+        b = self._bumper(ctx, left) if final and left >= 3 else None
+        rest = left - (b["dur"] if b else 0.0)
+        over = self._overfill(rest, ctx) if final and rest > 1.0 else None
+        if over:
+            pos = self._put(items, pos, over)
+            rest = 0.0
+        if b:
+            pos = self._put(items, pos, b)
+        if final and (b or over):
+            left = rest
+        if final and left > 1.0:  # nothing fits at all: the network's logo (a station ID), see streaming
             items.append({"s": pos, "e": pos + left, "k": "x", "m": "", "in": 0, "t": ""})
             pos += left
             left = 0.0
@@ -736,7 +776,8 @@ class Builder:
             acc += m["dur"]
         if end - pos > 0.05:
             pos, _ = self._ads(items, pos, end - pos, final=True, ctx=ctx)
-        items[-1]["e"] = max(end, items[-1]["s"] + 0.05)
+        # a hair short of the half hour: stretched to it; a break that ran long keeps its last one whole
+        items[-1]["e"] = max(end, items[-1]["e"], items[-1]["s"] + 0.05)
         block = self._describe(prog, media, t, items[-1]["e"])
         if extra.get("title"):
             block.update(title=extra["title"], sub=extra.get("sub", ""))
@@ -966,8 +1007,8 @@ class Builder:
             self._ads(items, t, length, final=True, ctx=ctx)
         else:
             items = [{"s": t, "e": t + length, "k": "x", "m": "", "in": 0, "t": coming}]
-        items[-1]["e"] = t + length
-        block = {"s": t, "e": t + length, "title": coming, "sub": "", "desc": "ABC Family's 25 Days of Christmas",
+        items[-1]["e"] = max(t + length, items[-1]["e"])
+        block = {"s": t, "e": items[-1]["e"], "title": coming, "sub": "", "desc": "ABC Family's 25 Days of Christmas",
                  "sn": 0, "en": 0, "img": "", "cats": [], "movie": False, "year": 0, "date": "", "rating": ""}
         return items, block
 

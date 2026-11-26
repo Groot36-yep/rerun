@@ -43,7 +43,9 @@ CHANNEL_DEFAULTS = {
     "order": "shuffle",  # shuffle | in_order
     "slot_minutes": 30,  # 0 = back to back
     # commercials go between shows: a show or movie plays straight through ("chapters"/"even" break it up)
-    "commercials": {"enabled": True, "break_style": "end", "sources": [], "tags": []},
+    # per_half_hour: at most this many minutes of commercials per half hour of show (0: as much as it
+    # takes for shows to start on the hour and half hour)
+    "commercials": {"enabled": True, "break_style": "end", "sources": [], "tags": [], "per_half_hour": 0},
     "logo": "",  # "tmdb:/abc.png", "wiki:Article title", or "" for automatic
     "auto_key": "",
     "season": "",  # a holiday key: the channel only airs during that holiday

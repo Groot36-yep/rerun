@@ -1367,7 +1367,7 @@ async function viewChannel(cid) {
     [ch, facets, logos] = await Promise.all([
       isNew ? Promise.resolve({ name: "", rules: [], exclude: [], order: "shuffle", slot_minutes: 30, enabled: true, group: "",
         logo: "", season: "", off_season: "card", holiday_mix: true,
-        commercials: { enabled: true, break_style: "end", sources: [], tags: [] } }) : api("GET", `/api/channels/${cid}`),
+        commercials: { enabled: true, break_style: "end", sources: [], tags: [], per_half_hour: 0 } }) : api("GET", `/api/channels/${cid}`),
       api("GET", "/api/catalog/facets"),
       api("GET", "/api/logos"),
     ]);
@@ -1630,6 +1630,11 @@ async function viewChannel(cid) {
         ["chapters", "At act breaks", "Breaks in the middle of shows, at the chapter marks of DVD and Blu-ray rips, like the original broadcast."],
         ["even", "Evenly spaced", "Breaks in the middle of shows, splitting each into even parts."],
       ], com.break_style, (val) => { com.break_style = val; refresh(); }),
+      h("label", null, "How long the breaks are"),
+      select([[0, "As long as it takes for shows to start on the half hour"], [2, "Up to 2 minutes a half hour"],
+        [3, "Up to 3 minutes a half hour"], [4, "Up to 4 minutes a half hour"], [6, "Up to 6 minutes a half hour"],
+        [8, "Up to 8 minutes a half hour"]], com.per_half_hour || 0, (val) => { com.per_half_hour = parseInt(val, 10); refresh(); }),
+      h("p", { class: "hint" }, "Counted per half hour of show, so an hour-long movie gets twice as much. With a limit, a show that ends well before the half hour starts the next one early instead of filling the gap, so start times may be a little off the clock."),
       tagsBox)));
 
   // -- 4. holidays

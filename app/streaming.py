@@ -39,6 +39,7 @@ FIRST_BURST = 10.0     # fill the player's buffer quickly when a channel starts,
 # and a hiccup froze the picture. With the head start a piece's first picture comes in ~0.2 s.
 MIN_BURST = 3.0
 DRAIN_ABOVE = 4.0      # more than this past the target: no head start, let the cushion settle back
+SPLIT_BEFORE = 2.0     # a piece with a costly overlay later on stops this long before it (see _split_for_overlay)
 
 
 def head_start(segments: int, lead: float, has_burst: bool) -> float:
@@ -328,8 +329,36 @@ class ChannelStream:
             else:
                 burst = 0.0
         overlay = await self._overlay(ch, p, idx, item, block, end) if item.get("k") == "c" else None
+        if overlay:
+            dur, end, overlay = self._split_for_overlay(overlay, dur, end)
         return {"item": item, "offset": offset, "dur": dur, "burst": burst, "end": end, "block": block,
                 "overlay": overlay}
+
+    def _split_for_overlay(self, ov: dict, dur: float, end: float) -> tuple[float, float, dict | None]:
+        """An animation (Nick 2009) or a green-screen template is costly: every frame of the piece it's in
+        is run through its layers, even long before it shows. On a 24-minute episode that's 24 minutes of
+        extra work, which a 4-core server already busy with Plex couldn't keep up with (the picture fell
+        behind and froze). So the piece stops just before it, and the next piece starts there and carries
+        it for its few seconds."""
+        starts = [float(a["t0"]) for a in ov.get("anims") or []]
+        if ov.get("template"):
+            starts.append(float(ov["template"]["t0"]))
+        first = min(starts, default=0.0)
+        if first <= SPLIT_BEFORE + 2:
+            return dur, end, ov
+        cut = first - SPLIT_BEFORE
+        for b in sorted(ov.get("banners") or [], key=lambda b: -b["t0"]):  # never cut a banner off mid-way
+            if b["t0"] < cut < b["t1"] + 0.5:
+                cut = b["t0"] - SPLIT_BEFORE
+        if cut <= SPLIT_BEFORE:
+            return dur, end, ov
+        ov = {k: v for k, v in ov.items() if k not in ("anims", "template")}
+        banners = [b for b in ov.get("banners") or [] if b["t1"] <= cut]
+        if banners:
+            ov["banners"] = banners
+        else:
+            ov.pop("banners", None)
+        return cut, end - (dur - cut), ov or None
 
     async def _overlay(self, ch: dict, p, idx: int, item: dict, block: dict, end: float) -> dict | None:
         """What to draw over a show: its network's logo in the corner (the one it had the year the episode

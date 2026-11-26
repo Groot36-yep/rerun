@@ -12,7 +12,7 @@ os.environ["RERUN_DATA"] = tempfile.mkdtemp()
 
 from app.catalog import Catalog  # noqa: E402
 from app.channels import normalize_channel, resolve, suggest  # noqa: E402
-from app.scheduler import Builder, Playout, tz_offset  # noqa: E402
+from app.scheduler import OVERFILL_MAX, Builder, Playout, tz_offset  # noqa: E402
 from app.seasons import DEFAULT_HOLIDAYS, matches  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -80,7 +80,7 @@ def check(p, label, slot):
     kinds = Counter()
     for x in items:
         kinds[x["k"]] += x["e"] - x["s"]
-    aligned = sum(1 for b in blocks if slot and abs((b["s"] + tz_offset(b["s"])) % (slot * 60)) < 1e-3)
+    aligned = sum(1 for b in blocks if slot and (b["s"] + tz_offset(b["s"])) % (slot * 60) < OVERFILL_MAX + 1)
     seq = [b["title"] for b in blocks]
     repeats = sum(1 for a, b, c in zip(seq, seq[1:], seq[2:]) if a == b == c)
     worst = max(((sum(x["e"] - x["s"] for x in items if b["s"] <= x["s"] < b["e"] and x["k"] != "c")) / (b["e"] - b["s"])
@@ -214,13 +214,36 @@ async def check_break_ends(cat):
     c2.reindex()
     ch = normalize_channel({"id": "nb", "name": "Nick", "seed": 3, "commercials": {"enabled": True},
                             "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"}]})
-    before, _ = await build(ch, cat, 24)
-    after, _ = await build(ch, c2, 24)
     blank = lambda p: sum(x["e"] - x["s"] for x in p.items if x["k"] == "x" and not x.get("t"))  # noqa: E731
-    assert blank(after) < blank(before) * 0.6, (blank(before), blank(after))
-    assert max((x["e"] - x["s"] for x in after.items if x["k"] == "x"), default=0) < 12
-    check(after, "Nick with bumpers", 30)
-    print(f"break ends: OK (stand-in time a day {blank(before):.0f}s -> {blank(after):.0f}s with bumpers)")
+    ads = lambda p, b: sum(x["e"] - x["s"] for x in p.items if b["s"] <= x["s"] < b["e"] and x["k"] != "c")  # noqa: E731
+    for c in (cat, c2):  # without and with bumpers: a break ends on a commercial, never on a filler card
+        p, _ = await build(ch, c, 24)
+        assert blank(p) == 0, blank(p)
+        late = [(b["s"] + tz_offset(b["s"])) % 1800 for b in p.blocks]
+        on_time = sum(1 for x in late if x <= OVERFILL_MAX + 1 or x >= 1799) / len(late)
+        assert on_time >= 0.85, f"only {on_time:.0%} of shows start on the half hour"
+        check(p, "Nick, breaks end whole", 30)
+    # your limit: 3 minutes of commercials a half hour, whatever the clock
+    capped = normalize_channel({**ch, "commercials": {"enabled": True, "per_half_hour": 3}})
+    p, _ = await build(capped, c2, 24)
+    worst = max(ads(p, b) for b in p.blocks)
+    assert worst <= 3 * 60 * 2 + OVERFILL_MAX + 25, worst  # an hour-long show gets two half hours' worth
+    print(f"break ends: OK (no filler cards; at 3 min a half hour the longest break is {worst:.0f}s)")
+
+
+def check_split():
+    """A costly overlay (the Nick 2009 animation) late in a long piece: the piece stops just before it, so
+    the layers aren't run for the whole episode; the corner logo and earlier banners stay."""
+    from app.streaming import SPLIT_BEFORE, ChannelStream
+    ov = {"logo": "l.png", "anims": [{"t0": 1300.0, "len": 10.96}],
+          "banners": [{"file": "b", "t0": 40.0, "t1": 50.0}, {"file": "c", "t0": 1290.0, "t1": 1300.0}]}
+    dur, end, out = ChannelStream._split_for_overlay(None, ov, 1425.0, 10_000.0)
+    # it stops before the banner at 1290 too, rather than cut that off part-way (the next piece shows it)
+    assert dur == 1290.0 - SPLIT_BEFORE and end == 10_000.0 - 1425.0 + dur, (dur, end)
+    assert out["logo"] == "l.png" and "anims" not in out and [b["file"] for b in out["banners"]] == ["b"], out
+    same = ChannelStream._split_for_overlay(None, {"anims": [{"t0": 3.0}]}, 30.0, 500.0)
+    assert same[0] == 30.0 and same[2]["anims"], "an animation at the start stays in its piece"
+    print("split before the animation: OK")
 
 
 def check_cushion():
@@ -434,6 +457,7 @@ async def main():
     check_recommend()
     await check_moved_files(cat, plain_nick)
     check_cushion()
+    check_split()
     await check_break_ends(cat)
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
