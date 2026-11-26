@@ -958,7 +958,7 @@ def _canvas(aspect: float) -> tuple[int, int]:
     return (563, 360) if aspect >= 2.0 else (640, 281)
 
 
-def _fit(url: str, aspect: float, extra: dict | None = None) -> str:
+def _fit_url(url: str, aspect: float, extra: dict | None = None) -> str:
     w, h = _canvas(aspect)
     return "https://wsrv.nl/?" + urlencode({"url": url, "w": w, "h": h, "fit": "contain", "cbg": "00000000",
                                             "tbg": "00000000", "trim": 10, **(extra or {}), "output": "png"})
@@ -978,7 +978,7 @@ def public_logo_url(ch: dict, catalog=None) -> str:
     ref = "" if holiday else logo_ref(ch, catalog)
     known = _public().get(ref) if ref else None
     if known and known.get("v") == PUBLIC_V:
-        return _fit(known["src"], known["aspect"], {"filt": "negate"} if known["dark"] else None)
+        return _fit_url(known["src"], known["aspect"], {"filt": "negate"} if known["dark"] else None)
     name = ch["name"]
     if holiday:
         fg = HOLIDAY_ON_DARK.get(ch["season"], CREAM)
@@ -989,7 +989,7 @@ def public_logo_url(ch: dict, catalog=None) -> str:
     aspect = 0.5 * max(len(line) for line in lines) / (1 if len(lines) == 1 else 2.2)
     letters = (f"placehold.co/1200x500/transparent/{fg[1:]}/png?"
                + urlencode({"text": "\\n".join(lines), "font": "oswald"}))
-    return _fit(letters, aspect)
+    return _fit_url(letters, aspect)
 
 
 # ---- "Up next" banners in each network's 2000s style ------------------------------------------

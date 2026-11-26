@@ -458,6 +458,8 @@ def check_overlay_filters():
     assert abs(min(x for x, _ in ink) - 623) <= 3 and abs(max(x for x, _ in ink) - 1185) <= 6
     assert not any(p[1] - max(p[0], p[2]) > 60 for p in still.crop((0, 820, 1920, 1080)).getdata()), "green"
     assert images.theme_for("nick") == "nick_2009" and images.theme_for("abcfamily", plan=True) == "25days"
+    # the logo addresses handed to Plex with its guide (a name clash with the banner helper once broke this)
+    assert images.public_logo_url({"id": "x", "name": "Zzz Test", "number": 5}, None).startswith("https://")
     # it animates over the whole picture (after any side bars), as the original moved
     ff.filters = {"overlay"}
     an = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True,
