@@ -440,9 +440,9 @@ def check_overlay_filters():
         assert 200 < img.width <= widest and 50 < img.height < 260, (theme, img.size)
     # Nick's 2009-2011 "Up next", recreated from the original's measurements (at 1080 lines): the grey bar's
     # top edge sloping from y=833 to 925, UP NEXT in the original orange from x=622 with its tops clipped by
-    # that edge, the name under it from x=623; no green anywhere.
-    L = images.nick2009_layers("SpongeBob SquarePants", "", 1080)
-    still = images.nick2009_still("SpongeBob SquarePants", 1080).convert("RGB")
+    # that edge, the name under it from x=623; no green anywhere. (That's the "as the original" setting.)
+    L = images.nick2009_layers("SpongeBob SquarePants", "", 1080, clear=False)
+    still = images.nick2009_still("SpongeBob SquarePants", 1080, clear=False).convert("RGB")
     assert (L["W"], L["H"]) == (1920, 1080) and still.size == (1920, 1080)
     for x, top in ((100, 833 + 92 * 100 / 1920), (1800, 833 + 92 * 1800 / 1920)):
         first = next(y for y in range(700, 1080)  # the first grey (bar or its shadow) under the blue picture
@@ -458,6 +458,30 @@ def check_overlay_filters():
     assert abs(min(x for x, _ in ink) - 623) <= 3 and abs(max(x for x, _ in ink) - 1185) <= 6
     assert not any(p[1] - max(p[0], p[2]) > 60 for p in still.crop((0, 820, 1920, 1080)).getdata()), "green"
     assert images.theme_for("nick") == "nick_2009" and images.theme_for("abcfamily", plan=True) == "25days"
+    # as the original, longer labels stay in the bar, cut by its edge no more than UP NEXT was
+    for lab in ("More after the break", "Tomorrow at 10"):
+        st = images.nick2009_still("The Fairly OddParents", 1080, lab, clear=False).convert("RGB")
+        o = [(x, y) for y in range(840, 960) for x in range(600, 1920, 2)
+             if (lambda p: p[0] > 170 and 80 < p[1] < 130 and p[2] < 60)(st.getpixel((x, y)))]
+        right = max(x for x, _ in o)
+        tall = [y for x, y in o if x > right - 30]
+        assert right < 1700 and max(tall) - min(tall) > 34, (lab, right, min(tall), max(tall))
+    assert images._n9_words("More after the break") == "STAY TUNED" and images._n9_words("") == "UP NEXT"
+    # by default the words sit clear of the edge: grey above every letter, whatever the label
+    for lab in ("", "More after the break", "Tomorrow at 10"):
+        st = images.nick2009_still("The Fairly OddParents", 1080, lab).convert("RGB")
+        o = [(x, y) for y in range(840, 1000) for x in range(600, 1920, 2)
+             if (lambda p: p[0] > 170 and 80 < p[1] < 130 and p[2] < 60)(st.getpixel((x, y)))]
+        assert all(y > 833 + 92 * x / 1920 + 4 for x, y in o), (lab, "a letter touches the bar's edge")
+        assert max(x for x, _ in o) < 1700, lab
+    # the poster card, when asked for (no cut-out): smooth edges, left of the words
+    from PIL import Image as _I
+    buf = _io.BytesIO()
+    _I.new("RGB", (400, 600), (200, 40, 40)).save(buf, "JPEG")
+    P = images.nick2009_layers("Danny Phantom", "", 1080, None, buf.getvalue(), poster=True)
+    card = _I.open(P["char"]).convert("RGBA")
+    assert P["char_x"] + card.width <= 622 and len(set(card.getchannel("A").getdata())) > 20, "card edges aren't smooth"
+    assert "char" not in images.nick2009_layers("Danny Phantom", "", 1080, None, buf.getvalue()), "poster off by default"
     # the logo addresses handed to Plex with its guide (a name clash with the banner helper once broke this)
     assert images.public_logo_url({"id": "x", "name": "Zzz Test", "number": 5}, None).startswith("https://")
     # it animates over the whole picture (after any side bars), as the original moved

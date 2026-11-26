@@ -32,6 +32,14 @@ STYLE_KEYS = {k for k, _ in STYLES}
 SEARCH = {"upnext": "{label} up next green screen template", "trivia": "{label} bumper 2000s"}
 
 
+def n9_options(cfg: dict) -> dict:
+    """The Nick 2009 "Up next" settings (config "n9"): `clear` keeps the lettering clear of the bar's
+    sloped edge (the original let the edge cut the tops off: {"text": "original"}); `poster` shows the
+    next show's poster when there's no character cut-out (the original never had one)."""
+    o = cfg.get("n9") or {}
+    return {"clear": o.get("text", "clear") != "original", "poster": bool(o.get("poster", False))}
+
+
 def choice(cfg: dict, tag: str | None, what: str) -> str:
     return ((cfg.get("looks") or {}).get(tag or "") or {}).get(what, "")
 
@@ -113,12 +121,13 @@ def thumb(kind: str, name: str, ffmpeg: str, ffprobe: str = "ffprobe") -> str | 
     return str(out)
 
 
-def style_preview(style: str, label: str) -> bytes:
+def style_preview(style: str, label: str, n9: dict | None = None) -> bytes:
     """What a drawn style looks like, over a plain picture, for the page."""
     from PIL import Image
     theme = "" if style == "plain" else style
     if theme in images.ANIMATED:
-        still = images.nick2009_still("SpongeBob SquarePants", 360, under=Image.new("RGBA", (640, 360), (58, 74, 96, 255)))
+        still = images.nick2009_still("SpongeBob SquarePants", 360, under=Image.new("RGBA", (640, 360), (58, 74, 96, 255)),
+                                      clear=(n9 or {}).get("clear", True))
         buf = io.BytesIO()
         still.convert("RGB").save(buf, "JPEG", quality=88)
         return buf.getvalue()
@@ -183,8 +192,9 @@ def in_use(cfg: dict, tag: str) -> dict:
         return {"kind": "file", "name": name, "label": os.path.splitext(name)[0],
                 "img": f"/api/looks/thumb/upnext/{name}"}
     key = style or "plain"
+    v = "?v=" + "".join(str(int(x)) for x in n9_options(cfg).values()) if key in images.ANIMATED else ""
     return {"kind": "style", "name": key, "label": dict(STYLES).get(key, "Rerun's drawing"),
-            "img": f"/api/looks/style/{key}.jpg"}
+            "img": f"/api/looks/style/{key}.jpg{v}"}
 
 
 async def sample(app, tag: str) -> str:
@@ -234,9 +244,10 @@ async def sample(app, tag: str) -> str:
         if titled:
             ov["template"].update(title_png=titled[0], title_x=titled[1]["x"], title_y=titled[1]["y"])
     elif use["name"] in images.ANIMATED:
-        art = await images.artwork(app, nxt["id"])
+        n9 = n9_options(app.cfg.data)
+        art = await images.artwork(app, nxt["id"]) if n9["poster"] else None
         layers = await asyncio.to_thread(images.nick2009_layers, nxt["title"], "", H,
-                                         images.character_for(nxt["title"]), art)
+                                         images.character_for(nxt["title"]), art, n9["clear"], n9["poster"])
         ov["anims"] = [{**layers, "t0": 1.0, "len": min(images.N9["len"], length - 1.5)}]
     else:
         theme = "" if use["name"] == "plain" else use["name"]

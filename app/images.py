@@ -1307,16 +1307,91 @@ def _n9_fit():
     return (N9["label"][3]) / (stem_right + 1), (1185 - 623) / name.width
 
 
+# The original only ever said UP NEXT. Rerun's other moments get Nick's own short on-air words where it
+# had them; anything else is shown as written, sized by _n9_label_cap.
+N9_WORDS = {"": "UP NEXT", "more after the break": "STAY TUNED", "coming up": "COMING UP",
+            "all-new, up next": "ALL NEW"}
+
+
+def _n9_words(label: str) -> str:
+    return N9_WORDS.get((label or "").strip().lower(), label).upper()
+
+
+N9_GAP = 8  # grey left between the bar's sloped edge and the tops of the label's letters, at its right end
+
+
+def _n9_edge(x: float) -> float:
+    e0, e1 = N9["edge"]
+    return e0 + (e1 - e0) * x / 1920
+
+
+def _n9_drop(sx: float) -> float:
+    """How far the lettering sits below the original's. There, the sloped edge cut the tops off UP NEXT
+    (the T showed only its stem), which just looked cut off; here the label and the name move down
+    together until UP NEXT, at the original's size, clears the edge."""
+    lx, ltop, _lbase, _lw = N9["label"]
+    right = lx + _n9_text("UP NEXT", N9["label"][2] - ltop, sx, (0, 0, 0), N9["heavy"][0]).width
+    return max(0.0, _n9_edge(right) + N9_GAP - ltop)
+
+
+def _n9_label_cap(words: str, sx: float, clear: bool = True) -> float:
+    """The label's cap height (at 1080 lines): the original's, unless the words run so far right that the
+    edge (lower there) cuts them too much; then smaller, on the same baseline. `clear`: they must clear
+    the edge entirely. Otherwise, as on the original, the edge may hide as much of the last letter as it
+    hid of UP NEXT's T, and no more."""
+    lx, ltop, lbase, _lw = N9["label"]
+    full = lbase - ltop
+
+    def right(text, cap):
+        return lx + _n9_text(text, cap, sx, (0, 0, 0), N9["heavy"][0]).width
+
+    cap = full
+    if clear:
+        base = lbase + _n9_drop(sx)
+        while cap > 40 and _n9_edge(right(words, cap)) + N9_GAP > base - cap:
+            cap -= 2
+        return cap
+
+    def cut(text, c):  # how much of the last letter's height the edge hides, as a share of the cap
+        return (_n9_edge(right(text, c)) - (lbase - c)) / c
+
+    limit = cut("UP NEXT", full) + 0.005
+    while cap > 40 and cut(words, cap) > limit:
+        cap -= 2
+    return cap
+
+
+def _n9_card(art: bytes, s: float) -> Image.Image:
+    """The show's poster as a white-edged card, tilted a little, with a soft shadow. Drawn four times as
+    big and shrunk, so its tilted edges come out smooth."""
+    k = 4
+    ch = round(300 * s)
+    poster = Image.open(io.BytesIO(art)).convert("RGBA")
+    pw = min(round(ch * 0.72), max(1, round(ch * poster.width / poster.height)))  # never wider than a portrait poster
+    b = max(2, round(6 * s)) * k
+    pad = 20 * k
+    poster = poster.resize((pw * k, ch * k), Image.LANCZOS)
+    card = Image.new("RGBA", (poster.width + (b + pad) * 2, poster.height + (b + pad) * 2), (0, 0, 0, 0))
+    ImageDraw.Draw(card).rectangle((pad, pad, card.width - pad - 1, card.height - pad - 1), fill=(255, 255, 255, 255))
+    card.alpha_composite(poster, (pad + b, pad + b))
+    card = card.rotate(3, resample=Image.BICUBIC, expand=True)
+    card = card.resize((max(1, card.width // k), max(1, card.height // k)), Image.LANCZOS)
+    return _trim(_shadowed(card, 0, 6 * s, 110, 5 * s))
+
+
 def nick2009_layers(title: str, label: str, height: int, character: str | None = None,
-                    art: bytes | None = None) -> dict:
+                    art: bytes | None = None, clear: bool = True, poster: bool = False) -> dict:
     """The layers of the 2009-2011 Nick "Up next" for a picture `height` lines tall, made once and kept:
     {"bar", "shadow", "label", "name", "char"?: files, and where things go}. `label` replaces UP NEXT
-    ("TONIGHT AT 8"); the character is a cut-out (see character_for) or, failing that, the show's poster."""
+    ("TONIGHT AT 8"). `clear`: the lettering sits a little lower, clear of the bar's sloped edge (the
+    original let the edge cut the tops off). The character is a cut-out (see character_for); without one,
+    the show's poster (`art`) as a card if `poster`, else no picture, as on the original."""
     s = height / 1080
     W = round(1920 * s) // 2 * 2
     char_v = f"{character}:{int(os.path.getmtime(character))}" if character else ""
-    key = hashlib.sha1(f"n9:5:{title}:{label}:{height}:{char_v}:{hashlib.sha1(art).hexdigest() if art else ''}"
-                       .encode()).hexdigest()[:16]
+    use_art = art if (poster and art and not character) else None
+    key = hashlib.sha1(f"n9:9:{title}:{label}:{height}:{char_v}:{int(clear)}:"
+                       f"{hashlib.sha1(use_art).hexdigest() if use_art else ''}".encode()).hexdigest()[:16]
     folder = BUG_DIR / "anim" / key
     info_file = folder / "layers.json"
     if info_file.exists():
@@ -1326,9 +1401,6 @@ def nick2009_layers(title: str, label: str, height: int, character: str | None =
     top = N9["layer_top"]
     LH = round((1080 - top) * s)
     e0, e1 = (N9["edge"][0] - top) * s, (N9["edge"][1] - top) * s
-
-    def edge_y(x):  # the bar's top edge, in the layer, at x
-        return e0 + (e1 - e0) * x / W
 
     # the bar
     bar = Image.new("RGBA", (W * k, LH * k), (0, 0, 0, 0))
@@ -1346,10 +1418,15 @@ def nick2009_layers(title: str, label: str, height: int, character: str | None =
     # the lettering, each on a layer the size of the bar, at its final place
     sx_label, sx_name = _n9_fit()
     lx, ltop, lbase, _lw = N9["label"]
-    lab = _n9_text((label or "UP NEXT").upper(), (lbase - ltop) * s, sx_label, N9["orange"], N9["heavy"][0])
+    words = _n9_words(label)
+    cap = _n9_label_cap(words, sx_label, clear)
+    lab = _n9_text(words, cap * s, sx_label, N9["orange"], N9["heavy"][0])
     label_layer = Image.new("RGBA", (W, LH), (0, 0, 0, 0))
-    label_layer.alpha_composite(lab, (round(lx * s), round((ltop - top) * s)))
+    drop = _n9_drop(sx_label) if clear else 0.0
+    lbase += drop
+    label_layer.alpha_composite(lab, (round(lx * s), round((lbase - cap - top) * s)))
     nx, ntop, nbase = N9["name"]
+    ntop, nbase = ntop + drop, nbase + drop
     nm = _n9_text(" ".join(title.split()).upper(), (nbase - ntop) * s, sx_name, N9["ink"], N9["heavy"][1])
     room = W - round(nx * s) - round(40 * s)
     if nm.width > room:
@@ -1362,7 +1439,7 @@ def nick2009_layers(title: str, label: str, height: int, character: str | None =
         f = folder / f"{name}.png"
         im.save(f)
         out[name] = str(f)
-    # the character: a cut-out, or the show's poster as a card; its top at y=802, right edge at x=651
+    # the character cut-out (its top at y=802, right edge at x=651), or the poster card
     pic = None
     try:
         if character:
@@ -1371,22 +1448,15 @@ def nick2009_layers(title: str, label: str, height: int, character: str | None =
             pic = pic.resize((max(1, round(ch * pic.width / pic.height)), ch), Image.LANCZOS)
             if pic.width > 340 * s:
                 pic = pic.resize((round(340 * s), max(1, round(pic.height * 340 * s / pic.width))), Image.LANCZOS)
-        elif art:
-            poster = Image.open(io.BytesIO(art)).convert("RGBA")
-            ch = round(300 * s)
-            poster = poster.resize((min(round(ch * 0.8), max(1, round(ch * poster.width / poster.height))), ch),
-                                   Image.LANCZOS)  # never wider than a portrait poster
-            b = max(2, round(6 * s))
-            card = Image.new("RGBA", (poster.width + b * 2, poster.height + b * 2), (255, 255, 255, 255))
-            card.alpha_composite(poster, (b, b))
-            pic = _shadowed(card.rotate(3, resample=Image.BICUBIC, expand=True), 0, 6 * s, 120, 4 * s)
+        elif use_art:
+            pic = _n9_card(use_art, s)
     except Exception:
         pic = None
     if pic is not None:
         f = folder / "char.png"
         pic.save(f)
-        # a cut-out overlaps the start of UP NEXT a little, as SpongeBob did; a poster card stays clear of the name
-        right = N9["char"][0] if character else 612
+        # a cut-out overlaps the start of UP NEXT a little, as SpongeBob did; a card stays clear of the words
+        right = N9["char"][0] if character else lx - 14
         out.update(char=str(f), char_x=max(0, round(right * s) - pic.width), char_y=round(N9["char"][1] * s),
                    char_rise=height - round(N9["char"][1] * s) + 4)
     info_file.write_text(json.dumps(out))
@@ -1394,9 +1464,10 @@ def nick2009_layers(title: str, label: str, height: int, character: str | None =
 
 
 def nick2009_still(title: str, height: int, label: str = "", character: str | None = None,
-                   art: bytes | None = None, under: Image.Image | None = None) -> Image.Image:
+                   art: bytes | None = None, under: Image.Image | None = None, clear: bool = True,
+                   poster: bool = False) -> Image.Image:
     """The 2009 Nick "Up next" settled in place, as one picture (for the On-air look page)."""
-    L = nick2009_layers(title, label, height, character, art)
+    L = nick2009_layers(title, label, height, character, art, clear, poster)
     pic = under.convert("RGBA").resize((L["W"], L["H"])) if under is not None else \
         Image.new("RGBA", (L["W"], L["H"]), (58, 74, 96, 255))
     grp = Image.open(L["bar"]).convert("RGBA")

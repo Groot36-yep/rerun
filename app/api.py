@@ -21,6 +21,7 @@ from . import __version__, seasons, xmas, xmasdata
 from . import archive as archive_mod
 from . import lineups as lineups_mod
 from . import youtube as youtube_mod
+from . import characters as characters_mod
 from . import preview as preview_mod
 from . import looks as looks_mod
 from . import recommend as recommend_mod
@@ -1313,7 +1314,7 @@ async def looks_page(app=Depends(signed_in)):
         n["in_use"] = looks_mod.in_use(app.cfg.data, n["tag"])
     nets.sort(key=lambda n: (not (n["channels"] or n["bumpers"]), n["label"].lower()))
     return {"networks": nets, "finder": app.finder.progress.get("running", False),
-            "auto_bumpers": bool(app.cfg.data.get("auto_bumpers")),
+            "auto_bumpers": bool(app.cfg.data.get("auto_bumpers")), "n9": looks_mod.n9_options(app.cfg.data),
             "styles": [{"key": k, "label": l} for k, l in looks_mod.STYLES],
             "files": {"upnext": looks_mod.files("upnext"), "trivia": looks_mod.files("trivia")},
             "search": looks_mod.SEARCH, "youtube": youtube_mod.available()}
@@ -1329,6 +1330,75 @@ async def looks_sample(tag: str, app=Depends(signed_in)):
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     return {"url": f"/api/previews/{os.path.basename(path)}"}
+
+
+@router.put("/looks/n9")
+async def looks_n9(body: dict, app=Depends(signed_in)):
+    """The Nick 2009 "Up next" settings: lettering clear of the edge or as the original, and the poster."""
+    cur = looks_mod.n9_options(app.cfg.data)
+    clear = bool(body.get("clear", cur["clear"]))
+    app.cfg.data["n9"] = {"text": "clear" if clear else "original", "poster": bool(body.get("poster", cur["poster"]))}
+    app.cfg.save()
+    return looks_mod.n9_options(app.cfg.data)
+
+
+@router.get("/characters")
+async def characters_list(app=Depends(signed_in)):
+    return {"has_key": bool(app.characters.key()), "progress": app.characters.progress,
+            "items": app.characters.listing()}
+
+
+@router.put("/characters/key")
+async def characters_key(body: dict, app=Depends(signed_in)):
+    key = str(body.get("key") or "").strip()
+    client = str(body.get("client") or "").strip()
+    if key:
+        why = await characters_mod.test_key(key, client)
+        if why:
+            raise HTTPException(400, why)
+    app.secrets.data["fanart_key"] = key
+    app.secrets.data["fanart_client"] = client if key else ""
+    app.secrets.data.pop("fanart_header", None)
+    app.secrets.save()
+    return {"has_key": bool(key)}
+
+
+@router.post("/characters/run")
+async def characters_run(app=Depends(signed_in)):
+    try:
+        app.characters.start()
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return app.characters.progress
+
+
+@router.post("/characters/{sid}/another")
+async def characters_another(sid: str, app=Depends(signed_in)):
+    if sid not in app.catalog.shows:
+        raise HTTPException(404, "No such show")
+    try:
+        name = await app.characters.another(sid)
+    except (RuntimeError, PermissionError) as e:
+        raise HTTPException(400, str(e))
+    except httpx.HTTPError:
+        raise HTTPException(502, "Couldn't reach fanart.tv")
+    return {"file": name}
+
+
+@router.delete("/characters/{sid}")
+async def characters_remove(sid: str, app=Depends(signed_in)):
+    if sid not in app.catalog.shows:
+        raise HTTPException(404, "No such show")
+    app.characters.remove(sid)
+    return {"ok": True}
+
+
+@router.get("/characters/img/{name}")
+async def characters_img(name: str, app=Depends(signed_in)):
+    f = characters_mod.DIR / name
+    if "/" in name or "\\" in name or name.startswith(".") or not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="image/png", headers={"Cache-Control": "no-cache"})
 
 
 @router.put("/looks/auto")
@@ -1388,7 +1458,7 @@ async def looks_set(tag: str, body: dict, app=Depends(signed_in)):
 async def looks_style(style: str, app=Depends(signed_in)):
     if style not in looks_mod.STYLE_KEYS:
         raise HTTPException(404, "No such style")
-    jpg = await asyncio.to_thread(looks_mod.style_preview, style, "")
+    jpg = await asyncio.to_thread(looks_mod.style_preview, style, "", looks_mod.n9_options(app.cfg.data))
     return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 

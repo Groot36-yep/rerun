@@ -2192,6 +2192,10 @@ function lookPanel(n, r, styleName, reload, getBumpers) {
     try { await api("POST", `/api/looks/finder/${n.tag}`); toast(`Finding ${n.label}'s bumpers and commercials`); reload(); }
     catch (x) { toast(x.message, true); }
   };
+  const setN9 = async (change) => {
+    try { await api("PUT", "/api/looks/n9", change); toast("Saved. Shows coming up next use it"); reload(); }
+    catch (x) { toast(x.message, true); }
+  };
   const on = n.bumpers.filter((b) => !b.hidden).length;
   const use = n.in_use;
   const up = n.up_next;
@@ -2235,10 +2239,73 @@ function lookPanel(n, r, styleName, reload, getBumpers) {
         h("small", { class: "muted" }, up === "auto" ? "In use (automatic)" : "In use"),
         h("b", null, use.label),
         h("p", { class: "hint" }, use.kind === "file" ? "A real template: the show plays behind it." : "Rerun's drawing, in this network's style."),
+        use.name === "nick_2009" ? h("div", { class: "look-opts" },
+          toggle("Keep the words clear of the bar's slanted edge (the original cut their tops off)", r.n9.clear, (val) => setN9({ clear: val })),
+          toggle("Show the next show's poster when there's no character cut-out", r.n9.poster, (val) => setN9({ poster: val })),
+          r._cutouts ? null : (r._cutouts = true, cutoutsBox())) : null,
         h("div", { class: "row" },
           h("button", { class: "btn primary", onclick: () => seeOnShow(n) }, icon("play"), " See it on a show"),
           h("button", { class: "btn", disabled: !r.youtube, onclick: () => findLook(n, "upnext", reload) }, "Find a real one on YouTube")))),
     h("details", { class: "look-more" }, h("summary", null, "Choose a different one"), h("div", { class: "look-row" }, others)));
+}
+
+// The characters that pop up on the Nick 2009 "Up next": found on fanart.tv by Rerun, or your own PNGs.
+function cutoutsBox() {
+  const box = h("div", { class: "cutouts" });
+  let timer = null;
+  const load = async () => {
+    clearTimeout(timer);
+    let r;
+    try { r = await api("GET", "/api/characters"); } catch (x) { fill(box, h("p", { class: "error" }, x.message)); return; }
+    const p = r.progress;
+    if (p.running) timer = setTimeout(() => { if (box.isConnected) load(); }, 2500);
+    const head = h("h4", null, "Character cut-outs");
+    if (!r.has_key) {
+      let key = "", client = "";
+      fill(box, head,
+        h("p", { class: "hint" }, "Rerun can find a see-through picture of each show's character on fanart.tv, checking each one's quality before using it. fanart.tv needs a free project API key (",
+          h("a", { href: "https://fanart.tv/get-an-api-key/#project", target: "_blank", rel: "noopener" }, "Project API keys"),
+          "); your personal API key can go with it, for newer pictures sooner."),
+        h("div", { class: "row" },
+          h("input", { type: "password", autocomplete: "off", placeholder: "fanart.tv project API key", "aria-label": "fanart.tv project API key", oninput: (e) => { key = e.target.value; } }),
+          h("input", { type: "password", autocomplete: "off", placeholder: "Personal API key (optional)", "aria-label": "fanart.tv personal API key", oninput: (e) => { client = e.target.value; } }),
+          h("button", { class: "btn primary", onclick: async (e) => {
+            e.target.disabled = true;
+            try { await api("PUT", "/api/characters/key", { key, client }); toast("fanart.tv accepted the key"); load(); } catch (x) { toast(x.message, true); e.target.disabled = false; }
+          } }, "Save")));
+      return;
+    }
+    const status = p.running ? `Looking… ${p.done} of ${p.total} shows${p.step ? ` (${p.step})` : ""}, ${p.found} found`
+      : p.error ? p.error
+      : p.finished ? `Found ${plural(p.found, "new cut-out")} for ${plural(p.total, "show")} that had none.` : "";
+    const found = r.items.filter((x) => x.file);
+    fill(box, head,
+      h("p", { class: "hint" }, "Pictures from fanart.tv, made by its fans, checked for quality. Your own PNGs in bugs/custom/characters/ always win. New shows get one overnight. ",
+        h("button", { class: "linkish", onclick: async () => {
+          if (!confirm("Forget the fanart.tv keys?")) return;
+          try { await api("PUT", "/api/characters/key", { key: "" }); load(); } catch (x) { toast(x.message, true); }
+        } }, "Change keys")),
+      h("div", { class: "row" },
+        h("button", { class: "btn primary", disabled: p.running, onclick: async () => {
+          try { await api("POST", "/api/characters/run"); load(); } catch (x) { toast(x.message, true); }
+        } }, "Find cut-outs for my shows"),
+        status ? h("span", { class: p.error ? "error" : "muted" }, status) : null),
+      found.length ? h("details", { class: "look-more" }, h("summary", null, plural(found.length, "show") + " with a cut-out"),
+        h("div", { class: "cut-grid" }, found.map((x) => h("div", { class: "cut" },
+          h("img", { src: `/api/characters/img/${encodeURIComponent(x.file)}?t=${Date.now()}`, alt: "", loading: "lazy" }),
+          h("b", { title: x.title }, x.title),
+          x.auto ? h("div", { class: "look-acts" },
+            h("button", { class: "btn quiet small", onclick: async (e) => {
+              e.target.disabled = true;
+              try { const res = await api("POST", `/api/characters/${encodeURIComponent(x.show)}/another`); toast(res.file ? "Swapped" : "No other good one on fanart.tv"); } catch (err) { toast(err.message, true); }
+              load();
+            } }, "Another"),
+            h("button", { class: "btn quiet small", onclick: async () => {
+              try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}`); load(); } catch (err) { toast(err.message, true); }
+            } }, "Remove")) : h("small", { class: "muted" }, "Your own"))))) : null);
+  };
+  load();
+  return box;
 }
 
 function playLook(kind, name) {

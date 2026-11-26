@@ -361,15 +361,18 @@ class ChannelStream:
             try:  # in the network's 2000s style, or in the colour of its logo
                 theme = chosen_style if chosen_style is not None else images.theme_for(tag, plan=bool(ch.get("plan")))
                 about = g["block"] or {}
+                n9 = looks.n9_options(app.cfg.data)
+                want_art = theme not in images.ANIMATED or n9["poster"]
                 art = await images.artwork(app, about["img"]) \
-                    if about.get("img") and theme in images.ART_THEMES and g["kind"] != "teaser" else None
+                    if about.get("img") and theme in images.ART_THEMES and want_art and g["kind"] != "teaser" else None
                 if theme in images.ANIMATED:  # Nick 2009: an animation over the whole picture, its own length
                     a = max(0.5, item["e"] - 32 - self.cursor) if g["kind"] == "up_next" else t0
                     length = min(images.N9["len"], rel_end - a)
                     if length >= 5:
                         layers = await asyncio.to_thread(
                             images.nick2009_layers, g["title"], g["label"], H,
-                            images.character_for(g["title"]) if g["kind"] != "teaser" else None, art)
+                            images.character_for(g["title"]) if g["kind"] != "teaser" else None, art,
+                            n9["clear"], n9["poster"])
                         anims.append({**layers, "t0": a, "len": length})
                     continue
                 banner = await asyncio.to_thread(images.up_next_banner, g["title"], H,

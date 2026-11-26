@@ -745,3 +745,14 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 
 .looks-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; margin: -6px 0 18px; }
 .looks-bar .switch { max-width: 560px; }
+
+/* Nick 2009 options and character cut-outs */
+.look-opts { display: grid; gap: 10px; margin: 12px 0 4px; }
+.cutouts { border-top: 1px solid var(--line, rgba(255,255,255,.1)); padding-top: 12px; margin-top: 4px; }
+.cutouts h4 { margin: 0 0 4px; }
+.cutouts .row input { flex: 1; min-width: 220px; }
+.cut-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; margin-top: 10px; }
+.cut { display: grid; gap: 4px; }
+.cut img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #3a4a60; border-radius: 8px; }
+.cut b { font-size: .85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.linkish { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }

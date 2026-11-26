@@ -92,6 +92,8 @@ class App:
         self.logs = LogBuffer()
         self.diag = Diagnostics()
         self.finder = Finder(self)
+        from .characters import Grabber
+        self.characters = Grabber(self)
         channels_mod.hidden_filler = set(self.cfg.data.get("hidden_filler") or [])
         if not self.cfg.data.get("breaks_between_shows"):  # once: shows and movies play straight through
             for ch in self.cfg.data.get("channels") or []:
@@ -161,6 +163,15 @@ class App:
                     log.warning("Couldn't make the logo for %s: %s", ch.get("name"), e)
             await asyncio.sleep(600)
 
+    async def _new_cutouts(self):
+        """Overnight, once the scan is done: character cut-outs for shows that are new to the library."""
+        while self.scanner.progress.get("running"):
+            await asyncio.sleep(30)
+        try:
+            self.characters.start(only_new=True)
+        except RuntimeError:
+            pass
+
     async def _top_up_bumpers(self):
         """Overnight: network channels with only a few bumpers get some more from YouTube, by themselves."""
         from . import looks, youtube
@@ -190,6 +201,8 @@ class App:
                 self.scanner.start(manual=False)
                 if self.cfg.data.get("auto_bumpers"):
                     asyncio.create_task(self._top_up_bumpers())
+                if self.characters.key():
+                    asyncio.create_task(self._new_cutouts())
 
     # ---- helpers ------------------------------------------------------------------------
     def set_catalog(self, cat: Catalog):
