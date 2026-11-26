@@ -94,6 +94,8 @@ class App:
         self.finder = Finder(self)
         from .characters import Grabber
         self.characters = Grabber(self)
+        from .listen import Listener
+        self.listener = Listener(self)
         channels_mod.hidden_filler = set(self.cfg.data.get("hidden_filler") or [])
         if not self.cfg.data.get("breaks_between_shows"):  # once: shows and movies play straight through
             for ch in self.cfg.data.get("channels") or []:
@@ -163,6 +165,16 @@ class App:
                     log.warning("Couldn't make the logo for %s: %s", ch.get("name"), e)
             await asyncio.sleep(600)
 
+    async def _listen_to_new(self):
+        """After a library scan: listen to any commercials not heard yet (it waits until nobody's
+        watching, see listen.Listener)."""
+        from . import listen
+        if listen.available() and self.listener.todo():
+            try:
+                self.listener.start()
+            except RuntimeError:
+                pass
+
     async def _new_cutouts(self):
         """Overnight, once the scan is done: character cut-outs for shows that are new to the library."""
         while self.scanner.progress.get("running"):
@@ -214,6 +226,7 @@ class App:
                 log.info("Added channel %s %s (found in your library)", ch["number"], ch["name"])
                 asyncio.ensure_future(self.schedules.ensure(ch, time.time() + 6 * 3600))
         asyncio.ensure_future(self.schedules.replan_missing())
+        asyncio.ensure_future(self._listen_to_new())
 
     def festive(self) -> str:
         """The holiday whose badge goes on channel logos right now, if any."""

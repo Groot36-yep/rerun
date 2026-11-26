@@ -18,13 +18,14 @@ import os
 import random
 import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 
 from . import seasons
 from . import archive
 from . import lineups, xmas
 from .channels import christmas_style, content_signature, filler_pool, network_key, resolve
+from .listen import norm as show_norm
 from .networks import family_for
 from .xmasdata import title_info
 
@@ -182,8 +183,10 @@ def _src(m: dict) -> dict:
 
 
 class Builder:
-    def __init__(self, ch: dict, cat, state: dict, chapters, holidays: dict | None = None):
+    def __init__(self, ch: dict, cat, state: dict, chapters, holidays: dict | None = None, heard: dict | None = None):
         self.ch = ch
+        # what each commercial is about, from listening to it (see listen.py): {clip id: {"cat", "shows", "role"}}
+        self.heard = heard or {}
         self.cat = cat
         self.st = state
         self.chapters = chapters
@@ -191,6 +194,9 @@ class Builder:
         self._shelf, self._shelf_day = set(), ""
         self.slot = int(ch.get("slot_minutes") or 0) * 60
         self.programs = {p["key"]: p for p in resolve(ch, cat, self.holidays)}
+        # the shows this channel plays: a promo for one of them is fine here, a promo for anything else isn't
+        self.airs = {show_norm(cat.shows[p["show"]].get("title", "")) for p in self.programs.values()
+                     if p.get("kind") == "show" and p.get("show") in cat.shows}
         com = ch.get("commercials") or {}
         pool = filler_pool(ch, cat) if com.get("enabled") else []
         # Bumpers and idents only play in their own places (see _bumper), never as a commercial.
@@ -405,7 +411,37 @@ class Builder:
             ctx.update(net=self.home_net, has_net=True)
         if saturday_morning(t):  # cereal and toys take over the breaks, on every channel
             ctx["kids_ads"] = 4.0 if not self.kids else 1.5
+        if self.heard:  # the show on now, and the one most likely next, for promos and bumpers that name a show
+            first = media[0] if media else {}
+            sid = first.get("show") or prog.get("show")
+            ctx["cur"] = show_norm((self.cat.shows.get(sid) or {}).get("title", "")) if sid else ""
+            nxt = next((self.programs[k] for k in self.st.get("bag") or [] if k in self.programs), None)
+            ctx["nxt"] = show_norm((self.cat.shows.get(nxt.get("show")) or {}).get("title", "")) if nxt and nxt.get("show") else ""
         return ctx
+
+    def _fits(self, f: dict, ctx: dict | None) -> tuple[bool, float]:
+        """Whether a commercial that names a show belongs here, and how much it's wanted: "you're watching
+        iCarly" only during iCarly, "up next, SpongeBob" only around SpongeBob, a promo only for a show
+        this channel plays (best when it's on now or next). One that names no show always fits."""
+        rec = self.heard.get(f["id"])
+        if not rec or not rec.get("shows"):
+            return True, 0.0
+        shows = {show_norm(x) for x in rec["shows"]}
+        cur, nxt = (ctx or {}).get("cur") or "", (ctx or {}).get("nxt") or ""
+        here = {x for x in (cur, nxt) if x}
+        role = rec.get("role")
+        if role == "watching":
+            return cur in shows, 5.0
+        if role == "next":
+            return bool(shows & here), 5.0 if nxt in shows else 2.0
+        if shows & here:
+            return True, 3.0
+        return bool(shows & self.airs), 1.0
+
+    def _kind(self, f: dict) -> str:
+        """The kind of commercial (cereal, toy, promo...), if it's been heard; "" if not."""
+        rec = self.heard.get(f["id"])
+        return "" if not rec or rec.get("cat") in (None, "other") else rec["cat"]
 
     def _base_context(self, prog: dict, media: list[dict], t: float) -> dict:
         first = media[0] if media else {}
@@ -439,10 +475,13 @@ class Builder:
             tags = {str(x).lower() for x in b.get("tags") or []}
             if not tags & nets or b["dur"] > room:
                 continue
+            fits, want = self._fits(b, ctx)
+            if not fits:
+                continue  # "you're watching iCarly" during SpongeBob
             hol = tags & set(seasons.PRESETS)
             if hol and not hol & active:
                 continue  # a Christmas bumper in July
-            score = (3 if hol else 0) + _year_match(item_year(b), ctx, tags) - (5 if b["id"] in recent else 0)
+            score = (3 if hol else 0) + _year_match(item_year(b), ctx, tags) - (5 if b["id"] in recent else 0) + want
             cands.append((score, b))
         if not cands:
             return None
@@ -466,6 +505,8 @@ class Builder:
             tags = {str(x).lower() for x in f.get("tags") or []}
             if (tags & set(seasons.PRESETS)) - active and not tags & active:
                 continue  # a Christmas commercial in July
+            if not self._fits(f, ctx)[0]:
+                continue
             key = (f["id"] in recent, round(f["dur"] - left), -(self._ad_score(f, ctx) if ctx else 0))
             if best is None or key < best[0]:
                 best = (key, f)
@@ -520,21 +561,42 @@ class Builder:
                 if not ({str(x).lower() for x in f.get("tags") or []} & set(seasons.PRESETS)) - active
                 or ({str(x).lower() for x in f.get("tags") or []} & active)]
         rng.shuffle(pool)
-        if ctx:  # best matches first; the shuffle keeps equally good ones varied
-            pool.sort(key=lambda f: -self._ad_score(f, ctx))
+        if self.heard:  # promos and bumpers that name a show only where they make sense
+            pool = [f for f in pool if self._fits(f, ctx)[0]]
+        recent_kinds = self.st.get("recent_kinds") or []
+        if ctx or self.heard:  # best matches first; the shuffle keeps equally good ones varied
+            pool.sort(key=lambda f: -(self._ad_score(f, ctx) if ctx else 0.0) - self._fits(f, ctx)[1]
+                      + (0.6 * recent_kinds.count(self._kind(f)) if self._kind(f) else 0.0))
         recent = set(self.st["recent"])
         chosen, used = [], set()
         remaining = seconds
-        for allow_recent in (False, True):
-            for f in pool:
+        kinds: list[str] = []
+
+        def same_again(f) -> bool:  # not two cereal ads in a row, nor more than two of a kind a break
+            k = self._kind(f)
+            return bool(k) and ((kinds and kinds[-1] == k) or kinds.count(k) >= 2)
+        for allow_recent, mix in ((False, True), (True, True), (False, False), (True, False)):
+            # past the strict passes, the kinds used least in this break come first
+            for f in (pool if mix or not self.heard else
+                      sorted(pool, key=lambda f: kinds.count(self._kind(f)) if self._kind(f) else 0)):
                 if remaining < self.min_filler:
                     break
-                if f["id"] in used or (not allow_recent and f["id"] in recent):
+                if f["id"] in used or (not allow_recent and f["id"] in recent) or (mix and same_again(f)):
                     continue
                 if f["dur"] <= remaining:
                     chosen.append(f)
+                    kinds.append(self._kind(f))
                     used.add(f["id"])
                     remaining -= f["dur"]
+        if self.heard:
+            self.st["recent_kinds"] = (recent_kinds + [k for k in kinds if k])[-12:]
+            # play them in an order that never puts the same kind back to back, where that can be helped
+            spread: list[dict] = []
+            while chosen:
+                last = self._kind(spread[-1]) if spread else ""
+                j = next((i for i, f in enumerate(chosen) if not last or self._kind(f) != last), 0)
+                spread.append(chosen.pop(j))
+            chosen = spread
         # Tighten: swap a chosen one for an unused one a little longer, to use up what's left over (else
         # it's a few seconds of stand-in card at the end of the break). Best matches first, as above.
         spare = [f for f in pool if f["id"] not in used]
@@ -776,6 +838,7 @@ class Builder:
             acc += m["dur"]
         if end - pos > 0.05:
             pos, _ = self._ads(items, pos, end - pos, final=True, ctx=ctx)
+        self._spread_breaks(items)
         # a hair short of the half hour: stretched to it; a break that ran long keeps its last one whole
         items[-1]["e"] = max(end, items[-1]["e"], items[-1]["s"] + 0.05)
         block = self._describe(prog, media, t, items[-1]["e"])
@@ -840,10 +903,51 @@ class Builder:
             if f["dur"] > left + 2:
                 break
             items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
-                          "t": f.get("title", ""), **_src(f)})
+                          "t": f.get("title", ""), "aired": 1, **_src(f)})
             pos += f["dur"]
             left -= f["dur"]
         return pos, left
+
+    def _spread_breaks(self, items: list):
+        """Every break in the block, put in an order that never has the same kind of commercial twice in a
+        row where that can be helped (a break is often several picks back to back: the last part's, the
+        closing one's, one more to fill). Bumpers keep their places, first or last; a recorded break
+        replayed as it aired keeps its order."""
+        if not self.heard:
+            return
+        bumper = {b["id"] for b in self.bumpers}
+        kind = lambda x: (self.heard.get(x["m"]) or {}).get("cat") or ""  # noqa: E731
+        i = 0
+        while i < len(items):
+            if items[i]["k"] != "f":
+                i += 1
+                continue
+            j = i
+            while j < len(items) and items[j]["k"] == "f":
+                j += 1
+            run = items[i:j]
+            a, b = 0, len(run)
+            while a < b and run[a]["m"] in bumper:
+                a += 1
+            while b > a and run[b - 1]["m"] in bumper:
+                b -= 1
+            middle = run[a:b]
+            if len(middle) > 2 and not any(x.get("aired") for x in middle):
+                out: list = []
+                while middle:  # the kind with the most still to place goes next, if it isn't the last one's
+                    last = kind(out[-1]) if out else (kind(run[a - 1]) if a else "")
+                    left = Counter(kind(x) for x in middle if kind(x) not in ("", "other"))
+                    ok = [n for n, x in enumerate(middle) if kind(x) in ("", "other") or kind(x) != last]
+                    k = max(ok, key=lambda n: (left.get(kind(middle[n]), 0), -n)) if ok else 0
+                    out.append(middle.pop(k))
+                run[a:b] = out
+                pos = run[0]["s"]
+                for x in run:
+                    d = x["e"] - x["s"]
+                    x["s"], x["e"] = pos, pos + d
+                    pos += d
+                items[i:j] = run
+            i = j
 
     def _countdown(self, t: float) -> str:
         if not (self.ch.get("plan") or self.xstyle):
@@ -1132,7 +1236,9 @@ class Schedules:
             async with lock:
                 if p.sig != self.sig(ch):
                     break  # edited while building; the next call starts over from the new rules
-                b = Builder(ch, self.app.catalog, p.state, self.app.chapters.get, self.app.cfg.data.get("holidays"))
+                listener = getattr(self.app, "listener", None)
+                b = Builder(ch, self.app.catalog, p.state, self.app.chapters.get, self.app.cfg.data.get("holidays"),
+                            listener.heard if listener else None)
                 await b.extend(p, min(until, p.end + CHUNK))
                 p.blocks = [x for x in p.blocks if x["e"] > x["s"]]
                 changed = True

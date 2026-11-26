@@ -246,6 +246,56 @@ def check_split():
     print("split before the animation: OK")
 
 
+async def check_heard(cat):
+    """With every commercial heard (see listen.py): "you're watching" bumpers only during their show, "up
+    next" ones only around it, promos only for shows the channel plays, and a mix of kinds in a break."""
+    ads = [f for f in cat.all_filler() if "bumper" not in (f.get("tags") or [])]
+    kinds = ["cereal", "toy", "food", "movie", "game", "store"]
+    heard = {}
+    for i, f in enumerate(ads):
+        heard[f["id"]] = {"cat": kinds[i % len(kinds)], "shows": [], "role": ""}
+    special = {ads[0]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "watching"},
+               ads[1]["id"]: {"cat": "promo", "shows": ["Hey Arnold!"], "role": "next"},
+               ads[2]["id"]: {"cat": "promo", "shows": ["Big Time Rush"], "role": "promo"},  # not on this channel
+               ads[3]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "promo"}}
+    heard.update(special)
+    ch = normalize_channel({"id": "hn", "name": "Nick", "seed": 11, "commercials": {"enabled": True, "break_style": "chapters"},
+                            "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"}]})
+    p = Playout(ch["id"])
+    start = 1_800_000_000 - (1_800_000_000 + tz_offset(1_800_000_000)) % 1800
+    p.blocks.append({"s": start, "e": start})
+    b = Builder(ch, cat, p.state, chapters, DEFAULT_HOLIDAYS, heard)
+    await b.extend(p, start + 72 * 3600)
+    p.blocks = [x for x in p.blocks if x["e"] > x["s"]]
+    titles = {sid: s["title"] for sid, s in cat.shows.items()}
+    show_of = lambda x: titles.get((cat.items.get(x["m"]) or {}).get("show"), "")  # noqa: E731
+    seen = Counter()
+    for blk in p.blocks:
+        items = [x for x in p.items if blk["s"] <= x["s"] < blk["e"]]
+        on = {show_of(x) for x in items if x["k"] == "c"}
+        nxt = next((bb for bb in p.blocks if bb["s"] >= blk["e"]), None)
+        for x in items:
+            if x["m"] == ads[0]["id"]:
+                seen["watching"] += 1
+                assert "Rugrats" in on, f"'you're watching Rugrats' during {on}"
+            if x["m"] == ads[1]["id"]:
+                seen["next"] += 1
+                assert "Hey Arnold" in on or (nxt and nxt["title"].startswith("Hey Arnold")), f"'up next Hey Arnold' in {on}"
+            assert x["m"] != ads[2]["id"], "a promo for a show this channel doesn't play"
+        # the kinds in each break: never the same kind twice running
+        runs, run = [], []
+        for x in items + [{"k": "c", "m": ""}]:  # each break on its own
+            if x["k"] == "f" and x["m"] in heard:
+                run.append(heard[x["m"]]["cat"])
+            elif x["k"] == "c" and run:
+                runs.append(run)
+                run = []
+        for run in runs:
+            assert not any(a == b_ and a != "promo" for a, b_ in zip(run, run[1:])), run
+    assert seen["watching"], "the Rugrats bumper never played (during Rugrats it should)"
+    print(f"heard commercials: OK (you're-watching {seen['watching']}x, up-next {seen['next']}x, never out of place)")
+
+
 def check_cushion():
     """A break's run of short commercials, each losing time to start up (2.6 s at play speed with
     "even volume", ~0.2 s with a 3 s head start): the stream must stay well ahead of the clock, as it
@@ -458,6 +508,7 @@ async def main():
     await check_moved_files(cat, plain_nick)
     check_cushion()
     check_split()
+    await check_heard(cat)
     await check_break_ends(cat)
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])

@@ -240,6 +240,8 @@ install_reqs() {
   $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check -r "$APP_DIR/requirements.txt" &&
   # YouTube changes often and old copies of yt-dlp stop working, so every install and update gets the newest
   { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check --upgrade yt-dlp || true; }
+  # listening to the commercials (speech-to-text, offline): optional, so a failure here doesn't stop the install
+  { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check faster-whisper || true; }
 }
 if [ "$GUI" = 1 ]; then
   install_reqs 2>&1 | zenity --progress --pulsate --auto-close --no-cancel --title="$TITLE" --width=420 --text="Setting up Rerun…" 2>/dev/null || true

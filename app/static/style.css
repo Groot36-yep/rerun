@@ -757,3 +757,6 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 .cut b { font-size: .85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .linkish { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
 .cut-missing { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; font-size: .9em; }
+.listen { margin-bottom: 18px; }
+.listen-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.listen-kinds .chip { padding: 6px 14px; }

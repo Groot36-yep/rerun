@@ -1807,6 +1807,38 @@ const QUALITIES = [["HD", "q-hd"], ["Good", "q-good"], ["Watchable", "q-ok"], ["
 const quality = (a) => !a.h ? "" : a.h >= 700 ? "HD" : a.h >= 400 ? "Good" : a.h >= 300 ? "Watchable" : "Low";
 const qualityClass = (a) => (QUALITIES.find(([n]) => n === (quality(a) || "Unknown")) || QUALITIES[4])[1];
 
+// Listening to the commercials (see listen.py): what kind each one is and which shows it's about, so the
+// breaks get a mix of kinds and promos only play where they make sense.
+function listenBox() {
+  const box = h("section", { class: "panel listen" });
+  let timer = null;
+  const load = async () => {
+    clearTimeout(timer);
+    let r;
+    try { r = await api("GET", "/api/listen"); } catch (x) { fill(box, h("p", { class: "error" }, x.message)); return; }
+    const p = r.progress;
+    if (p.running) timer = setTimeout(() => { if (box.isConnected) load(); }, 3000);
+    const head = h("h2", null, "What your commercials are");
+    if (!r.available) {
+      fill(box, head, h("p", { class: "hint" }, "Rerun can listen to each commercial once to learn what it is (cereal, toys, a movie, a promo for a show...) and mix the breaks better. Run “rerun update” on the server to add the listening part."));
+      return;
+    }
+    const status = p.running
+      ? (p.paused ? `Waiting until nobody's watching (${p.done} of ${p.total} heard)` : `Listening… ${p.done} of ${p.total}${p.step ? ` · ${p.step}` : ""}`)
+      : p.error ? p.error
+      : r.heard >= r.total ? `All ${plural(r.total, "commercial")} heard.` : `${r.heard} of ${plural(r.total, "commercial")} heard.`;
+    fill(box, head,
+      h("p", { class: "hint" }, "Rerun listens to each commercial once, on this server, only while nobody's watching. Then every break gets a mix of kinds, and promos and “you're watching” bumpers only play around the shows they're about."),
+      h("div", { class: "row" },
+        p.running ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/listen/stop"); toast("Stopping after this one"); load(); } }, "Stop")
+          : r.heard < r.total ? h("button", { class: "btn primary", onclick: async () => { try { await api("POST", "/api/listen/run"); load(); } catch (x) { toast(x.message, true); } } }, "Listen now") : null,
+        h("span", { class: p.error ? "error" : "muted" }, status)),
+      r.kinds.length ? h("div", { class: "listen-kinds" }, r.kinds.map((k) => h("span", { class: "chip" }, `${k.label} · ${k.count}`))) : null);
+  };
+  load();
+  return box;
+}
+
 async function viewCommercials() {
   const v = shell("#/commercials");
   add(v, pageHead("Your breaks", "Commercials", "Everything Rerun can play between shows. Click a commercial to watch it; remove the ones you don't want on the air (nothing is deleted)."));
@@ -1815,7 +1847,7 @@ async function viewCommercials() {
   const bar = h("div", { class: "toolbar slim ad-filters" });
   const grid = h("div", { class: "ad-grid" });
   const more = h("div", { class: "row", style: { justifyContent: "center", marginTop: "24px" } });
-  add(v, hero, strip, bar, grid, more);
+  add(v, hero, listenBox(), strip, bar, grid, more);
   let data = { items: [], labels: {}, groups: { network: [], era: [], season: [] }, stats: {} };
   const f = { query: "", kind: "", network: "", era: "", season: "", quality: "", source: "", sort: "best", hidden: false };
   let shown = 60;
@@ -1846,10 +1878,11 @@ async function viewCommercials() {
     h("button", { class: "ad-thumb", onclick: () => previewAd(a, data.labels), "aria-label": `Watch ${a.title}` },
       h("img", { src: `/api/commercials/${a.id}/thumb.jpg`, alt: "", loading: "lazy" }),
       h("span", { class: `q-pill ${qualityClass(a)}`, title: qualityText(a.q) }, quality(a) || "?"),
-      a.tags.includes("bumper") ? h("span", { class: "ad-kind" }, "Bumper") : null,
+      a.tags.includes("bumper") ? h("span", { class: "ad-kind" }, "Bumper") : a.kind && a.kind !== "Other" ? h("span", { class: "ad-kind" }, a.kind) : null,
       h("span", { class: "ad-dur" }, fmtDur(a.dur))),
     h("div", { class: "ad-body" },
       h("b", { title: a.title }, a.title || "Commercial"),
+      a.about && a.about.length ? h("small", { class: "muted" }, "About " + a.about.join(", ")) : null,
       h("span", null, a.tags.filter((t) => !/^y\d{4}$/.test(t) && t !== "bumper").map(label).join(", ") || SOURCE_NAMES[a.source]),
       h("button", { class: "ad-remove", onclick: () => setHidden([a.id], !a.hidden) }, a.hidden ? "Put back" : "Remove")));
 

@@ -22,6 +22,7 @@ from . import archive as archive_mod
 from . import lineups as lineups_mod
 from . import youtube as youtube_mod
 from . import characters as characters_mod
+from . import listen as listen_mod
 from . import preview as preview_mod
 from . import looks as looks_mod
 from . import recommend as recommend_mod
@@ -1185,7 +1186,9 @@ async def commercials_list(app=Depends(signed_in)):
     hidden = set(app.cfg.data.get("hidden_filler") or [])
     items = [{"id": f["id"], "title": f.get("title", ""), "dur": round(f["dur"], 1),
               "tags": f.get("tags", []), "source": _ad_source(app, f), "hidden": f["id"] in hidden,
-              "h": int(f.get("h") or 0), "q": f.get("q") or None}
+              "h": int(f.get("h") or 0), "q": f.get("q") or None,
+              "kind": listen_mod.KIND_LABELS.get((app.listener.heard.get(f["id"]) or {}).get("cat", ""), ""),
+              "about": (app.listener.heard.get(f["id"]) or {}).get("shows") or []}
              for f in app.catalog.all_filler() if not f.get("dup")]  # a better copy of a duplicate airs
     items.sort(key=lambda x: (x["title"].lower(), x["id"]))
     tags = Counter(t for x in items for t in x["tags"])
@@ -1340,6 +1343,26 @@ async def looks_n9(body: dict, app=Depends(signed_in)):
     app.cfg.data["n9"] = {"text": "clear" if clear else "original", "poster": bool(body.get("poster", cur["poster"]))}
     app.cfg.save()
     return looks_mod.n9_options(app.cfg.data)
+
+
+@router.get("/listen")
+async def listen_status(app=Depends(signed_in)):
+    return app.listener.summary()
+
+
+@router.post("/listen/run")
+async def listen_run(app=Depends(signed_in)):
+    try:
+        app.listener.start()
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return app.listener.summary()
+
+
+@router.post("/listen/stop")
+async def listen_stop(app=Depends(signed_in)):
+    app.listener.stop = True
+    return {"ok": True}
 
 
 @router.get("/characters")
