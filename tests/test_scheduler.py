@@ -201,6 +201,28 @@ async def check_moved_files(cat, ch):
     print("moved files: OK")
 
 
+async def check_break_ends(cat):
+    """The seconds at the end of a break that the commercials can't fill go to one of the network's
+    bumpers when one fits, so the stand-in (a station ID) is short and rare."""
+    import copy
+    c2 = Catalog(copy.deepcopy(cat.to_dict()))
+    rb = random.Random(1)
+    for i in range(12):
+        c2.filler["folder:/m/ads"].append({"id": f"b{i}", "title": f"bump {i}", "dur": rb.choice([3, 5, 7.5, 10, 12]),
+                                           "file": f"/m/b{i}.mp4", "part": "", "audio": True,
+                                           "tags": ["nick", "bumper"], "src": "folder:/m/ads"})
+    c2.reindex()
+    ch = normalize_channel({"id": "nb", "name": "Nick", "seed": 3, "commercials": {"enabled": True},
+                            "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"}]})
+    before, _ = await build(ch, cat, 24)
+    after, _ = await build(ch, c2, 24)
+    blank = lambda p: sum(x["e"] - x["s"] for x in p.items if x["k"] == "x" and not x.get("t"))  # noqa: E731
+    assert blank(after) < blank(before) * 0.6, (blank(before), blank(after))
+    assert max((x["e"] - x["s"] for x in after.items if x["k"] == "x"), default=0) < 12
+    check(after, "Nick with bumpers", 30)
+    print(f"break ends: OK (stand-in time a day {blank(before):.0f}s -> {blank(after):.0f}s with bumpers)")
+
+
 def check_cushion():
     """A break's run of short commercials, each losing time to start up (2.6 s at play speed with
     "even volume", ~0.2 s with a 3 s head start): the stream must stay well ahead of the clock, as it
@@ -412,6 +434,7 @@ async def main():
     check_recommend()
     await check_moved_files(cat, plain_nick)
     check_cushion()
+    await check_break_ends(cat)
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])

@@ -440,6 +440,25 @@ class FFmpeg:
             cur = f"{g}c"
         return n, cur
 
+    def ident_cmd(self, png: str, duration: float, s: dict, burst: float | None) -> list[str]:
+        """A station ID (images.station_id) as a piece of live TV: it fades up from black, drifts slowly
+        closer, and fades back down, in silence."""
+        hw = self.encoder_status.get("using") or "none"
+        W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])
+        d = max(0.5, duration)
+        fade = min(0.4, d / 4)
+        args = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", *self._hw_prefix(s, hw)]
+        args += self._input_pacing(burst)
+        args += ["-loop", "1", "-framerate", str(FPS), "-i", "file:" + png]
+        args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+        graph = (f"[0:v:0]scale=w='trunc({W}*(1+0.04*t/{d:.2f})/2)*2':h=-2:eval=frame,crop={W}:{H},setsar=1,fps={FPS},"
+                 f"fade=t=in:st=0:d={fade:.2f},fade=t=out:st={max(0.0, d - fade):.2f}:d={fade:.2f},"
+                 f"{self._vf_tail(hw)}[v]")
+        args += ["-filter_complex", graph, "-map", "[v]", "-map", "1:a:0", *self._video_codec(s, hw),
+                 "-c:a", "aac", "-b:a", f"{int(s.get('audio_kbps') or 192)}k", "-ac", "2", "-ar", "48000",
+                 *self._ts_out(duration)]
+        return args
+
     def slate_cmd(self, text_file: str | None, duration: float, s: dict, burst: float) -> list[str]:
         hw = self.encoder_status.get("using") or "none"
         W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])

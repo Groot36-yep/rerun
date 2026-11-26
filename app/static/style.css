@@ -756,3 +756,4 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 .cut img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #3a4a60; border-radius: 8px; }
 .cut b { font-size: .85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .linkish { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
+.cut-missing { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; font-size: .9em; }

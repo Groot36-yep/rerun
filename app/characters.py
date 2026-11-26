@@ -2,10 +2,15 @@
 
 fanart.tv keeps "character art" for TV shows: see-through PNGs of a show's characters, uploaded by fans
 and checked by its moderators, with a count of likes. For each show (by its TheTVDB id, which Plex
-gives Rerun), the best-liked English ones are fetched and checked before one is kept: a real see-through
+gives Rerun; failing that, found from its IMDb or TMDB id through TVMaze or Wikidata, which need no
+key), the best-liked English ones are fetched and checked before one is kept: a real see-through
 background, big enough, smooth (anti-aliased) edges, the character not cut off at the top or sides and
-filling a sensible share of the picture. It's saved as bugs/custom/characters/<Show>.png, where
-images.character_for finds it. Cut-outs you put there yourself are never replaced.
+filling a sensible share of the picture. If none passes, the show's "HD ClearArt" (its characters with
+its logo, also see-through) is tried the same way. It's saved as bugs/custom/characters/<Show>.png,
+where images.character_for finds it. Cut-outs you put there yourself are never replaced.
+
+(Fan wikis were tried too, but their pictures sit behind a bot check, and getting past that would mean
+pretending to be a browser, so they're not used.)
 
 fanart.tv needs a project API key (free: https://fanart.tv/get-an-api-key/, "Project API keys"), sent
 as "api-key"; a personal API key can go with it as "client-key" (fanart.tv's terms: users may add their
@@ -30,8 +35,14 @@ log = logging.getLogger("rerun.characters")
 
 API = "https://webservice.fanart.tv/v3/tv/{tvdb}"
 TMDB_IDS = "https://api.themoviedb.org/3/tv/{tmdb}/external_ids"
+TVMAZE = "https://api.tvmaze.com/lookup/shows"
+WIKIDATA = "https://www.wikidata.org/w/api.php"
+WIKIDATA_ITEM = "https://www.wikidata.org/wiki/Special:EntityData/{item}.json"
+KINDS = (("characterart", "character"), ("hdclearart", "clear art"))  # in order of preference
+SEARCH_V = 2  # shows that found nothing with an older search are searched again
 DIR = images.CHARACTERS
-MANIFEST = DIR / ".found.json"  # {show title: {"id", "file", "likes", "tried": [ids], "none": bool}}
+MANIFEST = DIR / ".found.json"  # {show title: {"id", "file", "kind", "likes", "tried": [ids], "none": bool,
+#                                  "removed": bool (you took it away), "why": str, "v": SEARCH_V}}
 MAX_BYTES = 8_000_000
 TRY = 6  # downloads to check per show, at most
 TEST_TVDB = "75886"  # SpongeBob SquarePants, for checking a key
@@ -114,51 +125,61 @@ class Grabber:
             rec = m.get(show.get("title", "")) or {}
             if f or rec.get("none"):
                 out.append({"show": sid, "title": show["title"], "auto": bool(f and rec.get("file") and f.endswith(rec["file"])),
-                            "file": f.split("/")[-1].split("\\")[-1] if f else "", "none": bool(rec.get("none") and not f)})
+                            "file": f.split("/")[-1].split("\\")[-1] if f else "", "none": bool(rec.get("none") and not f),
+                            "kind": rec.get("kind", "character") if f else "",
+                            "why": "" if f else ("You removed it" if rec.get("removed") else rec.get("why") or "")})
         return out
 
     # ---- fetching -----------------------------------------------------------------------------
     async def _tvdb(self, c: httpx.AsyncClient, show: dict) -> str:
+        """The show's TheTVDB id: from Plex, else from its TMDB id (with a TMDB key), else looked up from
+        its IMDb id on TVMaze, else from its TMDB or IMDb id on Wikidata."""
         g = show.get("guids") or {}
         if g.get("tvdb"):
             return str(g["tvdb"])
         tk = (self.app.secrets.data.get("tmdb_key") or "").strip()
-        if g.get("tmdb") and tk:
-            try:
+        try:
+            if g.get("tmdb") and tk:
                 r = await c.get(TMDB_IDS.format(tmdb=g["tmdb"]), params={"api_key": tk})
                 if r.status_code == 200 and r.json().get("tvdb_id"):
                     return str(r.json()["tvdb_id"])
-            except (httpx.HTTPError, ValueError):
-                pass
+            if g.get("imdb"):
+                r = await c.get(TVMAZE, params={"imdb": g["imdb"]})
+                if r.status_code == 200 and ((r.json() or {}).get("externals") or {}).get("thetvdb"):
+                    return str(r.json()["externals"]["thetvdb"])
+            for prop, val in (("P4983", g.get("tmdb")), ("P345", g.get("imdb"))):
+                if not val:
+                    continue
+                r = await c.get(WIKIDATA, params={"action": "query", "list": "search", "format": "json",
+                                                  "srsearch": f"haswbstatement:{prop}={val}"}, headers={"User-Agent": images.WIKI_UA})
+                hits = ((r.json().get("query") or {}).get("search") or []) if r.status_code == 200 else []
+                for hit in hits[:2]:
+                    e = await c.get(WIKIDATA_ITEM.format(item=hit["title"]), headers={"User-Agent": images.WIKI_UA})
+                    claims = ((e.json().get("entities") or {}).get(hit["title"]) or {}).get("claims") or {} if e.status_code == 200 else {}
+                    for cl in claims.get("P4835") or []:
+                        v = ((cl.get("mainsnak") or {}).get("datavalue") or {}).get("value")
+                        if v:
+                            return str(v)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            pass
         return ""
 
-    async def candidates(self, c: httpx.AsyncClient, tvdb: str) -> list[dict]:
+    async def candidates(self, c: httpx.AsyncClient, tvdb: str) -> dict:
+        """{"characterart": [...], "hdclearart": [...]}, each best first (English, then most liked)."""
         r = await c.get(API.format(tvdb=tvdb), headers=self.headers())
         if r.status_code in (401, 403):
             raise PermissionError("fanart.tv didn't accept the API key")
         if r.status_code == 404:
-            return []
+            return {}
         r.raise_for_status()
-        arts = r.json().get("characterart") or []
+        j = r.json()
+        return {k: sorted(j.get(k) or [], key=lambda x: (_foreign(x), -int(x.get("likes") or 0))) for k, _ in KINDS}
 
-        return sorted(arts, key=lambda x: (_foreign(x), -int(x.get("likes") or 0)))
-
-    async def for_show(self, c: httpx.AsyncClient, sid: str, skip: set | None = None) -> str:
-        """Find and keep the best cut-out for one show. Its file name, or "" if none was good enough."""
-        show = self.app.catalog.shows.get(sid) or {}
-        title = show.get("title", "")
-        m = _read()
-        rec = m.get(title) or {}
-        mine = images.character_for(title)
-        if mine and not (rec.get("file") and mine.endswith(rec["file"])):
-            return ""  # one you put there yourself
-        tvdb = await self._tvdb(c, show)
-        if not tvdb:
-            return ""
-        tried = set(rec.get("tried") or []) | (skip or set())
+    async def _pick(self, c, title: str, arts: list, tried: set, why: list):
+        """The best of these that passes the checks: (art, data) or (None, b"")."""
         best, best_score, best_data = None, 0.0, b""
         checked = 0
-        for art in await self.candidates(c, tvdb):
+        for art in arts:
             if art.get("id") in tried or checked >= TRY:
                 continue
             if best and _foreign(art) and not _foreign(best):
@@ -170,19 +191,54 @@ class Grabber:
                     continue
             except httpx.HTTPError:
                 continue
-            score, why = await asyncio.to_thread(judge, r.content)
+            score, bad = await asyncio.to_thread(judge, r.content)
             if not score:
-                log.info("Skipped a %s cut-out: %s", title, why)
+                log.info("Skipped a %s picture: %s", title, bad)
+                why.append(bad)
                 tried.add(art.get("id"))
                 continue
             score += min(int(art.get("likes") or 0), 20) / 10
             if score > best_score:
                 best, best_score, best_data = art, score, r.content
+        return best, best_data
+
+    async def for_show(self, c: httpx.AsyncClient, sid: str, skip: set | None = None) -> str:
+        """Find and keep the best cut-out for one show. Its file name, or "" if none was good enough."""
+        show = self.app.catalog.shows.get(sid) or {}
+        title = show.get("title", "")
         m = _read()
-        if not best:
-            m[title] = {**(m.get(title) or {}), "tried": sorted(x for x in tried if x), "none": True}
+        rec = m.get(title) or {}
+        mine = images.character_for(title)
+        if mine and not (rec.get("file") and mine.endswith(rec["file"])):
+            return ""  # one you put there yourself
+        tried = set(rec.get("tried") or []) | (skip or set())
+
+        def nothing(why: str) -> str:
+            m = _read()
+            m[title] = {**(m.get(title) or {}), "tried": sorted(x for x in tried if x), "none": True,
+                        "removed": False, "why": why, "v": SEARCH_V, "file": ""}
             _write(m)
             return ""
+
+        tvdb = await self._tvdb(c, show)
+        if not tvdb:
+            return nothing("Couldn't identify the show (Plex gave no TheTVDB, IMDb or TMDB id that matched)")
+        arts = await self.candidates(c, tvdb)
+        if not any(arts.get(k) for k, _ in KINDS):
+            return nothing("fanart.tv has no character art for it")
+        why: list = []
+        best, best_data, kind = None, b"", ""
+        for k, label in KINDS:
+            best, best_data = await self._pick(c, title, arts.get(k) or [], tried, why)
+            if best:
+                kind = label
+                break
+        if not best:
+            if not why:
+                return nothing("Nothing new on fanart.tv to try")
+            common = sorted(set(why), key=why.count, reverse=True)[:2]
+            return nothing(f"fanart.tv's pictures weren't good enough ({', '.join(common)})")
+        m = _read()
         DIR.mkdir(parents=True, exist_ok=True)
         name = file_name(title)
         old = images.character_for(title)
@@ -194,8 +250,8 @@ class Grabber:
                 pass
         img = images._trim(Image.open(io.BytesIO(best_data)).convert("RGBA"))
         img.save(DIR / name)
-        m[title] = {"id": best.get("id"), "file": name, "likes": int(best.get("likes") or 0),
-                    "tried": sorted(x for x in tried | {best.get("id")} if x), "none": False}
+        m[title] = {"id": best.get("id"), "file": name, "kind": kind, "likes": int(best.get("likes") or 0),
+                    "tried": sorted(x for x in tried | {best.get("id")} if x), "none": False, "v": SEARCH_V}
         _write(m)
         return name
 
@@ -218,7 +274,7 @@ class Grabber:
                 os.remove(f)
             except OSError:
                 pass
-        m[title] = {**rec, "file": "", "none": True}
+        m[title] = {**rec, "file": "", "none": True, "removed": True}
         _write(m)
 
     # ---- all the shows ----------------------------------------------------------------------
@@ -234,9 +290,15 @@ class Grabber:
     async def _run(self, only_new: bool):
         try:
             m = _read()
-            todo = [sid for sid, s in self.app.catalog.shows.items()
-                    if not images.character_for(s.get("title", "")) and not (m.get(s.get("title", "")) or {}).get("none")
-                    and not (only_new and s.get("title", "") in m)]
+            def wanted(s: dict) -> bool:
+                rec = m.get(s.get("title", ""))
+                if images.character_for(s.get("title", "")) or (rec or {}).get("removed"):
+                    return False
+                if rec is None:
+                    return True
+                # found nothing before: look again with newer sources, but not every night
+                return not only_new and rec.get("none") and int(rec.get("v") or 1) < SEARCH_V
+            todo = [sid for sid, s in self.app.catalog.shows.items() if wanted(s)]
             self.progress["total"] = len(todo)
             async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": "Rerun"}) as c:
                 for i, sid in enumerate(todo):

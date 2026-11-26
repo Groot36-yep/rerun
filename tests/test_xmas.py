@@ -344,7 +344,10 @@ async def check_bumpers():
         for k, x in enumerate(items):
             if x["m"] in bumper_ids:
                 assert net and net_of[x["m"]] == net, f"{net_of[x['m']]} bumper around a {net} show"
-                assert k == 0 or items[k - 1]["k"] == "c", "a bumper played in the middle of a break"
+                # into a break (right after the show) or out of it (last before the next show, or a moment
+                # of station ID); never wedged between two commercials
+                ends = k + 1 == len(items) or items[k + 1]["k"] in ("c", "x")
+                assert k == 0 or items[k - 1]["k"] == "c" or ends, "a bumper played in the middle of a break"
                 assert "christmas" not in cat.items[x["m"]]["tags"], "a Christmas bumper in July"
         if net and items[0]["m"] in bumper_ids:
             opened[net] += 1
@@ -434,6 +437,7 @@ def check_overlay_filters():
     assert "-filter_complex" not in bare, "without the overlay filter, a plain picture"
     from PIL import Image
     import io as _io
+    from PIL import ImageDraw as _ID
     for theme in ("nick", "cn", "disney", "boomerang", "25days"):  # every style draws, long titles fit
         img = Image.open(_io.BytesIO(images.make_themed_banner("A Very Long Title " * 6, 720, theme)))
         widest = 1280 if theme == "nick" else 1100  # the Nick bar runs the full width of a widescreen picture
@@ -482,6 +486,18 @@ def check_overlay_filters():
     card = _I.open(P["char"]).convert("RGBA")
     assert P["char_x"] + card.width <= 622 and len(set(card.getchannel("A").getdata())) > 20, "card edges aren't smooth"
     assert "char" not in images.nick2009_layers("Danny Phantom", "", 1080, None, buf.getvalue()), "poster off by default"
+    # the station ID that stands in for the odd seconds at the end of a break: the logo on black, centred
+    logo = Image.new("RGBA", (400, 300), (255, 255, 255, 255))  # a logo on a plain white background
+    _ID.Draw(logo).ellipse((80, 40, 320, 260), fill=(245, 120, 10, 255))
+    buf = _io.BytesIO()
+    logo.save(buf, "PNG")
+    sid = Image.open(images.station_id(buf.getvalue(), 720, "We'll be right back")).convert("RGB")
+    assert sid.size == (1280, 720) and sid.getpixel((5, 5)) == (0, 0, 0), "the plain background should be gone"
+    box = sid.point(lambda v: 255 if v > 40 else 0).getbbox()
+    assert abs((box[0] + box[2]) / 2 - 640) < 20 and box[3] > 450, box  # centred, with the words under it
+    cmd = ff.ident_cmd(images.station_id(buf.getvalue(), 720), 6.0, {"resolution": "720p"}, 3.0)
+    g = cmd[cmd.index("-filter_complex") + 1]
+    assert "fade=t=in" in g and "fade=t=out:st=5.60" in g and "eval=frame" in g, g
     # the logo addresses handed to Plex with its guide (a name clash with the banner helper once broke this)
     assert images.public_logo_url({"id": "x", "name": "Zzz Test", "number": 5}, None).startswith("https://")
     # it animates over the whole picture (after any side bars), as the original moved

@@ -509,6 +509,27 @@ class Builder:
                     chosen.append(f)
                     used.add(f["id"])
                     remaining -= f["dur"]
+        # Tighten: swap a chosen one for an unused one a little longer, to use up what's left over (else
+        # it's a few seconds of stand-in card at the end of the break). Best matches first, as above.
+        spare = [f for f in pool if f["id"] not in used]
+        for _ in range(8):
+            if remaining < 0.5 or not chosen:
+                break
+            best = None
+            for i, c in enumerate(chosen):
+                for f in spare:
+                    gain = f["dur"] - c["dur"]
+                    if 0 < gain <= remaining + 1e-6 and (best is None or gain > best[0] + 1e-6):
+                        best = (gain, i, f)
+            if best is None:
+                break
+            gain, i, f = best
+            spare.remove(f)
+            spare.append(chosen[i])
+            used.discard(chosen[i]["id"])
+            used.add(f["id"])
+            chosen[i] = f
+            remaining -= gain
         keep = min(RECENT_FILLER, max(0, len(self.filler) // 2))
         self.st["recent"] = (self.st["recent"] + [f["id"] for f in chosen])[-keep:] if keep else []
         return chosen, remaining
@@ -572,7 +593,12 @@ class Builder:
                           "t": f.get("title", ""),
                           **_src(f)})
             pos += f["dur"]
-        if final and left > 0.05:
+        if final and left >= 3:  # time the commercials can't fill: one of the network's bumpers, if one fits
+            b = self._bumper(ctx, left)
+            if b:
+                pos = self._put(items, pos, b)
+                left -= b["dur"]
+        if final and left > 0.05:  # what's still left: the network's logo (a station ID), see streaming
             items.append({"s": pos, "e": pos + left, "k": "x", "m": "", "in": 0, "t": ""})
             pos += left
             left = 0.0

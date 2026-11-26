@@ -2279,6 +2279,7 @@ function cutoutsBox() {
       : p.error ? p.error
       : p.finished ? `Found ${plural(p.found, "new cut-out")} for ${plural(p.total, "show")} that had none.` : "";
     const found = r.items.filter((x) => x.file);
+    const missing = r.items.filter((x) => !x.file);
     fill(box, head,
       h("p", { class: "hint" }, "Pictures from fanart.tv, made by its fans, checked for quality. Your own PNGs in bugs/custom/characters/ always win. New shows get one overnight. ",
         h("button", { class: "linkish", onclick: async () => {
@@ -2294,6 +2295,7 @@ function cutoutsBox() {
         h("div", { class: "cut-grid" }, found.map((x) => h("div", { class: "cut" },
           h("img", { src: `/api/characters/img/${encodeURIComponent(x.file)}?t=${Date.now()}`, alt: "", loading: "lazy" }),
           h("b", { title: x.title }, x.title),
+          x.kind === "clear art" ? h("small", { class: "muted" }, "With the show's logo") : null,
           x.auto ? h("div", { class: "look-acts" },
             h("button", { class: "btn quiet small", onclick: async (e) => {
               e.target.disabled = true;
@@ -2302,7 +2304,10 @@ function cutoutsBox() {
             } }, "Another"),
             h("button", { class: "btn quiet small", onclick: async () => {
               try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}`); load(); } catch (err) { toast(err.message, true); }
-            } }, "Remove")) : h("small", { class: "muted" }, "Your own"))))) : null);
+            } }, "Remove")) : h("small", { class: "muted" }, "Your own"))))) : null,
+      missing.length ? h("details", { class: "look-more" }, h("summary", null, plural(missing.length, "show") + " without one"),
+        h("p", { class: "hint" }, "To give one of these a character, put a see-through PNG named after the show in bugs/custom/characters/ (or turn on the poster under the Nick 2009 style)."),
+        h("ul", { class: "cut-missing" }, missing.map((x) => h("li", null, h("b", null, x.title), " ", h("span", { class: "muted" }, x.why || "Not found"))))) : null);
   };
   load();
   return box;

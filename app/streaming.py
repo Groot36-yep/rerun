@@ -408,6 +408,40 @@ class ChannelStream:
             out["anims"] = anims
         return out or None
 
+    async def ident(self, item: dict, caption: str = "") -> str | None:
+        """The station ID picture for this moment: the logo of the network of the show around it (the
+        one it had the year that episode aired), as on the corner logo. None if there's no logo to use."""
+        app = self.mgr.app
+        ch = app.channel(self.cid)
+        if not ch:
+            return None
+        p = app.schedules.get(self.cid)
+        i = p.index_at(item.get("s", 0) + 0.01)
+        show = item if item.get("k") == "c" else None
+        j = i if i is not None else len(p.items) - 1
+        while show is None and j is not None and j >= 0:  # the show this break belongs to
+            if p.items[j].get("k") == "c":
+                show = p.items[j]
+            j -= 1
+        net = self._bug_network(ch, show or {})
+        online = app.cfg.data["metadata"].get("online_lookups", True)
+        raw = None
+        if net:
+            tag = archive.tag_for_network(net)
+            year = self._year(show or {})
+            own = images.custom_bug([net, tag or ""], year)
+            if own:
+                raw = open(own, "rb").read()
+            elif online:
+                ref = images.era_logo(tag, year) or network_logo(net, app.catalog)
+                raw = await images.official_logo(ref) if ref else None
+        if not raw:  # no network logo (a movie channel, a holiday channel): the channel's own, as in Plex
+            raw = await images.channel_logo(ch, app.catalog, app.festive(), online)
+        if not raw:
+            return None
+        H = RESOLUTIONS.get(app.cfg.data["stream"].get("resolution"), RESOLUTIONS["720p"])[1]
+        return await asyncio.to_thread(images.station_id, raw, H, caption)
+
     def _year(self, item: dict):
         """The year an episode first aired (or a movie came out), for the logo of that era."""
         cat = self.mgr.app.catalog
@@ -602,7 +636,15 @@ class StreamManager:
                     else f"{st.name}\n\nWe'll be right back")
             if item.get("k") == "x" and item.get("t"):
                 text = f"{st.name}\n\n{item['t']}"
-            cmd, kind = self._slate(st, text, dur, burst), "slate"
+            cmd, kind = None, "slate"
+            if not (item.get("k") == "x" and item.get("t")):  # not a card with something to say: a station ID
+                try:
+                    png = await st.ident(item, "" if text == st.name else "We'll be right back")
+                    cmd = self.ffmpeg.ident_cmd(png, dur, s, burst) if png else None
+                except Exception as e:
+                    log.info("No station ID (%s)", e.__class__.__name__)
+            if cmd is None:
+                cmd = self._slate(st, text, dur, burst)
 
         proc = None
         try:

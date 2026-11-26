@@ -670,6 +670,38 @@ async def screen_bug(ref: str, height: int, online: bool = True, names: list[str
     return str(path)
 
 
+def station_id(raw: bytes, height: int, caption: str = "") -> str:
+    """A station ID: the network's logo (the one it had then), in full colour, in the middle of a black
+    screen, for the odd seconds at the end of a break nothing else fills (or, with `caption`, when a
+    show won't play). Made once and kept."""
+    W = round(height * 16 / 9) // 2 * 2
+    key = hashlib.sha1(raw + f"id1:{height}:{caption}".encode()).hexdigest()[:16]
+    path = BUG_DIR / "ident" / f"{key}.png"
+    if path.exists():
+        return str(path)
+    logo = _trim(Image.open(io.BytesIO(raw)).convert("RGBA"))
+    if logo.getchannel("A").getextrema()[0] >= 250:  # a logo on a plain background: drop it, as make_bug does
+        corner = Image.new("RGBA", logo.size, logo.getpixel((0, 0)))
+        cut = ImageChops.difference(logo, corner).convert("L").point(lambda v: 255 if v > 40 else 0)
+        if cut.getbbox():
+            logo.putalpha(cut.filter(ImageFilter.GaussianBlur(0.6)))
+            logo = _trim(logo)
+    box_w, box_h = W * 0.42, height * (0.34 if caption else 0.40)
+    k = min(box_w / logo.width, box_h / logo.height)
+    logo = logo.resize((max(1, round(logo.width * k)), max(1, round(logo.height * k))), Image.LANCZOS)
+    pic = Image.new("RGBA", (W, height), (0, 0, 0, 255))
+    y = (height - logo.height) // 2 - (round(height * 0.06) if caption else 0)
+    pic.alpha_composite(logo, ((W - logo.width) // 2, y))
+    if caption:
+        f = _font(round(height / 20), "sans")
+        d = ImageDraw.Draw(pic)
+        tw = d.textlength(caption, font=f)
+        d.text(((W - tw) / 2, y + logo.height + height * 0.06), caption, font=f, fill=(235, 235, 235, 255))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pic.convert("RGB").save(path)
+    return str(path)
+
+
 def bug_accent(bug_path: str | None) -> str | None:
     """The colour of the logo a bug was made from ("#f57d0d" for Nick's orange), if it has one."""
     try:
@@ -1444,10 +1476,11 @@ def nick2009_layers(title: str, label: str, height: int, character: str | None =
     try:
         if character:
             pic = _trim(Image.open(character).convert("RGBA"))
-            ch = round(400 * s)
+            wide = pic.width > pic.height * 1.25  # clear art: the show's characters with its logo
+            ch, most = (round(330 * s), 590 * s) if wide else (round(400 * s), 340 * s)
             pic = pic.resize((max(1, round(ch * pic.width / pic.height)), ch), Image.LANCZOS)
-            if pic.width > 340 * s:
-                pic = pic.resize((round(340 * s), max(1, round(pic.height * 340 * s / pic.width))), Image.LANCZOS)
+            if pic.width > most:
+                pic = pic.resize((round(most), max(1, round(pic.height * most / pic.width))), Image.LANCZOS)
         elif use_art:
             pic = _n9_card(use_art, s)
     except Exception:
