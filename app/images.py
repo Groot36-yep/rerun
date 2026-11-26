@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import math
 from pathlib import Path
@@ -778,7 +779,9 @@ def up_next_banner(title: str, height: int, accent: str | None = None, theme: st
     if not title:
         return None
     folder = BUG_DIR / "banners"
-    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}:{art_key if art else ''}:{logo or ''}:{label}:{short}"
+    cut = character_for(title) if theme in ART_THEMES else None
+    cut_v = f"{cut}:{int(os.path.getmtime(cut))}" if cut else ""
+    key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}:{art_key if art else ''}:{logo or ''}:{label}:{short}:{cut_v}"
     path = folder / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.png"
     if not path.exists():
         folder.mkdir(parents=True, exist_ok=True)
@@ -996,13 +999,15 @@ def public_logo_url(ch: dict, catalog=None) -> str:
 def theme_for(tag: str | None, plan: bool = False) -> str:
     if plan:
         return "25days"
-    return {"nick": "nick", "nicktoons": "nick", "cn": "cn", "disney": "disney", "toondisney": "disney",
+    return {"nick": "nick_2009", "nicktoons": "nick_2009", "cn": "cn", "disney": "disney", "toondisney": "disney",
             "playhouse": "disney", "boomerang": "boomerang"}.get(tag or "", "")
 
 
 # where each style sits: "bottom" runs along the bottom edge of the picture, the rest sit low on the left
 # ("edge": right up against the picture's left edge, running off its right edge)
 PLACE = {"nick": "edge", "disney": "bottom"}
+ART_THEMES = {"nick", "nick_2009"}  # styles that show the next show's picture
+ANIMATED = {"nick_2009"}  # styles that are an animation over the whole picture (see nick2009_layers)
 
 # how each style comes on screen: from where it slides
 MOTION = {"nick": "rise", "cn": "left", "disney": "left", "boomerang": "right", "25days": "up", "": "left"}
@@ -1243,6 +1248,166 @@ def _banner_nick_bar(title, bh, k, art=None, logo=None, parts=None):
     t = _fit(title, small, W43 - x0 - art_w - W43 * 0.1)
     d.text((x0 + k, lift + bar_h * 0.62), t, font=small, fill=(255, 248, 236, 255))
     return img
+
+
+CHARACTERS = BUG_DIR / "custom" / "characters"
+
+
+def character_for(title: str) -> str | None:
+    """A cut-out of a show's character, if you've put one in Rerun's data folder under
+    bugs/custom/characters/, named after the show ("SpongeBob SquarePants.png", see-through around him)."""
+    if not CHARACTERS.is_dir():
+        return None
+    want = _slug(title)
+    return next((str(f) for f in CHARACTERS.iterdir()
+                 if f.suffix.lower() in (".png", ".webp") and _slug(f.stem) == want), None)
+
+
+# ---- Nickelodeon's 2009-2011 "Up next", recreated --------------------------------------------------
+# Measured off the original at 1920x1080 (all numbers below are pixels at that size): a flat light grey
+# bar whose top edge slopes from y=832 at the left to y=924 at the right, with a soft shadow just under
+# the edge; "UP NEXT" in orange (217,106,22) with its cap tops at y=861 and baseline at 949, starting at
+# x=622, the T's stem ending at x=1099, tucked under the edge so the slope clips the letters; the show's name in near-black
+# capitals, x=623, cap height 963-992; the character on the left, in front of the bar, its top at y=802
+# and right edge at x=651, cut off by the bottom of the picture. It moves as separate layers (see
+# FFmpeg._nick2009): the bar slides in from the right, the name then UP NEXT drop in from above it, the
+# character pops up from below, and at the end it all goes out the other way.
+
+N9 = {"edge": (833, 925), "heavy": (0.02, 0.0), "grey": (229, 229, 229), "shadow": (133, 12.0, 44), "orange": (217, 106, 22),
+      "ink": (16, 16, 16), "label": (622, 861, 949, 478), "name": (623, 963, 992), "char": (651, 802),
+      "layer_top": 826, "len": 10.96}
+
+
+def _n9_text(text: str, cap: float, sx: float, colour, heavy: float) -> Image.Image:
+    """Capitals whose H is exactly `cap` px tall (cap line at the top of the picture), `sx` times wider than
+    Jost Bold's, with strokes thickened by `heavy` of the cap height: matched to the original's lettering."""
+    k = 4
+    f = _font(round(cap / 0.70 * k), "sans")
+    sw = round(cap * k * heavy)
+    size = (round(f.getlength(text)) + sw * 4 + 40, round(cap * k * 2) + sw * 4 + 40)
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    ImageDraw.Draw(img).text((20, 20), text, font=f, fill=colour + (255,), stroke_width=sw, stroke_fill=colour + (255,))
+    h = Image.new("L", size, 0)
+    ImageDraw.Draw(h).text((20, 20), "H", font=f, fill=255, stroke_width=sw, stroke_fill=255)
+    hb, box = h.getbbox(), img.getbbox() or (0, 0, 1, 1)
+    scale = cap / (hb[3] - hb[1])  # makes the H exactly `cap` tall
+    img = img.crop((box[0], hb[1], box[2], max(box[3], hb[3])))
+    return img.resize((max(1, round(img.width * scale * sx)), max(1, round(img.height * scale))), Image.LANCZOS)
+
+
+def _n9_fit():
+    """How much wider the original's lettering is than Jost Bold. UP NEXT: its T is tucked so far under the
+    edge that only the stem shows, so the U's left side (x=622) and the T stem's right side (x=1099) set
+    the width. The name: SPONGEBOB SQUAREPANTS spans x=623 to 1185."""
+    cap = N9["label"][2] - N9["label"][1]
+    label = _n9_text("UP NEXT", cap, 1.0, (0, 0, 0), N9["heavy"][0])
+    row = round(label.height * 0.8)  # near the baseline: the T's stem, not its crossbar
+    stem_right = max(x for x in range(label.width) if label.getpixel((x, row))[3] > 128)
+    name = _n9_text("SPONGEBOB SQUAREPANTS", N9["name"][2] - N9["name"][1], 1.0, (0, 0, 0), N9["heavy"][1])
+    return (N9["label"][3]) / (stem_right + 1), (1185 - 623) / name.width
+
+
+def nick2009_layers(title: str, label: str, height: int, character: str | None = None,
+                    art: bytes | None = None) -> dict:
+    """The layers of the 2009-2011 Nick "Up next" for a picture `height` lines tall, made once and kept:
+    {"bar", "shadow", "label", "name", "char"?: files, and where things go}. `label` replaces UP NEXT
+    ("TONIGHT AT 8"); the character is a cut-out (see character_for) or, failing that, the show's poster."""
+    s = height / 1080
+    W = round(1920 * s) // 2 * 2
+    char_v = f"{character}:{int(os.path.getmtime(character))}" if character else ""
+    key = hashlib.sha1(f"n9:5:{title}:{label}:{height}:{char_v}:{hashlib.sha1(art).hexdigest() if art else ''}"
+                       .encode()).hexdigest()[:16]
+    folder = BUG_DIR / "anim" / key
+    info_file = folder / "layers.json"
+    if info_file.exists():
+        return json.loads(info_file.read_text())
+    folder.mkdir(parents=True, exist_ok=True)
+    k = 2  # drawn twice as big, then shrunk: smooth edges
+    top = N9["layer_top"]
+    LH = round((1080 - top) * s)
+    e0, e1 = (N9["edge"][0] - top) * s, (N9["edge"][1] - top) * s
+
+    def edge_y(x):  # the bar's top edge, in the layer, at x
+        return e0 + (e1 - e0) * x / W
+
+    # the bar
+    bar = Image.new("RGBA", (W * k, LH * k), (0, 0, 0, 0))
+    ImageDraw.Draw(bar).polygon([(0, e0 * k), (W * k, e1 * k), (W * k, LH * k), (0, LH * k)],
+                                fill=N9["grey"] + (255,))
+    bar = bar.resize((W, LH), Image.LANCZOS)
+    # the shadow just under its top edge: darkest at the edge, gone after 44 px
+    depth, tau, reach = N9["shadow"][0] / N9["grey"][0], N9["shadow"][1] * s, N9["shadow"][2] * s
+    shadow = Image.new("RGBA", (W * k, LH * k), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    for i in range(round(reach * k)):
+        a = round(255 * depth * math.exp(-(i / k) / tau))
+        sd.line([(0, e0 * k + i), (W * k, e1 * k + i)], fill=(0, 0, 0, a), width=1)
+    shadow = shadow.resize((W, LH), Image.LANCZOS)
+    # the lettering, each on a layer the size of the bar, at its final place
+    sx_label, sx_name = _n9_fit()
+    lx, ltop, lbase, _lw = N9["label"]
+    lab = _n9_text((label or "UP NEXT").upper(), (lbase - ltop) * s, sx_label, N9["orange"], N9["heavy"][0])
+    label_layer = Image.new("RGBA", (W, LH), (0, 0, 0, 0))
+    label_layer.alpha_composite(lab, (round(lx * s), round((ltop - top) * s)))
+    nx, ntop, nbase = N9["name"]
+    nm = _n9_text(" ".join(title.split()).upper(), (nbase - ntop) * s, sx_name, N9["ink"], N9["heavy"][1])
+    room = W - round(nx * s) - round(40 * s)
+    if nm.width > room:
+        nm = nm.resize((room, nm.height), Image.LANCZOS)
+    name_layer = Image.new("RGBA", (W, LH), (0, 0, 0, 0))
+    name_layer.alpha_composite(nm, (round(nx * s), round((ntop - top) * s)))
+    out = {"W": W, "H": height, "layer_y": height - LH, "layer_h": LH, "len": N9["len"],
+           "label_drop": round(((lbase - top) + 4) * s), "name_drop": round(((nbase - top) + 4) * s)}
+    for name, im in (("bar", bar), ("shadow", shadow), ("label", label_layer), ("name", name_layer)):
+        f = folder / f"{name}.png"
+        im.save(f)
+        out[name] = str(f)
+    # the character: a cut-out, or the show's poster as a card; its top at y=802, right edge at x=651
+    pic = None
+    try:
+        if character:
+            pic = _trim(Image.open(character).convert("RGBA"))
+            ch = round(400 * s)
+            pic = pic.resize((max(1, round(ch * pic.width / pic.height)), ch), Image.LANCZOS)
+            if pic.width > 340 * s:
+                pic = pic.resize((round(340 * s), max(1, round(pic.height * 340 * s / pic.width))), Image.LANCZOS)
+        elif art:
+            poster = Image.open(io.BytesIO(art)).convert("RGBA")
+            ch = round(300 * s)
+            poster = poster.resize((min(round(ch * 0.8), max(1, round(ch * poster.width / poster.height))), ch),
+                                   Image.LANCZOS)  # never wider than a portrait poster
+            b = max(2, round(6 * s))
+            card = Image.new("RGBA", (poster.width + b * 2, poster.height + b * 2), (255, 255, 255, 255))
+            card.alpha_composite(poster, (b, b))
+            pic = _shadowed(card.rotate(3, resample=Image.BICUBIC, expand=True), 0, 6 * s, 120, 4 * s)
+    except Exception:
+        pic = None
+    if pic is not None:
+        f = folder / "char.png"
+        pic.save(f)
+        # a cut-out overlaps the start of UP NEXT a little, as SpongeBob did; a poster card stays clear of the name
+        right = N9["char"][0] if character else 612
+        out.update(char=str(f), char_x=max(0, round(right * s) - pic.width), char_y=round(N9["char"][1] * s),
+                   char_rise=height - round(N9["char"][1] * s) + 4)
+    info_file.write_text(json.dumps(out))
+    return out
+
+
+def nick2009_still(title: str, height: int, label: str = "", character: str | None = None,
+                   art: bytes | None = None, under: Image.Image | None = None) -> Image.Image:
+    """The 2009 Nick "Up next" settled in place, as one picture (for the On-air look page)."""
+    L = nick2009_layers(title, label, height, character, art)
+    pic = under.convert("RGBA").resize((L["W"], L["H"])) if under is not None else \
+        Image.new("RGBA", (L["W"], L["H"]), (58, 74, 96, 255))
+    grp = Image.open(L["bar"]).convert("RGBA")
+    for part in ("label", "name", "shadow"):
+        grp.alpha_composite(Image.open(L[part]).convert("RGBA"))
+    grp.putalpha(ImageChops.multiply(grp.getchannel("A"), Image.open(L["bar"]).getchannel("A")))
+    pic.alpha_composite(grp, (0, L["layer_y"]))
+    if L.get("char"):
+        c = Image.open(L["char"]).convert("RGBA")
+        pic.alpha_composite(c.crop((0, 0, c.width, min(c.height, L["H"] - L["char_y"]))), (L["char_x"], L["char_y"]))
+    return pic
 
 
 def _ears(d, cx, cy, r, width, fill, outline):

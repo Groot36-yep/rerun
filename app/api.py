@@ -1313,6 +1313,7 @@ async def looks_page(app=Depends(signed_in)):
         n["in_use"] = looks_mod.in_use(app.cfg.data, n["tag"])
     nets.sort(key=lambda n: (not (n["channels"] or n["bumpers"]), n["label"].lower()))
     return {"networks": nets, "finder": app.finder.progress.get("running", False),
+            "auto_bumpers": bool(app.cfg.data.get("auto_bumpers")),
             "styles": [{"key": k, "label": l} for k, l in looks_mod.STYLES],
             "files": {"upnext": looks_mod.files("upnext"), "trivia": looks_mod.files("trivia")},
             "search": looks_mod.SEARCH, "youtube": youtube_mod.available()}
@@ -1328,6 +1329,30 @@ async def looks_sample(tag: str, app=Depends(signed_in)):
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     return {"url": f"/api/previews/{os.path.basename(path)}"}
+
+
+@router.put("/looks/auto")
+async def looks_auto(body: dict, app=Depends(signed_in)):
+    """Keep network channels stocked with bumpers: each night, any with fewer than five get more."""
+    app.cfg.data["auto_bumpers"] = bool(body.get("on"))
+    app.cfg.save()
+    return {"ok": True, "on": app.cfg.data["auto_bumpers"]}
+
+
+@router.post("/looks/bumpers")
+async def looks_get_bumpers(body: dict, app=Depends(signed_in)):
+    """Get bumpers for some networks (or every network with a channel), by themselves, from YouTube."""
+    _need_youtube()
+    keys = [str(k) for k in body.get("tags") or []]
+    if body.get("all"):
+        keys = [n["tag"] for n in looks_mod.networks(app.cfg.data) if looks_mod.channels_using(app.cfg.data, n["tag"])]
+        if not keys:
+            raise HTTPException(400, "None of your channels is a network's own channel yet")
+    try:
+        app.finder.start_bumpers(keys)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "networks": keys}
 
 
 @router.post("/looks/finder/{tag}")

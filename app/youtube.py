@@ -98,8 +98,9 @@ def expand(url: str, limit: int = 200) -> list[dict]:
     return [_entry(res)]
 
 
-def download(url: str, folder: str, name: str, ffmpeg: str, on_progress=None, stop=lambda: False) -> tuple[str, dict]:
-    """Download one video as an mp4 (at most 1080 lines), to folder/name.mp4. Returns (file, its info)."""
+def download(url: str, folder: str, name: str, ffmpeg: str, on_progress=None, stop=lambda: False,
+             max_height: int = MAX_HEIGHT) -> tuple[str, dict]:
+    """Download one video as an mp4 (at most max_height lines), to folder/name.mp4. Returns (file, its info)."""
     import yt_dlp
     os.makedirs(folder, exist_ok=True)
 
@@ -111,7 +112,7 @@ def download(url: str, folder: str, name: str, ffmpeg: str, on_progress=None, st
 
     quiet = _Quiet()
     opts = _opts(logger=quiet, progress_hooks=[hook], noplaylist=True, merge_output_format="mp4",
-                 format=f"bv*[height<={MAX_HEIGHT}]+ba/b[height<={MAX_HEIGHT}]/bv*+ba/b",
+                 format=f"bv*[height<={max_height}]+ba/b[height<={max_height}]/bv*+ba/b",
                  outtmpl=os.path.join(folder, name + ".%(ext)s"), overwrites=True)
     if ffmpeg and os.path.dirname(ffmpeg):
         opts["ffmpeg_location"] = os.path.dirname(ffmpeg)

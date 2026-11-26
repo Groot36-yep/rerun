@@ -1935,12 +1935,39 @@ async function viewCommercials() {
         h("span", { class: "hint" }, st.error || (st.log && st.log.length ? st.log[st.log.length - 1] : st.step)),
         h("span", { class: "spacer" }), h("button", { class: "btn small quiet", onclick: () => { strip.hidden = true; } }, "Dismiss")));
       load();
-      later(load, 20000); // the library scan that follows adds them
+      later(watchScan, 1500); // the library scan that follows adds them
+    }
+  };
+  // The new commercials join the list when the library scan after a search (or a download) is done; it
+  // also splits each new tape into its commercials, so it can take a few minutes. Follow it, then reload.
+  let scanning = false;
+  const watchScan = async () => {
+    let sc;
+    try { sc = await api("GET", "/api/scan"); } catch (x) { return; }
+    if (sc.running) {
+      scanning = true;
+      if (!wasRunning) {
+        strip.hidden = false;
+        fill(strip, h("div", { class: "progress" + (sc.total ? "" : " indeterminate") }, h("div", { style: { width: sc.total ? `${Math.round((100 * sc.done) / sc.total)}%` : "" } })),
+          h("div", { class: "row" }, h("b", null, "Adding the new commercials to your library"), h("span", { class: "hint" }, sc.step || "")),
+          h("p", { class: "hint" }, "New tapes are split into their commercials as they're added; the list below updates when it's done."));
+      }
+      later(watchScan, 3000);
+    } else if (scanning) {
+      scanning = false;
+      await load();
+      if (!wasRunning) {
+        strip.hidden = false;
+        fill(strip, h("div", { class: "row" }, h("b", null, "Your commercials are up to date"),
+          h("span", { class: "hint" }, sc.error || `${plural(data.items.length, "commercial")} in your library.`),
+          h("span", { class: "spacer" }), h("button", { class: "btn small quiet", onclick: () => { strip.hidden = true; } }, "Dismiss")));
+      }
     }
   };
   const onFinderStart = () => { wasRunning = true; watch(); };
   await load();
   watch();
+  watchScan();
 }
 
 // YouTube: search or paste links, pick videos, say what they are (see app/youtube.py).
@@ -2079,13 +2106,53 @@ async function viewLooks() {
   const body = h("div");
   add(v, pageHead("Bumpers & Up next", "The bits between the shows",
     "Each network's bumpers and idents play before its shows and going into the breaks, on its own channel and around its shows on mixed channels. Near the end of a show, “Up next” says what's on next. Here you see what each network has, try it on a real show, and swap in the real ones from YouTube."), body);
+  // Getting bumpers runs in the background: a strip follows it, then the library scan that adds them,
+  // then the page reloads with the new ones.
+  const strip = h("div", { class: "finder-strip", hidden: true });
+  let following = false;
+  const follow = async () => {
+    if (following) return;
+    following = true;
+    strip.hidden = false;
+    for (;;) {
+      let f, sc;
+      try { f = (await api("GET", "/api/finder")).status; sc = await api("GET", "/api/scan"); } catch (x) { break; }
+      const busy = f.running ? f : sc.running ? { step: sc.step || "Adding them to your library…", done: sc.done, total: sc.total } : null;
+      if (!busy) {
+        fill(strip, h("div", { class: "row" }, h("b", null, f.error ? "That stopped" : "Done"),
+          h("span", { class: "hint" }, f.error || (f.log && f.log.length ? f.log[f.log.length - 1] : "")),
+          h("span", { class: "spacer" }), h("button", { class: "btn small quiet", onclick: () => { strip.hidden = true; } }, "Dismiss")));
+        break;
+      }
+      fill(strip, h("div", { class: "progress" + (busy.total ? "" : " indeterminate") }, h("div", { style: { width: busy.total ? `${Math.round((100 * busy.done) / busy.total)}%` : "" } })),
+        h("div", { class: "row" }, h("b", null, f.running ? "Getting bumpers" : "Adding them to your library"), h("span", { class: "hint" }, busy.step),
+          h("span", { class: "spacer" }), f.running ? h("button", { class: "btn small", onclick: async () => { await api("POST", "/api/finder/stop"); toast("Stopping after this video…"); } }, "Stop") : null),
+        f.log && f.log.length ? h("p", { class: "hint" }, f.log[f.log.length - 1]) : null);
+      await new Promise((res) => setTimeout(res, 2500));
+      if (location.hash !== "#/looks") { following = false; return; }
+    }
+    following = false;
+    load();
+  };
+  const getBumpers = async (body) => {
+    try { await api("POST", "/api/looks/bumpers", body); follow(); }
+    catch (x) { toast(x.message, true); }
+  };
+  const head = h("div", { class: "looks-bar" });
+  v.insertBefore(head, body);
+  v.insertBefore(strip, body);
   const load = async () => {
     let r;
     try { r = await api("GET", "/api/looks"); } catch (x) { fill(body, h("p", { class: "error" }, x.message)); return; }
     const styleName = Object.fromEntries(r.styles.map((s) => [s.key, s.label]));
-    fill(body,
-      r.finder ? h("p", { class: "notice" }, "Rerun is finding bumpers and commercials right now: follow along on the ", h("a", { href: "#/commercials" }, "Commercials page"), ". New ones show up here when it's done.") : null,
-      r.networks.map((n) => lookPanel(n, r, styleName, load)));
+    fill(head,
+      h("button", { class: "btn primary", disabled: !r.youtube || r.finder, onclick: () => getBumpers({ all: true }) }, "Get bumpers for all my networks"),
+      toggle("Keep them stocked: overnight, any network channel with fewer than 5 bumpers gets more by itself", r.auto_bumpers, async (val) => {
+        try { await api("PUT", "/api/looks/auto", { on: val }); toast(val ? "Rerun will keep your channels stocked with bumpers" : "Rerun won't get bumpers by itself"); }
+        catch (x) { toast(x.message, true); }
+      }));
+    fill(body, r.networks.map((n) => lookPanel(n, r, styleName, load, getBumpers)));
+    if (r.finder) follow();
   };
   load();
 }
@@ -2112,7 +2179,7 @@ function seeOnShow(n) {
   });
 }
 
-function lookPanel(n, r, styleName, reload) {
+function lookPanel(n, r, styleName, reload, getBumpers) {
   const save = async (value) => {
     try { await api("PUT", `/api/looks/${n.tag}`, { up_next: value }); toast(`${n.label}'s “Up next” changed`); reload(); }
     catch (x) { toast(x.message, true); }
@@ -2155,10 +2222,11 @@ function lookPanel(n, r, styleName, reload) {
           h("img", { src: `/api/commercials/${encodeURIComponent(b.id)}/thumb.jpg`, alt: "", loading: "lazy" }), h("span", null, "▶")),
         h("b", { title: b.title }, b.title), h("small", null, `${fmtDur(b.dur)}${b.hidden ? " · off the air" : ""}`),
         h("button", { class: "btn quiet small", onclick: () => hide(b, !b.hidden) }, b.hidden ? "Put back on" : "Take off"))))
-      : h("p", { class: "notice" }, `No ${n.label} bumpers yet, so its shows go straight into the commercials. Find some below: compilations get split into single bumpers by themselves.`),
+      : h("p", { class: "notice" }, `No ${n.label} bumpers yet, so its shows go straight into the commercials. “Get bumpers” finds a few on YouTube and adds them by itself.`),
     h("div", { class: "row" },
-      h("button", { class: "btn", disabled: !r.youtube, onclick: () => findLook(n, "bumpers", reload) }, "Find bumpers on YouTube"),
-      h("button", { class: "btn quiet", disabled: r.finder, onclick: findArchive }, "Find them on the Internet Archive")),
+      h("button", { class: "btn primary", disabled: !r.youtube || r.finder, onclick: () => getBumpers({ tags: [n.tag] }) }, n.bumpers.length ? "Get more bumpers" : "Get bumpers"),
+      h("button", { class: "btn quiet", disabled: !r.youtube, onclick: () => findLook(n, "bumpers", reload) }, "Pick them on YouTube myself"),
+      h("button", { class: "btn quiet", disabled: r.finder, onclick: findArchive }, "Internet Archive")),
 
     h("h3", null, "“Up next”"),
     h("div", { class: "look-now" },
@@ -2226,7 +2294,7 @@ function findLook(n, kind, reload) {
       h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, "×")),
     h("p", { class: "lede" }, kind === "upnext"
       ? "Green-screen templates work best: Rerun makes the green see-through and plays the show behind it, squeezing it into the window if there is one."
-      : "Bumper compilations work well: Rerun splits a video into its separate bumpers and idents and files them under " + n.label + "."),
+      : "Bumper compilations work well: Rerun splits a video into its separate bumpers and idents and files them under " + n.label + ". Green-screen videos aren't bumpers (they'd air as a green screen): use those for “Up next” instead."),
     h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); search(); } }, q, h("button", { class: "btn primary" }, "Search")),
     status, results);
     search();

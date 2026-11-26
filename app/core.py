@@ -161,6 +161,23 @@ class App:
                     log.warning("Couldn't make the logo for %s: %s", ch.get("name"), e)
             await asyncio.sleep(600)
 
+    async def _top_up_bumpers(self):
+        """Overnight: network channels with only a few bumpers get some more from YouTube, by themselves."""
+        from . import looks, youtube
+        while self.scanner.progress.get("running"):
+            await asyncio.sleep(30)
+        if not youtube.available() or (self.finder.task and not self.finder.task.done()):
+            return
+        hidden = set(self.cfg.data.get("hidden_filler") or [])
+        keys = [n["tag"] for n in looks.networks(self.cfg.data) if looks.channels_using(self.cfg.data, n["tag"])
+                and sum(1 for b in looks.bumpers(self.catalog, n["tag"], hidden) if not b["hidden"]) < 5]
+        if keys:
+            log.info("Getting more bumpers for %s", ", ".join(keys))
+            try:
+                self.finder.start_bumpers(keys)
+            except (RuntimeError, ValueError) as e:
+                log.info("Couldn't get bumpers: %s", e)
+
     async def _daily_rescan(self):
         last_day = None
         while True:
@@ -171,6 +188,8 @@ class App:
                 last_day = lt.tm_yday
                 log.info("Starting the nightly library scan")
                 self.scanner.start(manual=False)
+                if self.cfg.data.get("auto_bumpers"):
+                    asyncio.create_task(self._top_up_bumpers())
 
     # ---- helpers ------------------------------------------------------------------------
     def set_catalog(self, cat: Catalog):
@@ -181,6 +200,7 @@ class App:
             for ch in made:
                 log.info("Added channel %s %s (found in your library)", ch["number"], ch["name"])
                 asyncio.ensure_future(self.schedules.ensure(ch, time.time() + 6 * 3600))
+        asyncio.ensure_future(self.schedules.replan_missing())
 
     def festive(self) -> str:
         """The holiday whose badge goes on channel logos right now, if any."""
@@ -277,6 +297,17 @@ class App:
         local = self.local_path(item.get("f") or "")
         if local:
             return local
+        # The schedule is planned days ahead, so a file moved or renamed since then (and found again by a
+        # library scan) is looked up where it is now, rather than becoming a "We'll be right back" card.
+        now = self.catalog.items.get(item.get("m") or "")
+        if now and (now.get("file") or "") != (item.get("f") or ""):
+            local = self.local_path(now.get("file") or "")
+            if local:
+                return local
+            if now.get("part"):
+                plex = self.plex()
+                if plex:
+                    return plex.part_url(now["part"])
         if item.get("p"):
             plex = self.plex()
             if plex:

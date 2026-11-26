@@ -160,6 +160,47 @@ async def check_matching():
     print("matching breaks: OK")
 
 
+async def check_moved_files(cat, ch):
+    """Files moved after the schedule was planned: a moved file is found where it is now, and a channel
+    whose planned shows left the library is planned again from now, not left on blue cards."""
+    import copy
+    from types import SimpleNamespace
+    from app.core import App
+    from app.scheduler import Schedules
+    now = time.time()
+    p, _ = await build(ch, cat, 12, when=now - 600)
+    show = next(x for x in p.items if x["k"] == "c" and x["s"] <= now < x["e"])
+    moved = copy.deepcopy(cat.to_dict())
+    real = os.path.join(tempfile.mkdtemp(), "moved.mkv")
+    open(real, "wb").close()
+    for e in [*(e for eps in moved["episodes"].values() for e in eps), *moved["movies"].values()]:
+        if e["id"] == show["m"]:
+            e["file"] = real
+    fake = SimpleNamespace(catalog=Catalog(moved), map_path=lambda f: f, plex=lambda: None)
+    fake.local_path = lambda f: App.local_path(fake, f)
+    assert App.media_input(fake, show) == real, "a moved file should be found where it is now"
+    # the whole show left the library: Nick is planned again with what's still there
+    sid = cat.items[show["m"]].get("show")
+    if sid:
+        moved["episodes"].pop(sid)
+        moved["shows"].pop(sid)
+    else:
+        moved["movies"].pop(show["m"])
+    stopped = []
+
+    async def stop(cid):
+        stopped.append(cid)
+    fake = SimpleNamespace(catalog=Catalog(moved), cfg=SimpleNamespace(data={"channels": [ch], "holidays": DEFAULT_HOLIDAYS}),
+                           streams=SimpleNamespace(stop_channel=stop), channel=lambda cid: ch, chapters=SimpleNamespace(get=lambda *a: None))
+    sch = Schedules(fake)
+    sch.playouts[ch["id"]] = p
+    await sch.replan_missing()
+    left = [x for x in p.items if x["e"] > time.time() + 2 and x["k"] == "c"]
+    assert left and all(x["m"] in fake.catalog.items for x in left), "shows that left the library are still planned"
+    assert p.end > time.time() + 5 * 3600 and stopped == [ch["id"]]
+    print("moved files: OK")
+
+
 async def main():
     cat = make_catalog()
 
@@ -351,6 +392,7 @@ async def main():
 
     await check_matching()
     check_recommend()
+    await check_moved_files(cat, plain_nick)
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])

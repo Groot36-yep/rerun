@@ -22,7 +22,7 @@ THUMBS = DATA_DIR / "bugs" / "thumbs"
 FOLDERS = {"upnext": UPNEXT_DIR, "trivia": TRIVIA_DIR}
 
 # Rerun's drawn "Up next" styles, as the page lists them
-STYLES = [("nick", "Nickelodeon: orange plaid bar"), ("nick_splat", "Nickelodeon: splat"),
+STYLES = [("nick_2009", "Nickelodeon 2009-2011 (animated)"), ("nick", "Nickelodeon: orange plaid bar"), ("nick_splat", "Nickelodeon: splat"),
           ("cn", "Cartoon Network: checkerboard"), ("disney", "Disney Channel: 2000s"),
           ("disney_glow", "Disney Channel: glow"), ("boomerang", "Boomerang: starburst"),
           ("25days", "25 Days of Christmas"), ("plain", "Plain, in the logo's colour")]
@@ -117,6 +117,11 @@ def style_preview(style: str, label: str) -> bytes:
     """What a drawn style looks like, over a plain picture, for the page."""
     from PIL import Image
     theme = "" if style == "plain" else style
+    if theme in images.ANIMATED:
+        still = images.nick2009_still("SpongeBob SquarePants", 360, under=Image.new("RGBA", (640, 360), (58, 74, 96, 255)))
+        buf = io.BytesIO()
+        still.convert("RGB").save(buf, "JPEG", quality=88)
+        return buf.getvalue()
     path = images.up_next_banner("SpongeBob SquarePants", 360, "#f57d0d", theme, None, "", None)
     ban = Image.open(path).convert("RGBA")
     pic = Image.new("RGBA", (640, 360), (58, 74, 96, 255))
@@ -170,7 +175,8 @@ def in_use(cfg: dict, tag: str) -> dict:
     label = archive.PROFILES.get(tag, (tag, "", "", [tag]))[0]
     chans = archive.PROFILES.get(tag, (tag, "", "", []))[3]
     if tpl is None and style is None:  # automatic: a template named after the network, else its drawing
-        tpl = images.find_template([*chans, tag, label])
+        # (Nick has a faithful animated recreation, which wins over a template)
+        tpl = None if images.theme_for(tag) in images.ANIMATED else images.find_template([*chans, tag, label])
         style = None if tpl else (images.theme_for(tag) or "")
     if tpl:
         name = os.path.basename(tpl)
@@ -227,9 +233,14 @@ async def sample(app, tag: str) -> str:
         titled = images.template_title(nxt["title"], f, H)
         if titled:
             ov["template"].update(title_png=titled[0], title_x=titled[1]["x"], title_y=titled[1]["y"])
+    elif use["name"] in images.ANIMATED:
+        art = await images.artwork(app, nxt["id"])
+        layers = await asyncio.to_thread(images.nick2009_layers, nxt["title"], "", H,
+                                         images.character_for(nxt["title"]), art)
+        ov["anims"] = [{**layers, "t0": 1.0, "len": min(images.N9["len"], length - 1.5)}]
     else:
         theme = "" if use["name"] == "plain" else use["name"]
-        art = await images.artwork(app, nxt["id"]) if theme == "nick" else None
+        art = await images.artwork(app, nxt["id"]) if theme in images.ART_THEMES else None
         ban = await asyncio.to_thread(images.up_next_banner, nxt["title"], H, images.bug_accent(ov.get("logo")),
                                       theme, art, nxt["id"], ov.get("logo"))
         ov["banners"] = [{"file": ban, "art": images.banner_art(ban), "t0": 1.0, "t1": length - 2,

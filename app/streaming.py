@@ -334,7 +334,7 @@ class ChannelStream:
             if logo:
                 out["logo"] = logo
         rel_end = end - self.cursor - 1
-        banners = []
+        banners, anims = [], []
         chosen_tpl, chosen_style = looks.upnext_override(app.cfg.data, tag)  # the On-air look page's pick
         for g in onair.plan(p, idx, item, block, s, block.get("title", "")):
             t0, t1 = max(0.5, g["t0"] - self.cursor), min(g["t1"] - self.cursor, rel_end)
@@ -344,7 +344,8 @@ class ChannelStream:
                 nxt = g["block"]
                 # a template named after the next show first, then the network's pick, then one named after it
                 tpl_file = images.find_template([nxt["title"]]) or chosen_tpl or (
-                    None if chosen_style is not None else images.find_template([net, tag or ""] if net else []))
+                    None if chosen_style is not None or images.theme_for(tag) in images.ANIMATED
+                    else images.find_template([net, tag or ""] if net else []))  # Nick: its recreation, not a template
                 tpl = await asyncio.to_thread(images.analyse_template, tpl_file, self.mgr.ffmpeg.ffmpeg) \
                     if tpl_file else None
                 if tpl:  # your own template: it plays for its own length (pictures for 10 seconds)
@@ -361,7 +362,16 @@ class ChannelStream:
                 theme = chosen_style if chosen_style is not None else images.theme_for(tag, plan=bool(ch.get("plan")))
                 about = g["block"] or {}
                 art = await images.artwork(app, about["img"]) \
-                    if about.get("img") and theme == "nick" and g["kind"] != "teaser" else None
+                    if about.get("img") and theme in images.ART_THEMES and g["kind"] != "teaser" else None
+                if theme in images.ANIMATED:  # Nick 2009: an animation over the whole picture, its own length
+                    a = max(0.5, item["e"] - 32 - self.cursor) if g["kind"] == "up_next" else t0
+                    length = min(images.N9["len"], rel_end - a)
+                    if length >= 5:
+                        layers = await asyncio.to_thread(
+                            images.nick2009_layers, g["title"], g["label"], H,
+                            images.character_for(g["title"]) if g["kind"] != "teaser" else None, art)
+                        anims.append({**layers, "t0": a, "len": length})
+                    continue
                 banner = await asyncio.to_thread(images.up_next_banner, g["title"], H,
                                                  images.bug_accent(out.get("logo")), theme, art,
                                                  about.get("img") or "", out.get("logo"), g["label"], g["short"])
@@ -372,6 +382,8 @@ class ChannelStream:
                 log.info("No %s banner (%s)", g["kind"], e.__class__.__name__)
         if banners:
             out["banners"] = banners
+        if anims:
+            out["anims"] = anims
         return out or None
 
     def _year(self, item: dict):

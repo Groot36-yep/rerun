@@ -1003,6 +1003,37 @@ class Schedules:
             except Exception:
                 log.exception("Could not rebuild the schedule for %s", ch.get("name"))
 
+    async def replan_missing(self):
+        """After a library scan: a channel whose planned shows are no longer in the library (moved to
+        another library, deleted, or given a new id by Plex) is planned again from now, instead of
+        playing "We'll be right back" until the old plan runs out days later."""
+        now = time.time()
+        have = self.app.catalog.items
+        for ch in list(self.app.cfg.data["channels"]):
+            if not ch.get("enabled", True):
+                continue
+            p = self.get(ch["id"])
+            gone = [x for x in p.items if x["e"] > now and x.get("k") == "c" and x.get("m") and x["m"] not in have]
+            if not gone:
+                continue
+            log.info("%s had %s planned shows that aren't in the library any more; planning it again",
+                     ch.get("name"), len(gone))
+            current = p.block_at(now)
+            current_ok = current is not None and not any(x["s"] < current["e"] for x in gone)
+            async with self.locks[ch["id"]]:
+                p.cut(current["e"] if current_ok else now + 1)
+                if p.end < now + 1:
+                    p.blocks.append({"s": now + 1, "e": now + 1, "title": "", "sub": "", "desc": "", "sn": 0,
+                                     "en": 0, "img": "", "cats": [], "movie": False, "year": 0, "date": "",
+                                     "rating": ""})
+                self.save(p)
+            if not current_ok:
+                await self.app.streams.stop_channel(ch["id"])  # anyone watching tunes straight into the new plan
+            try:
+                await self.ensure(ch, now + 6 * 3600)
+            except Exception:
+                log.exception("Could not rebuild the schedule for %s", ch.get("name"))
+
     def _start_time(self, ch: dict, now: float) -> float:
         slot = int(ch.get("slot_minutes") or 0) * 60
         return floor_slot(now, slot) if slot else now

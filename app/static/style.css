@@ -742,3 +742,6 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 .decade-tabs button small { font-size: 12px; color: var(--ink-3); }
 .decade-tabs button[aria-selected=true] { border-color: var(--rust); background: var(--white); box-shadow: 0 0 0 1px var(--rust); }
 .decade .want-list { max-height: none; overflow: visible; }
+
+.looks-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; margin: -6px 0 18px; }
+.looks-bar .switch { max-width: 560px; }

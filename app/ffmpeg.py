@@ -63,6 +63,24 @@ def filter_escape(value: str) -> str:
     return v
 
 
+def green_key(inp: str, out_label: str, lo: int = 30, hi: int = 160) -> str:
+    """A filtergraph making the green of a green-screen picture see-through, cleanly at the edges.
+
+    A pixel is see-through by how much greener it is than the brighter of its red and blue (the key
+    green: fully; a soft edge between green and white: partly; SpongeBob's yellow, white and every other
+    colour: not at all), and its green is brought down to that brighter of red and blue, so a soft edge
+    carries no green tint (the thin green outline ffmpeg's chromakey leaves). Built from ffmpeg's own
+    fast filters. `inp` is the start of a chain ending in a comma, e.g. "[3:v:0]scale=1280:720,".
+    """
+    return (f"{inp}format=gbrp,extractplanes=r+g+b[kr][kg][kb];"  # (planes come out in r, g, b order)
+            f"[kr]split[kr1][kr2];[kb]split[kb1][kb2];[kg]split[kg1][kg2];"
+            f"[kr1][kb1]blend=all_mode=lighten[km];[km]split[km1][km2];"         # the brighter of red and blue
+            f"[kg1][km1]blend=all_mode=subtract[ke];"                             # how much greener than that
+            f"[ke]lut=c0='clip(255*({hi}-val)/({hi}-{lo}),0,255)',erosion[ka];"   # -> how solid (the rim off)
+            f"[kg2][km2]blend=all_mode=darken[kg3];"                              # green down to that level
+            f"[kg3][kb2][kr2][ka]mergeplanes=0x00102030:gbrap{out_label}")
+
+
 class FFmpeg:
     def __init__(self):
         # The installer may point these at a newer ffmpeg (Jellyfin's build on Ubuntu 22.04).
@@ -224,7 +242,8 @@ class FFmpeg:
         fit = f"bwdif=mode=send_frame:parity=auto:deint=interlaced,scale={W}:{H}:force_original_aspect_ratio=decrease"
         tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS},{self._vf_tail(hw)}"
         tpl = ov.get("template") if can and os.path.isfile((ov.get("template") or {}).get("file") or "") else None
-        if not (logo or banners or tpl):
+        anims = [a for a in ov.get("anims") or [] if can and os.path.isfile(a.get("bar") or "")]
+        if not (logo or banners or tpl or anims):
             args += ["-map", "0:v:0", "-vf", f"{fit},{tail}"]
         else:
             graph, cur = [f"[0:v:0]{fit}[pic]"], "pic"
@@ -265,8 +284,14 @@ class FFmpeg:
                     graph.append(f"[{cur}][ban{j}_{i}]overlay=x='{lx}':y='{ly}':eval=frame:"
                                  f"enable='between(t,{a:.2f},{b:.2f})'[pn{j}_{i}]")
                     cur, n = f"pn{j}_{i}", n + 1
-            if tpl:
-                n, cur = self._template(args, graph, tpl, cur, n, W, H, duration)
+            if tpl or anims:
+                if tpl:
+                    n, cur = self._template(args, graph, tpl, cur, n, W, H, duration)
+                else:
+                    graph.append(f"[{cur}]pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS}[full]")
+                    cur = "full"
+                for i, an in enumerate(anims):
+                    n, cur = self._nick2009(args, graph, an, cur, n, duration, i)
                 graph.append(f"[{cur}]{self._vf_tail(hw)}[v]")
             else:
                 graph.append(f"[{cur}]{tail}[v]")
@@ -293,13 +318,19 @@ class FFmpeg:
             src = f"[{n}:v:0]"
         n += 1
         key = tpl.get("key") or "0x00ff00"
-        keyer = (f"colorkey={key}:0.08:0.05" if tpl.get("how") == "black"
-                 else f"format=yuva420p,chromakey={key}:0.14:0.06")  # tight: yellows (SpongeBob) sit close to green
         tw, th = int(tpl.get("w") or W), int(tpl.get("h") or H)
         sc = min(W / tw, H / th)
         fw, fh = int(tw * sc) // 2 * 2, int(th * sc) // 2 * 2
         ox, oy = (W - fw) // 2, (H - fh) // 2
-        graph.append(f"{src}{keyer},scale={fw}:{fh},format=rgba,pad={W}:{H}:{ox}:{oy}:color=0x00000000[tk]")
+        # a few pixels off each edge first: video templates often have a darker line of green along an edge
+        # (from how they were encoded) that the key would leave showing as a thin green line
+        trim = "crop=iw-6:ih-6:3:3,"
+        if tpl.get("how") == "black":
+            graph.append(f"{src}{trim}colorkey={key}:0.08:0.05,scale={fw}:{fh},format=rgba,"
+                         f"pad={W}:{H}:{ox}:{oy}:color=0x00000000[tk]")
+        else:  # keyed at full size, so the edges come out clean
+            graph.append(green_key(f"{src}{trim}scale={fw}:{fh},", "[tk0]"))
+            graph.append(f"[tk0]format=rgba,pad={W}:{H}:{ox}:{oy}:color=0x00000000[tk]")
         on = f"enable='between(t,{a:.2f},{b:.2f})'"
         if tpl.get("window"):
             wx, wy, ww, wh = tpl["window"]
@@ -356,6 +387,54 @@ class FFmpeg:
         args += ["-filter_complex", graph, "-map", "[v]", "-map", audio, *self._video_codec(s, hw),
                  *self._audio_out(s), *self._ts_out(duration)]
         return args
+
+    def _nick2009(self, args: list, graph: list, an: dict, cur: str, n: int, duration: float, i: int) -> tuple[int, str]:
+        """Nickelodeon's 2009-2011 "Up next", animated as the original moved (measured at 60 frames a second):
+        the bar slides in from the right (0.3 s); the show's name, then UP NEXT, drop in from above, seen only
+        inside the bar; the character pops up from below with a little overshoot; at the end the character
+        drops away, the lettering rises out, and the bar slides off to the left. `an` is from
+        images.nick2009_layers, plus "t0" (when it starts, in this piece's time) and "len" (how long)."""
+        t0, L = float(an["t0"]), float(an["len"])
+        T = f"(t-{t0:.3f})"
+
+        def p(a, b):  # 0 before a, 1 after b, in between: how far along, in the animation's own time
+            return f"clip(({T}-{a:.3f})/{b - a:.3f},0,1)"
+
+        def ease_out(x):
+            return f"(1-pow(1-{x},2))"
+
+        def ease_in(x):
+            return f"pow({x},2)"
+
+        def back_out(x):  # overshoots a little, then settles
+            return f"(1+2.70158*pow({x}-1,3)+1.70158*pow({x}-1,2))"
+
+        files = ["bar", "label", "name", "shadow"] + (["char"] if an.get("char") else [])
+        idx = {}
+        for f in files:
+            args += ["-loop", "1", "-framerate", "30", "-t", f"{duration + 1:.3f}", "-i", "file:" + an[f]]
+            idx[f], n = n, n + 1
+        W, ly = an["W"], an["layer_y"]
+        dl, dn = an["label_drop"], an["name_drop"]
+        y_label = f"-{dl}*(1-{ease_out(p(0.35, 0.55))})-{dl}*{ease_in(p(L - 0.96, L - 0.80))}"
+        y_name = f"-{dn}*(1-{ease_out(p(0.30, 0.42))})-{dn}*{ease_in(p(L - 0.93, L - 0.76))}"
+        x_bar = f"{W}*(1-{p(0, 0.30)})-{W}*{p(L - 0.69, L - 0.22)}"
+        g = f"n9{i}"
+        graph.append(f"[{idx['bar']}:v:0]format=rgba,split[{g}b][{g}bm]")
+        graph.append(f"[{g}bm]alphaextract[{g}m]")
+        graph.append(f"[{g}b][{idx['label']}:v:0]overlay=x=0:y='{y_label}':eval=frame[{g}1]")
+        graph.append(f"[{g}1][{idx['name']}:v:0]overlay=x=0:y='{y_name}':eval=frame[{g}2]")
+        graph.append(f"[{g}2][{idx['shadow']}:v:0]overlay=0:0,format=rgba[{g}3]")
+        graph.append(f"[{g}3][{g}m]alphamerge[{g}grp]")
+        on = f"enable='between(t,{t0:.3f},{t0 + L:.3f})'"
+        graph.append(f"[{cur}][{g}grp]overlay=x='{x_bar}':y={ly}:eval=frame:{on}[{g}o]")
+        cur = f"{g}o"
+        if an.get("char"):
+            rise = an["char_rise"]
+            y_char = (f"{an['char_y']}+{rise}*(1-{back_out(p(0.70, 0.95))})+{rise}*{ease_in(p(L - 1.23, L - 1.03))}")
+            graph.append(f"[{cur}][{idx['char']}:v:0]overlay=x={an['char_x']}:y='{y_char}':eval=frame:{on}[{g}c]")
+            cur = f"{g}c"
+        return n, cur
 
     def slate_cmd(self, text_file: str | None, duration: float, s: dict, burst: float) -> list[str]:
         hw = self.encoder_status.get("using") or "none"

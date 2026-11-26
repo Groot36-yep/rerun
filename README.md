@@ -249,15 +249,26 @@ their programs.
   network: a 2003 episode gets bumpers from around 2003, going by the year in the bumper's (or its
   tape's) name. Commercials lean the same way.
 - **"Up next" banner.** Near the end of a show, before its last break, a banner says what's on next,
-  in the style of the network the show is on: Nickelodeon's 2000s orange plaid bar along the bottom
-  with the next show's poster popping up out of it, Cartoon Network's checkerboard, Disney Channel's
+  in the style of the network the show is on: Nickelodeon's 2009-2011 animated "Up next" (copied from
+  the original frame by frame: the grey bar with its sloped edge sliding in, orange UP NEXT dropping in
+  under the edge, the next show's name in black, and the show's character popping up; put a cut-out PNG
+  named after the show in `bugs/custom/characters/`, otherwise its poster is used), or the 2000s orange
+  plaid bar if you choose it, Cartoon Network's checkerboard, Disney Channel's
   blue glow, Boomerang's retro starburst, and red and gold with snowflakes on the 25 Days channel. Each
   comes on its own way (rising up, sliding in, fading in). Other networks get a plain banner in the
   colour of their logo. These are drawn in the spirit of each channel's look, not its actual artwork.
+  Because Rerun draws them, they always name the show that's really next.
+- **Characters.** The picture in Nick's bar is the next show's poster from Plex. For the real look,
+  put a cut-out of the show's character (a PNG, see-through around them) in Rerun's data folder under
+  `bugs/custom/characters/`, named after the show (`SpongeBob SquarePants.png`). A full-body cut-out
+  stands in front of the bar; one cut off at the bottom pops up out of it. A green-screen keyer such
+  as CorridorKey makes clean ones.
 - **Your own "Up next" templates.** For the real thing, put a green-screen template (a picture or a
   video, like the "Nick Up Next" templates people share) in Rerun's data folder under
   `bugs/custom/upnext/`, named after a show (`SpongeBob SquarePants.png`, used whenever it's up next) or a
-  network (`Nickelodeon.mp4`). The green is see-through (templates on black work too). When the green is
+  network (`Nickelodeon.mp4`). The green is see-through, with no green left around the edges (templates
+  on black work too). A template's words are part of it, so one that says "SpongeBob" is best named after
+  SpongeBob; Rerun's own drawn styles name whatever's next. When the green is
   a window rather than the whole background, the show squeezes into it while the template plays, the
   way networks squeezed the end credits for a promo. Videos play for their own length, pictures for 10
   seconds. To have Rerun write the next show's name on a template, add a file with the same name ending
@@ -282,9 +293,15 @@ appears.
 
 **Bumpers & Up next** shows each network's bits between the shows:
 - **Bumpers and idents:** the ones Rerun has for the network (they play before its shows and going
-  into the breaks), to play, take off the air or put back. **Find bumpers on YouTube** downloads a
-  video of them (a compilation is split into single bumpers by itself); **Find them on the Internet
-  Archive** looks there.
+  into the breaks), to play, take off the air or put back. **Get bumpers** finds the network's bumper
+  and ident compilations on YouTube by itself (its own US ones from the 90s and 2000s first, never
+  fan-made or green-screen ones), downloads a few in standard definition (quick, and what they were
+  made in) and splits them into single bumpers; the page follows along and shows them when they're in.
+  **Get bumpers for all my networks** does it for every network with a channel, and **Keep them
+  stocked** does it overnight for any with fewer than five. To choose the videos yourself, use **Pick
+  them on YouTube myself**, or the **Internet Archive**.
+- Green-screen videos aren't bumpers: played on their own they'd air as a green screen. They're
+  "Up next" templates, laid over a show (below), and Rerun won't keep one as a bumper.
 - **"Up next":** the one in use, and **See it on a show**, which makes a short clip of one of your
   shows from that network ending with it, drawn the way live TV draws it. **Find a real one on YouTube**
   downloads a real green-screen template and puts it on the air for that network. **Choose a different

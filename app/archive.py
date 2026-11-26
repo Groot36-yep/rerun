@@ -707,6 +707,12 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+BUMPER_HEIGHT = 480  # bumpers of the 90s and 2000s were standard definition: quicker to get and to split
+_BUMPWORDS = re.compile(r"bumpers?|idents?|\bids?\b|station id|interstitial|bumps", re.I)
+# green-screen templates: for laying over a show ("Up next"), never to play on their own
+_GREEN = re.compile(r"green ?screen|chroma|template|blank (bumper|up ?next)", re.I)
+
+
 class Finder:
     """Searches, downloads and splits; one run at a time, in the background."""
 
@@ -822,6 +828,7 @@ class Finder:
             self._step("Done. Your library is being rescanned so channels pick them up.", running=False)
         except Exception as e:
             log.exception("Commercial finder failed")
+            asyncio.ensure_future(self._rescan())
             self.progress.update(running=False, error=f"Something went wrong: {e}", step="")
         finally:
             self.progress["running"] = False
@@ -1268,6 +1275,7 @@ class Finder:
                        running=False)
         except Exception as e:
             log.exception("YouTube download failed")
+            asyncio.ensure_future(self._rescan())
             self.progress.update(running=False, error=f"Something went wrong: {e}", step="")
         finally:
             self.progress["running"] = False
@@ -1277,7 +1285,8 @@ class Finder:
         self.progress.update(done=done, total=total)
 
     async def _take_youtube(self, it: dict, network: str = "", era: str = "", holiday: str = "",
-                            key: str | None = None, folder=None, extra: dict | None = None) -> tuple[int, str, str]:
+                            key: str | None = None, folder=None, extra: dict | None = None,
+                            max_height: int | None = None) -> tuple[int, str, str]:
         """Download one YouTube video of commercials and file it like an archive tape: a short clip kept as
         one commercial, a compilation split up, a whole show "with commercials" cut down to its breaks.
         Returns (bytes kept, the index key it went under, its decade)."""
@@ -1289,12 +1298,17 @@ class Finder:
         try:
             path, info = await asyncio.to_thread(youtube.download, it["url"], str(OWN / "_youtube"),
                                                  f"{_safe_name(title)[:80]} [{vid}]", ff, self._dl_progress,
-                                                 lambda: self.stop)
+                                                 lambda: self.stop, max_height or youtube.MAX_HEIGHT)
         except Exception as e:
             self._note(f"Couldn't download “{title[:60]}”: {str(e)[:160]}")
             return 0, "", ""
         title = (info.get("title") or title)[:120]
         desc = info.get("description") or ""
+        if _GREEN.search(title):  # it would air as a green screen: it's for "Up next", laid over a show
+            os.remove(path)
+            self._note(f"Skipped “{title[:60]}”: it's a green-screen template, which would air as a green "
+                       "screen. Use it as an “Up next” instead (Bumpers & Up next, under “Up next”).")
+            return 0, "", ""
         key = key or network or network_in(title) or "youtube"
         years = tape_years({"identifier": "x", "title": title, "description": desc})
         tape_era = era or (era_tag(min(years)) if years else "") or ""
@@ -1344,6 +1358,83 @@ class Finder:
         label = PROFILES[key][0] if key in PROFILES else ("25 Days" if key == "25days" else "YouTube")
         self._note(f"Added {tape['clips']} from YouTube “{title[:60]}” to {label} ({quality_label(tape['q'])} picture)")
         return tape["bytes"], key, tape_era
+
+    # ---- bumpers, by themselves ------------------------------------------------------------
+    def start_bumpers(self, keys: list[str], per_network: int = 3):
+        """Find each network's bumpers and idents on YouTube and download the best few, with no picking:
+        real bumper and ident compilations of that network, not fan-made, of a sensible length."""
+        keys = [k for k in keys if k in PROFILES][:12]
+        if not keys:
+            raise ValueError("Choose at least one network")
+        self.min_height = 0
+        self._begin(self._run_bumpers, keys, max(1, min(int(per_network), 6)))
+
+    async def _run_bumpers(self, keys: list[str], per_network: int):
+        got_any = []
+        try:
+            self._register_folder()
+            for n, key in enumerate(keys, 1):
+                if self.stop:
+                    break
+                label = PROFILES[key][0].replace(" / Fox Family", "")
+                self._step(f"Looking on YouTube for {label} bumpers ({n} of {len(keys)})…", done=0, total=0)
+                picks = await self._bumper_picks(key, per_network)
+                if not picks:
+                    self._note(f"No {label} bumper videos found on YouTube")
+                    continue
+                for i, r in enumerate(picks, 1):
+                    if self.stop:
+                        break
+                    self._step(f"{label} bumpers {i} of {len(picks)}: downloading “{r['title'][:60]}”", done=0, total=0)
+                    got, _k, _e = await self._take_youtube(r, key, "", "none", key=key, folder=OWN / key / "bumpers",
+                                                           max_height=BUMPER_HEIGHT)
+                    if got:
+                        got_any.append(key)
+            if got_any:
+                self._step("Adding them to your channels…")
+                self._assign_tags(sorted(set(got_any)), [])
+                await self._rescan()
+            self._step("Done." + (" Your library is being rescanned so channels pick them up." if got_any
+                                  else " Nothing new this time."), running=False)
+        except Exception as e:
+            log.exception("Bumper search failed")
+            asyncio.ensure_future(self._rescan())
+            self.progress.update(running=False, error=f"Something went wrong: {e}", step="")
+        finally:
+            self.progress["running"] = False
+            shutil.rmtree(OWN / "_youtube", ignore_errors=True)
+
+    async def _bumper_picks(self, key: str, n: int) -> list[dict]:
+        """The best few YouTube videos of a network's bumpers and idents that Rerun doesn't have yet."""
+        label, must, never, _chans, _q = PROFILES[key]
+        label = label.replace(" / Fox Family", "")
+        results = await self._youtube_search([f"{label} bumpers", f"{label} bumpers 2000s", f"{label} bumpers 90s",
+                                              f"{label} idents"], per_query=15)
+        have = {t["id"] for tapes in self.index().values() for t in tapes}
+        scored = []
+        for r in results:
+            t = r["title"]
+            if f"yt-{r['id']}" in have or not (8 <= r["duration"] <= 1500):
+                continue
+            if not re.search(must, t, re.I) or (never and re.search(never, t, re.I)) or _FANMADE.search(t):
+                continue
+            if not _BUMPWORDS.search(t) or _GREEN.search(t):  # a green-screen template isn't a bumper
+                continue
+            sc = 3.0
+            sc += 2 if 90 <= r["duration"] <= 900 else 0       # a compilation: many bumpers in one download
+            sc += 1 if re.search(r"compilation|collection|every|all", t, re.I) else 0
+            sc += min(2.0, math.log10(max(r["views"], 1)) / 3)  # ones people liked
+            sc -= 2 if re.search(r"commercial break|full episode|promo", t, re.I) else 0
+            years = [int(y) for y in re.findall(r"(?<!\d)(19[89]\d|20[0-2]\d)(?!\d)", t)]
+            if any(1990 <= y <= 2009 for y in years) or re.search(r"\b(90s|2000s|00s|classic|old)\b", t, re.I):
+                sc += 2      # the 90s and 2000s, the era Rerun's channels are about
+            elif years and min(years) >= 2012:
+                sc -= 3      # a recent rebrand
+            if _FOREIGN.search(t) or re.search(r"australia|asia|india|japan|france|germany|italy|poland", t, re.I):
+                sc -= 3      # another country's version of the network
+            scored.append((sc, r))
+        scored.sort(key=lambda x: -x[0])
+        return [r for _sc, r in scored[:n]]
 
     async def _youtube_search(self, queries: list[str], per_query: int = 20) -> list[dict]:
         """YouTube search results for several searches, each video once."""
@@ -1461,6 +1552,7 @@ class Finder:
                        running=False)
         except Exception as e:
             log.exception("25 Days finder failed")
+            asyncio.ensure_future(self._rescan())
             self.progress.update(running=False, error=f"Something went wrong: {e}", step="")
         finally:
             self.progress["running"] = False

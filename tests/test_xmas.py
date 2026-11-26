@@ -434,11 +434,37 @@ def check_overlay_filters():
     assert "-filter_complex" not in bare, "without the overlay filter, a plain picture"
     from PIL import Image
     import io as _io
-    for theme in ("nick", "cn", "disney", "boomerang", "25days"):  # every network style draws, long titles fit
+    for theme in ("nick", "cn", "disney", "boomerang", "25days"):  # every style draws, long titles fit
         img = Image.open(_io.BytesIO(images.make_themed_banner("A Very Long Title " * 6, 720, theme)))
         widest = 1280 if theme == "nick" else 1100  # the Nick bar runs the full width of a widescreen picture
         assert 200 < img.width <= widest and 50 < img.height < 260, (theme, img.size)
-    assert images.theme_for("nick") == "nick" and images.theme_for("abcfamily", plan=True) == "25days"
+    # Nick's 2009-2011 "Up next", recreated from the original's measurements (at 1080 lines): the grey bar's
+    # top edge sloping from y=833 to 925, UP NEXT in the original orange from x=622 with its tops clipped by
+    # that edge, the name under it from x=623; no green anywhere.
+    L = images.nick2009_layers("SpongeBob SquarePants", "", 1080)
+    still = images.nick2009_still("SpongeBob SquarePants", 1080).convert("RGB")
+    assert (L["W"], L["H"]) == (1920, 1080) and still.size == (1920, 1080)
+    for x, top in ((100, 833 + 92 * 100 / 1920), (1800, 833 + 92 * 1800 / 1920)):
+        first = next(y for y in range(700, 1080)  # the first grey (bar or its shadow) under the blue picture
+                     if still.getpixel((x, y))[0] > 90 and abs(still.getpixel((x, y))[0] - still.getpixel((x, y))[2]) < 12)
+        assert abs(first - top) < 3, (x, first, top)
+    orange = [(x, y) for y in range(840, 1000) for x in range(600, 1120)
+              if (lambda p: p[0] > 170 and 80 < p[1] < 130 and p[2] < 60)(still.getpixel((x, y)))]
+    assert abs(min(x for x, _ in orange) - 622) <= 3 and abs(max(x for x, _ in orange) - 1099) <= 3
+    assert abs(max(y for _, y in orange) - 949) <= 4
+    for x in (1080, 1090):  # the T's crossbar is under the edge: above y=884 there, no orange
+        assert not any((x, y) in set(orange) for y in range(861, 880)), "UP NEXT isn't clipped by the bar's edge"
+    ink = [(x, y) for y in range(950, 1000) for x in range(600, 1250) if max(still.getpixel((x, y))) < 60]
+    assert abs(min(x for x, _ in ink) - 623) <= 3 and abs(max(x for x, _ in ink) - 1185) <= 6
+    assert not any(p[1] - max(p[0], p[2]) > 60 for p in still.crop((0, 820, 1920, 1080)).getdata()), "green"
+    assert images.theme_for("nick") == "nick_2009" and images.theme_for("abcfamily", plan=True) == "25days"
+    # it animates over the whole picture (after any side bars), as the original moved
+    ff.filters = {"overlay"}
+    an = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True,
+                      overlay={"anims": [{**images.nick2009_layers("Danny Phantom", "", 720), "t0": 5.0, "len": 10.96}]})
+    g = an[an.index("-filter_complex") + 1]
+    assert "pad=1280:720" in g.split("alphamerge")[0] and "alphamerge" in g and "enable='between(t,5.000,15.960)'" in g, g
+    assert "1280*(1-clip((t-5.000)-0.000)/0.300,0,1))" in g or "clip(((t-5.000)-0.000)/0.300,0,1)" in g, g
     assert images.theme_for("mtv") == ""
     ff.filters = {"overlay"}
     up = ff.media_cmd("/m/x.mkv", 0, 30, {"resolution": "720p"}, 0, True,
@@ -486,7 +512,7 @@ def check_templates():
                        overlay={"template": {**a, "file": str(folder / "SpongeBob SquarePants.png"), "t0": 2, "t1": 12},
                                 "banner": "/x.png"})
     g = cmd[cmd.index("-filter_complex") + 1]
-    assert "split=3" in g and "chromakey=" in g and "between(t,2.00,12.00)" in g and "[ban]" not in g, g
+    assert "split=3" in g and "extractplanes=r+g+b" in g and "chromakey=" not in g and "between(t,2.00,12.00)" in g and "[ban]" not in g, g
     if _sh.which("ffmpeg"):  # the real thing, on a few seconds of test video
         ff.detect()
         ff.encoder_status = {"using": "none"}
