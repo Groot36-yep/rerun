@@ -411,8 +411,11 @@ class FFmpeg:
 
         files = ["bar", "label", "name", "shadow"] + (["char"] if an.get("char") else [])
         idx = {}
+        # the layers last only until the animation is over; after that the picture passes straight through
+        # (eof_action=pass below) instead of the layers being stacked up, unseen, for the rest of the piece
+        last = min(duration + 1, t0 + L + 0.5)
         for f in files:
-            args += ["-loop", "1", "-framerate", "30", "-t", f"{duration + 1:.3f}", "-i", "file:" + an[f]]
+            args += ["-loop", "1", "-framerate", "30", "-t", f"{last:.3f}", "-i", "file:" + an[f]]
             idx[f], n = n, n + 1
         W, ly = an["W"], an["layer_y"]
         dl, dn = an["label_drop"], an["name_drop"]
@@ -427,12 +430,13 @@ class FFmpeg:
         graph.append(f"[{g}2][{idx['shadow']}:v:0]overlay=0:0,format=rgba[{g}3]")
         graph.append(f"[{g}3][{g}m]alphamerge[{g}grp]")
         on = f"enable='between(t,{t0:.3f},{t0 + L:.3f})'"
-        graph.append(f"[{cur}][{g}grp]overlay=x='{x_bar}':y={ly}:eval=frame:{on}[{g}o]")
+        graph.append(f"[{cur}][{g}grp]overlay=x='{x_bar}':y={ly}:eval=frame:eof_action=pass:{on}[{g}o]")
         cur = f"{g}o"
         if an.get("char"):
             rise = an["char_rise"]
             y_char = (f"{an['char_y']}+{rise}*(1-{back_out(p(0.70, 0.95))})+{rise}*{ease_in(p(L - 1.23, L - 1.03))}")
-            graph.append(f"[{cur}][{idx['char']}:v:0]overlay=x={an['char_x']}:y='{y_char}':eval=frame:{on}[{g}c]")
+            graph.append(f"[{cur}][{idx['char']}:v:0]overlay=x={an['char_x']}:y='{y_char}':eval=frame:"
+                         f"eof_action=pass:{on}[{g}c]")
             cur = f"{g}c"
         return n, cur
 

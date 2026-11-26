@@ -31,8 +31,27 @@ log = logging.getLogger("rerun.stream")
 TS_PACKET = 188
 PMT_PID, VIDEO_PID = 0x1000, 0x100   # fixed by joiner_cmd
 GOP_LIMIT = 8 * 1024 * 1024
-TARGET_LEAD = 5.0      # seconds the stream tries to stay ahead of the clock (a cushion against hiccups)
+TARGET_LEAD = 8.0      # seconds the stream tries to stay ahead of the clock (a cushion against hiccups)
 FIRST_BURST = 10.0     # fill the player's buffer quickly when a channel starts, so Plex starts sooner
+# Every piece starts with at least this much made faster than real time. "Even out the volume"
+# (loudnorm) listens about 3 s ahead before it lets any sound out, so a piece started at play speed
+# gave nothing for ~2.6 s; with a break's run of short commercials the cushion wore down to ~2 s
+# and a hiccup froze the picture. With the head start a piece's first picture comes in ~0.2 s.
+MIN_BURST = 3.0
+DRAIN_ABOVE = 4.0      # more than this past the target: no head start, let the cushion settle back
+
+
+def head_start(segments: int, lead: float, has_burst: bool) -> float:
+    """Seconds of the next piece to make faster than real time, given how far ahead of the clock the
+    channel is (`lead`) and how many pieces it has played."""
+    if segments == 0:
+        return FIRST_BURST
+    if not has_burst:  # older ffmpeg: head starts are separate quick pieces (see plan)
+        return max(0.0, min(FIRST_BURST, TARGET_LEAD - lead))
+    if lead >= TARGET_LEAD + DRAIN_ABOVE:
+        return 0.0
+    # cover the piece's own start-up, plus whatever the cushion is short of the target
+    return min(FIRST_BURST, MIN_BURST + max(0.0, TARGET_LEAD - lead))
 QUICK_MIN = 2.0        # without ffmpeg's burst option, top up with quick pieces at least this long
 IDLE_GRACE = 20        # keep a channel warm briefly so flipping back is instant
 BAD_FILE_MINUTES = 10
@@ -279,7 +298,7 @@ class ChannelStream:
         if lead < -8 or lead > 90:
             log.info("Channel %s re-synced with the schedule (was %+.0fs off)", self.number, lead)
             self.cursor, lead = now, 0.0
-        burst = FIRST_BURST if self.segments == 0 else max(0.0, min(FIRST_BURST, TARGET_LEAD - lead))
+        burst = head_start(self.segments, lead, self.mgr.ffmpeg.has_burst)
         self.segments += 1
         if ch is None:
             return {"item": {"k": "x", "t": ""}, "offset": 0, "dur": 30, "burst": burst, "end": self.cursor + 30}

@@ -201,6 +201,24 @@ async def check_moved_files(cat, ch):
     print("moved files: OK")
 
 
+def check_cushion():
+    """A break's run of short commercials, each losing time to start up (2.6 s at play speed with
+    "even volume", ~0.2 s with a 3 s head start): the stream must stay well ahead of the clock, as it
+    didn't before (it wore down to ~2 s, and a hiccup froze the picture)."""
+    from app.streaming import TARGET_LEAD, head_start
+    lead, low = 0.0, 99.0
+    for i in range(200):
+        burst = head_start(i, lead, True)
+        startup = 2.6 if burst < 3 else 0.2
+        piece = random.Random(i).choice([5, 15, 15, 30, 30, 60, 300])
+        lead += min(burst, piece) - startup  # made ahead by the head start, lost to starting up
+        if i > 3:
+            low = min(low, lead)
+    assert low >= TARGET_LEAD - 3, f"the cushion fell to {low:.1f}s"
+    assert lead < TARGET_LEAD + 14, f"ran too far ahead ({lead:.1f}s)"
+    print(f"cushion: OK (never below {low:.1f}s ahead)")
+
+
 async def main():
     cat = make_catalog()
 
@@ -393,6 +411,7 @@ async def main():
     await check_matching()
     check_recommend()
     await check_moved_files(cat, plain_nick)
+    check_cushion()
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])
