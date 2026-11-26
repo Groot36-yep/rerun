@@ -2141,6 +2141,7 @@ async function viewLooks() {
   const head = h("div", { class: "looks-bar" });
   v.insertBefore(head, body);
   v.insertBefore(strip, body);
+  v.insertBefore(h("section", { class: "panel" }, cutoutsBox()), body);
   const load = async () => {
     let r;
     try { r = await api("GET", "/api/looks"); } catch (x) { fill(body, h("p", { class: "error" }, x.message)); return; }
@@ -2241,8 +2242,7 @@ function lookPanel(n, r, styleName, reload, getBumpers) {
         h("p", { class: "hint" }, use.kind === "file" ? "A real template: the show plays behind it." : "Rerun's drawing, in this network's style."),
         use.name === "nick_2009" ? h("div", { class: "look-opts" },
           toggle("Keep the words clear of the bar's slanted edge (the original cut their tops off)", r.n9.clear, (val) => setN9({ clear: val })),
-          toggle("Show the next show's poster when there's no character cut-out", r.n9.poster, (val) => setN9({ poster: val })),
-          r._cutouts ? null : (r._cutouts = true, cutoutsBox())) : null,
+          toggle("Show the next show's poster when there's no character cut-out", r.n9.poster, (val) => setN9({ poster: val }))) : null,
         h("div", { class: "row" },
           h("button", { class: "btn primary", onclick: () => seeOnShow(n) }, icon("play"), " See it on a show"),
           h("button", { class: "btn", disabled: !r.youtube, onclick: () => findLook(n, "upnext", reload) }, "Find a real one on YouTube")))),
@@ -2259,7 +2259,7 @@ function cutoutsBox() {
     try { r = await api("GET", "/api/characters"); } catch (x) { fill(box, h("p", { class: "error" }, x.message)); return; }
     const p = r.progress;
     if (p.running) timer = setTimeout(() => { if (box.isConnected) load(); }, 2500);
-    const head = h("h4", null, "Character cut-outs");
+    const head = box.closest(".setting") ? null : h("h4", null, "Character cut-outs");
     if (!r.has_key) {
       let key = "", client = "";
       fill(box, head,
@@ -2449,6 +2449,8 @@ async function viewSettings() {
         toggle("Add Christmas and Halloween channels when I have enough holiday episodes", auto.holidays, (val) => { auto.holidays = val; save({ auto }); }))),
     settingRow("Commercials", "Finding classic commercials, and seeing or removing the ones you have, is on the Commercials page.",
       h("a", { class: "btn", href: "#/commercials" }, "Open Commercials")),
+    settingRow("Character cut-outs", "The show's character that pops up on Nickelodeon's 2009 “Up next”, found on fanart.tv. Your fanart.tv keys go here.",
+      cutoutsBox()),
     settingRow("Picture & sound", "Changes apply to channels started after saving. If hardware encoding doesn't work, Rerun notices and uses the CPU instead.",
       h("div", { class: "grid2" },
         h("div", null, h("label", null, "Picture size"), select([["480p", "480p — lightest"], ["720p", "720p — recommended"], ["1080p", "1080p"]], st.resolution, (val) => { st.resolution = val; })),
