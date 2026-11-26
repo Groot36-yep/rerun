@@ -30,7 +30,7 @@ log = logging.getLogger("rerun.images")
 # Logos are wide (16:9) because that's the shape of the logo space in Plex's guide; a square logo
 # gets shrunk to fit its height and ends up tiny.
 W, H = 640, 360
-VERSION = "v7"
+VERSION = "v8"
 FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 FACES = {  # all SIL Open Font License, shipped with Rerun so every computer draws the same logos
     "sans": "Jost-Bold.ttf",                # geometric 1960s lettering
@@ -43,7 +43,6 @@ CREAM, PAPER, INK, NIGHT = "#f4e7cc", "#fbf7ee", "#231c16", "#15110e"
 GOLD = "#d4a028"
 STRIPE = ["#c2521d", "#d4a028", "#1d6870"]
 PALETTE = ["#1d6870", "#b0461a", "#8a6512", "#5c5a22", "#6c2430", "#2f4f6f", "#4a3a2e"]
-KIDS = ["#f26b1d", "#7b3fb0", "#1f9e5a", "#e23c74", "#1e88c8", "#e5a50a"]
 NEON = ["#ff4f9a", "#3fe0d0", "#ffd23f", "#a78bfa", "#ff7a45"]
 HOLIDAY_COLORS = {
     "christmas": "#7c1d24", "halloween": "#231c16", "thanksgiving": "#6b3a1e", "valentines": "#9e2238",
@@ -144,33 +143,6 @@ def _layout(text: str, box, face: str = "sans", max_lines: int = 2, gap: float =
     return _font(size, face), spots, size
 
 
-def _letters(img: Image.Image, text: str, box, fill: str, face: str = "sans", max_lines: int = 2,
-             stroke: float = 0, stroke_fill: str | None = None, shadow: tuple | None = None,
-             glow: tuple | None = None, gap: float = 0.14) -> int:
-    """Paint text into box, with an optional outline, a solid drop shadow (dx, dy as a share of
-    the letter size, colour) and a neon glow (colour, radius). Returns the font size used."""
-    font, spots, size = _layout(text, box, face, max_lines, gap)
-    sw = int(size * stroke)
-    if glow:
-        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        gd = ImageDraw.Draw(layer)
-        for x, y, line in spots:
-            gd.text((x, y), line, font=font, fill=glow[0], anchor="ms", stroke_width=max(sw, int(size * 0.05)),
-                    stroke_fill=glow[0])
-        for r in (glow[1], glow[1] / 3):
-            img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(r)))
-    d = ImageDraw.Draw(img)
-    if shadow:
-        dx, dy, col = shadow
-        for x, y, line in spots:
-            for k in range(1, 4):  # a solid, stepped shadow like a 3D sign letter
-                d.text((x + dx * k / 3 * size, y + dy * k / 3 * size), line, font=font, fill=col, anchor="ms",
-                       stroke_width=sw, stroke_fill=col)
-    for x, y, line in spots:
-        d.text((x, y), line, font=font, fill=fill, anchor="ms", stroke_width=sw, stroke_fill=stroke_fill or fill)
-    return size
-
-
 def _caps(name: str) -> str:
     """Capitals, like a station card, but "80s" stays "80s"."""
     return " ".join(w if any(c.isdigit() for c in w) else w.upper() for w in name.split())
@@ -185,95 +157,186 @@ def _twinkle(d: ImageDraw.ImageDraw, cx: float, cy: float, r: float, color: str)
                (cx - r, cy), (cx - k, cy - k)], fill=color)
 
 
-def _bulbs(img: Image.Image, color: str, inset: int = 18, gap: int = 34, r: int = 7):
-    """Glowing light bulbs around the edge, like a game-show set or a theatre marquee."""
-    pts = []
-    x0, y0, x1, y1 = inset, inset, W - inset, H - inset
-    nx, ny = round((x1 - x0) / gap), round((y1 - y0) / gap)
-    for i in range(nx + 1):
-        x = x0 + (x1 - x0) * i / nx
-        pts += [(x, y0), (x, y1)]
-    for j in range(1, ny):
-        y = y0 + (y1 - y0) * j / ny
-        pts += [(x0, y), (x1, y)]
-    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    for x, y in pts:
-        gd.ellipse((x - r * 2.2, y - r * 2.2, x + r * 2.2, y + r * 2.2), fill=color)
-    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(r * 1.4)))
-    d = ImageDraw.Draw(img)
-    for x, y in pts:
-        d.ellipse((x - r, y - r, x + r, y + r), fill=_shade(color, 0.55))
-        d.ellipse((x - r * 0.45, y - r * 0.6, x + r * 0.05, y - r * 0.1), fill="#fffbea")
+# --------------------------------------------------------------------------- drawn logos
+# A channel with no official logo (Cartoons, 90s Cartoons, Movies, Fright Night...) gets one drawn in one
+# house style, the way real networks' marks are made: a single flat colour, one clean wordmark, at most
+# one simple accent. The name is set as a lockup: a big "hero" word and a small spaced-out caps line
+# ("90s" over CARTOONS, FAMILY over MOVIES), so it still reads at the size of a guide's logo column.
+
+# (background, hero lettering, small caps line, accent)
+SCHEMES = {
+    "cartoons": ("#1d5fbf", "#ffffff", "#ffd23f", "#ffd23f"),
+    "70s": ("#c8511b", "#fff4dc", "#ffd27a", "#ffd27a"),
+    "80s": ("#c2185b", "#ffffff", "#5ee6f0", "#5ee6f0"),
+    "90s": ("#5b2bc9", "#ffffff", "#5ff0a8", "#5ff0a8"),
+    "2000s": ("#ef6a12", "#ffffff", "#2a1606", "#2a1606"),
+    "2010s": ("#0f8f7e", "#ffffff", "#ffe066", "#ffe066"),
+    "saturday": ("#ffb21e", "#2a1a08", "#b8360f", "#b8360f"),
+    "movies": ("#6e1520", "#f6ead2", "#e2b960", "#e2b960"),
+    "family": ("#173c6e", "#f6ead2", "#e2b960", "#e2b960"),
+    "horror": ("#141016", "#efe6cf", "#d2373a", "#efe6cf"),
+    "music": ("#0e0b10", "#ff5fa8", "#ffffff", "#ff5fa8"),
+    "classic": ("#f6efe0", "#231c16", "#a8431b", "#a8431b"),
+}
+HOLIDAY_SCHEMES = {
+    "christmas": ("#7a1622", "#f6ead2", "#e2b960", "#e2b960"),
+    "halloween": ("#16110f", "#ff8a1f", "#efe6cf", "#efe6cf"),
+    "thanksgiving": ("#5e3218", "#f6ead2", "#f0a24a", "#f0a24a"),
+    "valentines": ("#8f1d3a", "#fff0f2", "#ffb3c4", "#ffb3c4"),
+    "stpatricks": ("#1d5a36", "#f3f7ea", "#c9e88a", "#c9e88a"),
+    "easter": ("#5a4f96", "#fbf6ff", "#f9d77e", "#f9d77e"),
+    "july4": ("#162c52", "#ffffff", "#e8434b", "#e8434b"),
+    "newyear": ("#111a2e", "#f3d27a", "#ffffff", "#f3d27a"),
+}
+HOLIDAY_SERIF = {"christmas", "thanksgiving", "valentines", "easter"}
+GENERAL = [("#1d6870", "#f6ead2", "#f0c35c"), ("#a3401b", "#fff1dc", "#ffd27a"), ("#2f4f6f", "#f6ead2", "#9fd3e8"),
+           ("#5b2a3a", "#f6ead2", "#f0a8b8"), ("#3c5a2a", "#f3efd8", "#d6e58a"), ("#7a5a12", "#fff4dc", "#ffe7a0")]
+CATEGORY_WORDS = {"cartoons", "toons", "movies", "films", "cinema", "music", "videos", "classics", "kids", "tv",
+                  "channel", "network", "comedy", "sitcoms", "drama", "anime"}
+_ERA = re.compile(r"^'?(\d0s|\d{4}s|\d{4})$", re.I)
 
 
-# --------------------------------------------------------------------------- the five looks
-
-def _look_bubble(name: str) -> Image.Image:
-    """Kids: a bright card with confetti dots and fat retro letters with a 3D shadow."""
-    bg = _pick(name, KIDS)
-    img = _tile(bg, stripe=False)
-    d = ImageDraw.Draw(img)
-    light = _shade(bg, 0.18)
-    for i in range(14):
-        n = int(hashlib.md5(f"{name}{i}".encode()).hexdigest(), 16)
-        x, y, r = n % W, (n >> 12) % H, 10 + (n >> 24) % 26
-        d.ellipse((x - r, y - r, x + r, y + r), fill=light)
-    _letters(img, name, (34, 26, W - 40, H - 40), "#ffffff", face="fun", stroke=0.035, stroke_fill=INK,
-             shadow=(0.035, 0.05, INK), gap=0.05)
-    return img
-
-
-def _look_neon(name: str) -> Image.Image:
-    """Music: a night-black card, a border of bulbs and neon tube lettering."""
-    tube = _pick(name, NEON)
-    img = _tile("#120d0b", stripe=False)
-    _bulbs(img, GOLD)
-    _letters(img, _caps(name), (64, 58, W - 64, H - 58), _shade(tube, 0.7), stroke=0.012, stroke_fill=tube,
-             glow=(tube, 16))
-    return img
+def _scheme(name: str, look: str) -> tuple:
+    if look.startswith("holiday:"):
+        return HOLIDAY_SCHEMES.get(look[8:], HOLIDAY_SCHEMES["christmas"])
+    low = name.lower()
+    era = next((w.lower().lstrip("'") for w in name.split() if _ERA.match(w)), "")
+    if look == "kids":
+        if "saturday" in low:
+            return SCHEMES["saturday"]
+        for key in ("70s", "80s", "90s", "2000s", "2010s"):
+            if era.endswith(key) or era == key:
+                return SCHEMES[key]
+        return SCHEMES["cartoons"]
+    if look == "movies":
+        if any(w in low for w in ("fright", "horror", "scary", "scream", "monster", "creature")):
+            return SCHEMES["horror"]
+        return SCHEMES["family" if "family" in low or "kids" in low else "movies"]
+    if look in ("music", "classic"):
+        return SCHEMES[look]
+    bg, hero, small = _pick(name, GENERAL)
+    return bg, hero, small, small
 
 
-def _look_marquee(name: str) -> Image.Image:
-    """Movies: velvet colour, a gold-bulb marquee and cream headline type."""
-    img = _tile(_pick(name, ["#6c1a22", "#1d2f4f", "#3b2418"]), stripe=False)
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((46, 46, W - 46, H - 46), radius=14, outline=GOLD, width=3)
-    _bulbs(img, "#ffcf5a", inset=22, gap=30, r=6)
-    _letters(img, name, (72, 66, W - 72, H - 66), CREAM, face="serif", shadow=(0.0, 0.035, "#00000088"))
-    return img
+def _lockup(name: str) -> tuple[str, str, str]:
+    """(kicker above, hero, line below): "90s Cartoons" -> ("", "90s", "CARTOONS"), "Family Movies" ->
+    ("FAMILY", "MOVIES", ""), "Thanksgiving TV" -> ("", "THANKSGIVING", "TV"), "Fright Night" -> ("",
+    "FRIGHT NIGHT", "")."""
+    words = name.split()
+    if len(words) >= 2 and _ERA.match(words[0]):
+        return "", words[0], " ".join(words[1:]).upper()
+    if len(words) >= 2 and words[-1].lower() in CATEGORY_WORDS and len(" ".join(words)) > 6:
+        if words[-1].lower() in ("tv", "channel", "network"):
+            return "", _caps(" ".join(words[:-1])), words[-1].upper()
+        return " ".join(words[:-1]).upper(), words[-1].upper(), ""
+    return "", _caps(name), ""
 
 
-def _look_station(name: str, number) -> Image.Image:
-    """Classic and broadcast TV: a paper station-ID card with the channel number in a starburst."""
-    img = _tile(PAPER, stripe=False)
-    d = ImageDraw.Draw(img)
-    _stripe(d, PAPER)
-    cx, cy, r = 128, (H - 21) / 2, 112
-    d.polygon(_star(cx, cy, r, 16, 0.74), fill=GOLD)
-    d.ellipse((cx - r * 0.66, cy - r * 0.66, cx + r * 0.66, cy + r * 0.66), fill="#c2521d")
-    if number:
-        _letters(img, str(number), (cx - r * 0.5, cy - r * 0.42, cx + r * 0.5, cy + r * 0.42), CREAM, face="serif",
-                 max_lines=1)
-    _letters(img, name, (cx + r + 20, 38, W - 30, H - 52), INK, face="serif", max_lines=3, gap=0.22)
-    return img
+def _tracked(d: ImageDraw.ImageDraw, xc: float, base: float, text: str, font, fill: str, track: float) -> float:
+    """Spaced-out capitals, centred on xc, sitting on the baseline. Returns their width."""
+    widths = [font.getlength(c) for c in text]
+    total = sum(widths) + track * (len(text) - 1)
+    x = xc - total / 2
+    for c, w in zip(text, widths):
+        d.text((x, base), c, font=font, fill=fill, anchor="ls")
+        x += w + track
+    return total
 
 
-def _look_atomic(name: str) -> Image.Image:
-    """Everything else: a solid mid-century colour, sparkles and big bold capitals."""
-    bg = _pick(name, PALETTE)
-    img = _tile(bg)
-    d = ImageDraw.Draw(img)
-    spark = _shade(bg, 0.28)
-    for x, y, r in ((44, 46, 24), (W - 50, 60, 16), (W - 34, H - 74, 22), (30, H - 90, 12)):
-        _twinkle(d, x, y, r, spark)
-    _letters(img, _caps(name) if len(name) <= 24 else name, (46, 34, W - 46, H - 50), CREAM,
-             shadow=(0.0, 0.03, _shade(bg, -0.45)))
-    return img
+def _wordmark(name: str, look: str, number=None) -> Image.Image:
+    bg, hero_c, small_c, accent = _scheme(name, look)
+    kicker, hero, below = _lockup(name)
+    serif = look in ("movies", "classic") or (look.startswith("holiday:") and look[8:] in HOLIDAY_SERIF)
+    face = "serif" if serif else "sans"
+    k = 2  # drawn at twice the size and shrunk, for smooth edges
+    w, h = W * k, H * k
+    layer = Image.new("RGBA", (w * 2, h * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    small = bool(kicker or below)
+    # the hero word, as big as fits; leave room for the small line
+    ox, oy = w / 2, h / 2
+    horror = _scheme(name, look) == SCHEMES["horror"]
+    box = (ox, oy, ox + w * (0.56 if horror else 0.78 if serif else 0.80), oy + h * (0.44 if small else 0.58))
+    font, spots, size = _layout(hero, box, face, 1 if small else 2, 0.10)
+    cap_top = min(y for _x, y, _l in spots) - size * (0.70 if not serif else 0.68)
+    hero_bottom = max(y for _x, y, _l in spots)
+    xc = (box[0] + box[2]) / 2
+    for x, y, line in spots:
+        if look == "music":  # a soft neon glow behind the tube colour
+            glow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+            ImageDraw.Draw(glow).text((x, y), line, font=font, fill=hero_c, anchor="ms")
+            layer.alpha_composite(glow.filter(ImageFilter.GaussianBlur(size * 0.08)))
+            d = ImageDraw.Draw(layer)
+        d.text((x, y), line, font=font, fill=hero_c, anchor="ms")
+    # the small spaced capitals, about a quarter the hero's cap height, never wider than the hero
+    hero_w = max(font.getlength(line) for _x, _y, line in spots)
+    text = kicker or below
+    if text:
+        ss = max(10, round(size * 0.70 * (0.62 if len(text) <= 3 else 0.44 if look.startswith("holiday:") else 0.36)))
+        sf = _font(ss, "sans")
+        track = ss * 0.32
+        while ss > 10 and sum(sf.getlength(c) for c in text) + track * (len(text) - 1) > max(hero_w, w * 0.42):
+            ss -= 1
+            sf, track = _font(ss, "sans"), ss * 0.32
+        gap = size * 0.16
+        if kicker:
+            base = cap_top - gap
+        else:
+            base = hero_bottom + gap + ss * 0.72
+        tw = _tracked(d, xc, base, text, sf, small_c, track)
+        # the accent: a short rule each side of the small line (cartoons, general), or full-width rules
+        # above and below the whole lockup (movies)
+        if look in ("kids", "general"):
+            r = max(3, round(ss * 0.14))
+            y = base - ss * 0.36
+            ln = min(ss * 2.2, (hero_w - tw) / 2 - ss * 0.6)
+            if ln > ss * 0.6:
+                d.rounded_rectangle((xc - tw / 2 - ss * 0.5 - ln, y - r, xc - tw / 2 - ss * 0.5, y + r), r, fill=accent)
+                d.rounded_rectangle((xc + tw / 2 + ss * 0.5, y - r, xc + tw / 2 + ss * 0.5 + ln, y + r), r, fill=accent)
+    elif look in ("kids", "general"):
+        r = max(4, round(size * 0.05))
+        y = hero_bottom + size * 0.22
+        d.rounded_rectangle((xc - hero_w * 0.18, y - r, xc + hero_w * 0.18, y + r), r, fill=accent)
+    if look == "movies" and not _scheme(name, look) == SCHEMES["horror"]:
+        bb = layer.getbbox()
+        pad = size * 0.22
+        for yy in (bb[1] - pad, bb[3] + pad):
+            d.line((bb[0], yy, bb[2], yy), fill=accent, width=max(2, round(size * 0.025)))
+            d.line((bb[0], yy + (size * 0.06 if yy > bb[1] else -size * 0.06), bb[2],
+                    yy + (size * 0.06 if yy > bb[1] else -size * 0.06)), fill=accent, width=max(1, round(size * 0.012)))
+    if look.startswith("holiday:"):
+        bb = layer.getbbox()
+        r = size * 0.24
+        _symbol(layer, look[8:], (bb[0] + bb[2]) / 2, bb[1] - size * 0.30 - r, r, accent)
+        d = ImageDraw.Draw(layer)
+    if look == "music":
+        bb = layer.getbbox()
+        pad = size * 0.28
+        d.rounded_rectangle((bb[0] - pad, bb[1] - pad, bb[2] + pad, bb[3] + pad), radius=pad * 0.6,
+                            outline=accent, width=max(3, round(size * 0.03)))
+    mark = layer.crop(layer.getbbox())
+    # onto the card, centred (a touch above the middle, where the eye puts it)
+    card = Image.new("RGBA", (w, h), bg)
+    cd = ImageDraw.Draw(card)
+    if _scheme(name, look) == SCHEMES["horror"]:  # one pale full moon behind the words
+        r = h * 0.22
+        cx, cy = w * 0.80, h * 0.36
+        glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).ellipse((cx - r * 1.35, cy - r * 1.35, cx + r * 1.35, cy + r * 1.35), fill="#efe6cf30")
+        card.alpha_composite(glow.filter(ImageFilter.GaussianBlur(r * 0.25)))
+        cd.ellipse((cx - r, cy - r, cx + r, cy + r), fill="#e8dcc0")
+    if look == "classic" and number:  # the channel number in a ring, like a station card
+        pass
+    room_w, cx = w * (0.52 if horror else 0.84), w * (0.35 if horror else 0.5)
+    scale = min(1.0, room_w / mark.width, (h * 0.76) / mark.height)
+    if scale < 1:
+        mark = mark.resize((round(mark.width * scale), round(mark.height * scale)), Image.LANCZOS)
+    card.alpha_composite(mark, (round(cx - mark.width / 2), round((h - mark.height) / 2 - h * 0.015)))
+    return card.resize((W, H), Image.LANCZOS)
 
 
-LOOKS = {"Kids": "bubble", "Anime": "bubble", "Music": "neon", "Movies": "marquee", "Premium": "marquee",
-         "Classic TV": "station", "Broadcast Networks": "station"}
+LOOKS = {"Kids": "kids", "Anime": "kids", "Music": "music", "Movies": "movies", "Premium": "movies",
+         "Classic TV": "classic", "Broadcast Networks": "classic"}
 
 
 def look_for(name: str, group: str = "") -> str:
@@ -282,29 +345,18 @@ def look_for(name: str, group: str = "") -> str:
         return LOOKS[group]
     low = name.lower()
     if any(w in low for w in ("music", "video", "hits", "mtv", "vh1", "radio", "rock", "jams")):
-        return "neon"
-    if any(w in low for w in ("movie", "cinema", "film", "flix", "theater", "theatre")):
-        return "marquee"
+        return "music"
+    if any(w in low for w in ("movie", "cinema", "film", "flix", "theater", "theatre", "fright", "horror")):
+        return "movies"
     if any(w in low for w in ("kid", "cartoon", "toon", "jr", "junior", "saturday morning")):
-        return "bubble"
+        return "kids"
     if any(w in low for w in ("classic", "retro", "vintage", "oldies", "rerun")):
-        return "station"
-    return "atomic"
+        return "classic"
+    return "general"
 
 
 def draw_logo(name: str, group: str = "", number=None) -> bytes:
-    look = look_for(name, group)
-    if look == "bubble":
-        img = _look_bubble(name)
-    elif look == "neon":
-        img = _look_neon(name)
-    elif look == "marquee":
-        img = _look_marquee(name)
-    elif look == "station":
-        img = _look_station(name, number)
-    else:
-        img = _look_atomic(name)
-    return _png(_rounded(img))
+    return _png(_rounded(_wordmark(name, look_for(name, group), number)))
 
 
 def _trim(logo: Image.Image) -> Image.Image:
@@ -441,13 +493,44 @@ def holiday_icon(d: ImageDraw.ImageDraw, key: str, x: float, y: float, s: float)
 
 
 def draw_holiday_logo(name: str, key: str) -> bytes:
-    img = _tile(HOLIDAY_COLORS.get(key, "#7c1d24"))
-    d = ImageDraw.Draw(img)
-    icon = 150
-    holiday_icon(d, key, 22, (H - 18 - icon) / 2, icon)
-    _letters(img, name, (22 + icon + 14, 26, W - 22, H - 44), CREAM, face="fun", max_lines=2,
-             shadow=(0.0, 0.04, _shade(HOLIDAY_COLORS.get(key, "#7c1d24"), -0.5)), gap=0.08)
-    return _png(_rounded(img))
+    """A holiday channel's logo, in the house style of the drawn ones: its colour, a clean lockup
+    (CHRISTMAS over CHANNEL) and one small symbol of the holiday above it."""
+    return _png(_rounded(_wordmark(name, f"holiday:{key}")))
+
+
+def _symbol(img: Image.Image, key: str, cx: float, cy: float, r: float, colour: str):
+    """A small, simple mark for a holiday: a star, a crescent moon, a leaf, a heart..."""
+    big = 4
+    g = Image.new("RGBA", (round(r * 2 * big) + 4, round(r * 2 * big) + 4), (0, 0, 0, 0))
+    d = ImageDraw.Draw(g)
+    c, R = g.width / 2, r * big
+    if key == "halloween":  # a crescent moon
+        d.ellipse((c - R, c - R, c + R, c + R), fill=colour)
+        d.ellipse((c - R * 0.55, c - R * 1.15, c + R * 1.45, c + R * 0.85), fill=(0, 0, 0, 0))
+    elif key == "thanksgiving":  # a leaf on its stem
+        leaf = Image.new("RGBA", g.size, (0, 0, 0, 0))
+        ld = ImageDraw.Draw(leaf)
+        ld.ellipse((c - R * 0.5, c - R, c + R * 0.5, c + R * 0.75), fill=colour)
+        ld.line((c, c + R * 0.2, c, c + R), fill=colour, width=max(2, round(R * 0.12)))
+        g = leaf.rotate(-35, resample=Image.BICUBIC, center=(c, c))
+    elif key == "valentines":  # a heart
+        k = R * 0.52
+        d.ellipse((c - 2 * k, c - 1.4 * k, c, c + 0.6 * k), fill=colour)
+        d.ellipse((c, c - 1.4 * k, c + 2 * k, c + 0.6 * k), fill=colour)
+        d.polygon([(c - 1.93 * k, c - 0.1 * k), (c + 1.93 * k, c - 0.1 * k), (c, c + 1.9 * k)], fill=colour)
+    elif key == "stpatricks":  # a shamrock
+        k = R * 0.42
+        for dx, dy in ((0, -0.95), (-0.9, 0.2), (0.9, 0.2)):
+            d.ellipse((c + dx * k - k, c + dy * k - k, c + dx * k + k, c + dy * k + k), fill=colour)
+        d.line((c, c + 0.3 * k, c + 0.5 * k, c + 2.3 * k), fill=colour, width=max(2, round(k * 0.3)))
+    elif key == "easter":  # an egg
+        d.ellipse((c - R * 0.72, c - R, c + R * 0.72, c + R), fill=colour)
+    elif key == "newyear":  # a four-pointed sparkle
+        _twinkle(d, c, c, R, colour)
+    else:  # Christmas, the Fourth: a star
+        d.polygon(_star(c, c + R * 0.08, R, 5, 0.42), fill=colour)
+    g = g.resize((max(1, g.width // big), max(1, g.height // big)), Image.LANCZOS)
+    img.alpha_composite(g, (round(cx - g.width / 2), round(cy - g.height / 2)))
 
 
 def add_badge(png: bytes, key: str) -> bytes:
@@ -934,9 +1017,9 @@ PUBLIC_V = 2
 _PUBLIC_FILE = DATA_DIR / "logos" / "public.json"
 _public_cache: dict | None = None
 # Bright versions of each look's colour, for lettering on Plex's dark guide.
-ON_DARK = {"bubble": ["#ff8a3d", "#c08cff", "#4cd98a", "#ff6fa8", "#5cc8ff", "#ffd23f"],
-           "neon": NEON, "marquee": ["#ffcf5a"], "station": [CREAM],
-           "atomic": ["#6fd3d9", "#ff9a5c", "#f2c14e", "#c7c36a", "#ff8fa0", "#8fb8e8", "#e0c9a6"]}
+ON_DARK = {"kids": ["#ff8a3d", "#c08cff", "#4cd98a", "#ff6fa8", "#5cc8ff", "#ffd23f"],
+           "music": NEON, "movies": ["#ffcf5a"], "classic": [CREAM],
+           "general": ["#6fd3d9", "#ff9a5c", "#f2c14e", "#c7c36a", "#ff8fa0", "#8fb8e8", "#e0c9a6"]}
 HOLIDAY_ON_DARK = {"christmas": "#ff6b6b", "halloween": "#ff9a3c", "thanksgiving": "#f2a65a",
                    "valentines": "#ff7aa8", "stpatricks": "#4cd98a", "easter": "#c3a6ff", "july4": "#7ab8ff",
                    "newyear": "#ffd23f"}
@@ -1015,7 +1098,7 @@ def public_logo_url(ch: dict, catalog=None) -> str:
     if holiday:
         fg = HOLIDAY_ON_DARK.get(ch["season"], CREAM)
     else:
-        fg = _pick(name, ON_DARK.get(look_for(name, ch.get("group", "")), ON_DARK["atomic"]))
+        fg = _pick(name, ON_DARK.get(look_for(name, ch.get("group", "")), ON_DARK["general"]))
     lines = _two_lines(_caps(name))
     # Oswald capitals are about half as wide as they are tall; two lines stack about 2.2 high.
     aspect = 0.5 * max(len(line) for line in lines) / (1 if len(lines) == 1 else 2.2)

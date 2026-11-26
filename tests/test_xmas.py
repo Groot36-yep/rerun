@@ -498,6 +498,19 @@ def check_overlay_filters():
     cmd = ff.ident_cmd(images.station_id(buf.getvalue(), 720), 6.0, {"resolution": "720p"}, 3.0)
     g = cmd[cmd.index("-filter_complex") + 1]
     assert "fade=t=in" in g and "fade=t=out:st=5.60" in g and "eval=frame" in g, g
+    # drawn channel logos: one flat colour and a centred wordmark; with a character, it's on the left
+    for nm in ("90s Cartoons", "Family Movies", "Fright Night", "Saturday Morning", "Thanksgiving TV", "80s Videos"):
+        im = Image.open(_io.BytesIO(images.draw_logo(nm))).convert("RGBA")
+        assert im.size == (640, 360) and im.getpixel((0, 0))[3] == 0, nm  # rounded corners
+        bg = im.getpixel((40, 180))[:3] if nm != "Fright Night" else im.getpixel((20, 300))[:3]
+        assert len({im.getpixel((x, y))[:3] for x in (24, 30, 610, 616) for y in (40, 320)}) <= 2, f"{nm}: not a flat card"
+    for nm, key in (("Christmas Channel", "christmas"), ("Halloween Channel", "halloween"), ("Easter TV", "easter")):
+        im = Image.open(_io.BytesIO(images.draw_holiday_logo(nm, key))).convert("RGBA")
+        assert im.size == (640, 360) and len({im.getpixel((x, y))[:3] for x in (24, 616) for y in (40, 320)}) == 1, nm
+    pal = images.draw_logo("Cartoons")
+    im = Image.open(_io.BytesIO(pal)).convert("RGB")
+    ink = [x for x in range(640) if any(im.getpixel((x, y)) != im.getpixel((40, 40)) for y in range(60, 300, 6))]
+    assert abs((min(ink) + max(ink)) / 2 - 320) < 24, "the wordmark isn't centred"
     # the logo addresses handed to Plex with its guide (a name clash with the banner helper once broke this)
     assert images.public_logo_url({"id": "x", "name": "Zzz Test", "number": 5}, None).startswith("https://")
     # it animates over the whole picture (after any side bars), as the original moved
