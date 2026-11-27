@@ -90,41 +90,48 @@ async def check_picking():
     png_mine.write_bytes(png())
     g = characters.Grabber(app)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
-        name = await g.for_show(c, "s1")
-        assert name == "SpongeBob SquarePants.png", name
-        kept = json.loads(characters.MANIFEST.read_text())["SpongeBob SquarePants"]
-        assert kept["id"] == "3", kept  # English or no-language first, the jagged one refused, the bigger one kept
-        assert not any("french" in u for u in asked), "a French one was fetched before the English ones ran out"
-        assert images.character_for("SpongeBob SquarePants").endswith("SpongeBob SquarePants.png")
-        assert await g.for_show(c, "s2") == ""
+        names = await g.for_show(c, "s1")
+        sb = "SpongeBob SquarePants"
+        assert names == [f"{sb}.png", f"{sb} #2.png", f"{sb} #3.png"], names
+        kept = json.loads(characters.MANIFEST.read_text())[sb]["pics"]
+        # three for variety: the English (or wordless) ones first, best first; the jagged one refused; the
+        # French one only because there weren't three good English ones
+        assert [x["id"] for x in kept] == ["3", "2", "4"], kept
+        assert len(images.characters_for(sb)) == 3
+        assert {images.character_for(sb, k) for k in range(3)} == set(images.characters_for(sb)), "they don't take turns"
+        assert await g.for_show(c, "s2") == []
         rec = json.loads(characters.MANIFEST.read_text())["No Art Show"]
         assert rec["none"] and rec["why"] == "fanart.tv has no character art for it", rec
-        assert await g.for_show(c, "s4") == "Only IMDb.png", "a show with only an IMDb id wasn't found through TVMaze"
-        assert await g.for_show(c, "s5") == "Clear Art Show.png"
-        assert json.loads(characters.MANIFEST.read_text())["Clear Art Show"]["kind"] == "clear art"
-        assert await g.for_show(c, "s6") == ""
+        assert "Only IMDb.png" in await g.for_show(c, "s4"), "a show with only an IMDb id wasn't found through TVMaze"
+        assert await g.for_show(c, "s5") == ["Clear Art Show.png"]
+        assert json.loads(characters.MANIFEST.read_text())["Clear Art Show"]["pics"][0]["kind"] == "clear art"
+        assert await g.for_show(c, "s6") == []
         assert json.loads(characters.MANIFEST.read_text())["Nobody Knows"]["why"].startswith("Couldn't identify")
-        assert await g.for_show(c, "s3") == "" and png_mine.read_bytes() == png(), "replaced a cut-out you put there"
-        again = await g.for_show(c, "s1")  # "Another": the one it had and the jagged one are skipped
-        assert json.loads(characters.MANIFEST.read_text())["SpongeBob SquarePants"]["id"] in ("2", "4"), again
-    g.remove("s1")
-    assert images.character_for("SpongeBob SquarePants") is None
+        await g.for_show(c, "s3")  # yours is kept, and found ones join it
+        assert png_mine.read_bytes() == png() and len(images.characters_for("Mine")) == 4, images.characters_for("Mine")
+        assert await g.for_show(c, "s1", more=True) == [], "found one more when fanart.tv has nothing new"
+        assert json.loads(characters.MANIFEST.read_text())[sb]["why"] == "No more good ones on fanart.tv"
+    g.remove("s1", f"{sb} #2.png")  # one picture: the others stay, and it isn't fetched again
+    assert len(images.characters_for(sb)) == 2 and "2" in json.loads(characters.MANIFEST.read_text())[sb]["tried"]
+    g.remove("s1")  # all of them: the show goes without, and isn't looked for again
+    assert images.character_for(sb) is None
     assert [x["title"] for x in g.listing() if x["file"]] == ["Clear Art Show", "Mine", "Only IMDb"]
     gone = {x["title"]: x["why"] for x in g.listing() if not x["file"]}
-    assert gone["SpongeBob SquarePants"] == "You removed it" and "fanart.tv has no" in gone["No Art Show"]
+    assert gone[sb] == "You removed them" and "fanart.tv has no" in gone["No Art Show"]
     # clear art sits wider on the bar, left of the words
     L = images.nick2009_layers("Clear Art Show", "", 1080, images.character_for("Clear Art Show"))
     pic = Image.open(L["char"])
     assert pic.width > pic.height and L["char_x"] + pic.width <= 652 and L["char_x"] >= 0, (pic.size, L["char_x"])
-    # a later search looks again at shows that found nothing before, but not at ones you removed
+    # a later search looks again at shows that found nothing (or fewer than three) before, but not at ones
+    # you removed, nor ones already looked at with this search
     m = json.loads(characters.MANIFEST.read_text())
     m["No Art Show"]["v"] = 1
     characters.MANIFEST.write_text(json.dumps(m))
     seen = []
 
-    async def fake(c, sid, skip=None):
+    async def fake(c, sid, more=False):
         seen.append(sid)
-        return ""
+        return []
     g.for_show = fake
     g.progress["running"] = False
     await g._run(False)
@@ -138,8 +145,9 @@ def check_upload():
     cat = Catalog({"shows": {"i1": {"id": "i1", "title": "iCarly", "guids": {}}}, "episodes": {}})
     g = characters.Grabber(SimpleNamespace(catalog=cat, secrets=SimpleNamespace(data={})))
     assert g.upload("i1", png()) == "iCarly.png" and images.character_for("iCarly")
+    assert g.upload("i1", png(figure=(60, 20, 452, 510))) == "iCarly #2.png", "a second picture didn't join the first"
     row = next(x for x in g.listing() if x["show"] == "i1")
-    assert row["own"] and not row["auto"], row
+    assert [p["own"] for p in row["pics"]] == [True, True], row
     try:
         g.upload("i1", png(alpha=False))
         raise AssertionError("a picture with no see-through background was accepted")

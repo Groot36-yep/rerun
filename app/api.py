@@ -1400,12 +1400,12 @@ async def characters_another(sid: str, app=Depends(signed_in)):
     if sid not in app.catalog.shows:
         raise HTTPException(404, "No such show")
     try:
-        name = await app.characters.another(sid)
+        names = await app.characters.another(sid)
     except (RuntimeError, PermissionError) as e:
         raise HTTPException(400, str(e))
     except httpx.HTTPError:
         raise HTTPException(502, "Couldn't reach fanart.tv")
-    return {"file": name}
+    return {"files": names}
 
 
 @router.post("/characters/{sid}/upload")
@@ -1423,10 +1423,13 @@ async def characters_upload(sid: str, request: Request, app=Depends(signed_in)):
 
 
 @router.delete("/characters/{sid}")
-async def characters_remove(sid: str, app=Depends(signed_in)):
+async def characters_remove(sid: str, file: str = "", app=Depends(signed_in)):
+    """One of a show's pictures (`file`), or all of them."""
     if sid not in app.catalog.shows:
         raise HTTPException(404, "No such show")
-    app.characters.remove(sid)
+    if "/" in file or "\\" in file:
+        raise HTTPException(400, "No such picture")
+    app.characters.remove(sid, file)
     return {"ok": True}
 
 

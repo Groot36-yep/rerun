@@ -23,6 +23,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
 import time
 
@@ -39,10 +40,12 @@ TVMAZE = "https://api.tvmaze.com/lookup/shows"
 WIKIDATA = "https://www.wikidata.org/w/api.php"
 WIKIDATA_ITEM = "https://www.wikidata.org/wiki/Special:EntityData/{item}.json"
 KINDS = (("characterart", "character"), ("hdclearart", "clear art"))  # in order of preference
-SEARCH_V = 2  # shows that found nothing with an older search are searched again
+SEARCH_V = 3  # shows with fewer than WANT found with an older search are searched again (3: several a show)
+WANT = 3       # cut-outs to find for each show, for variety on the air
+MAX_PICS = 6   # a show's cut-outs in all, found and your own
 DIR = images.CHARACTERS
-MANIFEST = DIR / ".found.json"  # {show title: {"id", "file", "kind", "likes", "tried": [ids], "none": bool,
-#                                  "removed": bool (you took it away), "why": str, "v": SEARCH_V}}
+MANIFEST = DIR / ".found.json"  # {show title: {"pics": [{"file", "id", "kind", "own"}], "tried": [ids],
+#                                  "none": bool, "removed": bool (you took them all away), "why": str, "v": SEARCH_V}}
 MAX_BYTES = 8_000_000
 TRY = 6  # downloads to check per show, at most
 TEST_TVDB = "75886"  # SpongeBob SquarePants, for checking a key
@@ -104,6 +107,32 @@ def judge(data: bytes) -> tuple[float, str]:
     return 1 + min(w, h) / 1000 + fill + min(soft, 0.05) * 10, ""
 
 
+def _rec(m: dict, title: str) -> dict:
+    """A show's record, with its pictures as a list (older records had one "file" or "own")."""
+    rec = dict(m.get(title) or {})
+    if "pics" not in rec:
+        pics = []
+        if rec.get("file"):
+            pics.append({"file": rec["file"], "id": rec.get("id"), "kind": rec.get("kind", "character"), "own": False})
+        elif rec.get("own"):
+            pics.append({"file": file_name(title), "id": None, "kind": "character", "own": True})
+        rec["pics"] = pics
+    rec["pics"] = [x for x in rec["pics"] if (DIR / x["file"]).is_file()]
+    return rec
+
+
+def _next_name(title: str) -> str:
+    """The file for a show's next picture: "<Show>.png", then "<Show> #2.png", "#3"..."""
+    first = file_name(title)
+    if not (DIR / first).exists():
+        return first
+    base = first[:-4]
+    n = 2
+    while (DIR / f"{base} #{n}.png").exists():
+        n += 1
+    return f"{base} #{n}.png"
+
+
 class Grabber:
     def __init__(self, app):
         self.app = app
@@ -117,19 +146,29 @@ class Grabber:
         return _headers(self.key(), (self.app.secrets.data.get("fanart_client") or "").strip())
 
     # ---- what's there -----------------------------------------------------------------------
+    def _pics(self, title: str, rec: dict) -> list[dict]:
+        """A show's pictures: found ones, ones added on the page, and any put in the folder by hand."""
+        known = {x["file"]: x for x in rec["pics"]}
+        out = []
+        for f in images.characters_for(title):
+            name = os.path.basename(f)
+            out.append(known.get(name) or {"file": name, "id": None, "kind": "character", "own": True})
+        return out
+
     def listing(self) -> list[dict]:
         m = _read()
         out = []
         for sid, show in sorted(self.app.catalog.shows.items(), key=lambda kv: kv[1].get("title", "").lower()):
-            f = images.character_for(show.get("title", ""))
-            rec = m.get(show.get("title", "")) or {}
+            title = show.get("title", "")
+            rec = _rec(m, title)
+            pics = self._pics(title, rec)
             # every show: one without a cut-out is listed too, so you can add your own
-            out.append({"show": sid, "title": show["title"], "auto": bool(f and rec.get("file") and f.endswith(rec["file"])),
-                        "file": f.split("/")[-1].split("\\")[-1] if f else "", "none": bool(rec.get("none") and not f),
-                        "kind": rec.get("kind", "character") if f else "",
-                        "own": bool(f and rec.get("own")),
-                        "why": "" if f else ("You removed it" if rec.get("removed") else rec.get("why")
-                                             or ("Not looked for yet" if not rec else ""))})
+            out.append({"show": sid, "title": title,
+                        "pics": [{"file": x["file"], "own": bool(x.get("own")), "kind": x.get("kind", "character")}
+                                 for x in pics],
+                        "file": pics[0]["file"] if pics else "",
+                        "why": "" if pics else ("You removed them" if rec.get("removed") else rec.get("why")
+                                                or ("Not looked for yet" if title not in m else ""))})
         return out
 
     # ---- fetching -----------------------------------------------------------------------------
@@ -177,15 +216,16 @@ class Grabber:
         j = r.json()
         return {k: sorted(j.get(k) or [], key=lambda x: (_foreign(x), -int(x.get("likes") or 0))) for k, _ in KINDS}
 
-    async def _pick(self, c, title: str, arts: list, tried: set, why: list):
-        """The best of these that passes the checks: (art, data) or (None, b"")."""
-        best, best_score, best_data = None, 0.0, b""
+    async def _pick(self, c, title: str, arts: list, tried: set, why: list, need: int) -> list:
+        """Up to `need` of these that pass the checks, best first: [(art, data)]. English (or wordless)
+        ones come before other languages', however liked."""
+        good = []
         checked = 0
         for art in arts:
-            if art.get("id") in tried or checked >= TRY:
+            if art.get("id") in tried or checked >= TRY + 2 * need:
                 continue
-            if best and _foreign(art) and not _foreign(best):
-                break  # a good English (or wordless) one beats any other language's, however liked
+            if len(good) >= need and _foreign(art):
+                break
             checked += 1
             try:
                 r = await c.get(art["url"])
@@ -199,28 +239,32 @@ class Grabber:
                 why.append(bad)
                 tried.add(art.get("id"))
                 continue
-            score += min(int(art.get("likes") or 0), 20) / 10
-            if score > best_score:
-                best, best_score, best_data = art, score, r.content
-        return best, best_data
+            good.append((score + min(int(art.get("likes") or 0), 20) / 10 - (2 if _foreign(art) else 0), art, r.content))
+        good.sort(key=lambda g: -g[0])
+        return [(art, data) for _s, art, data in good[:need]]
 
-    async def for_show(self, c: httpx.AsyncClient, sid: str, skip: set | None = None) -> str:
-        """Find and keep the best cut-out for one show. Its file name, or "" if none was good enough."""
+    async def for_show(self, c: httpx.AsyncClient, sid: str, more: bool = False) -> list[str]:
+        """Find good cut-outs for one show, up to WANT of them found (or, with `more`, one more than it has,
+        up to MAX_PICS in all). The new files' names; [] if none was good enough."""
         show = self.app.catalog.shows.get(sid) or {}
         title = show.get("title", "")
         m = _read()
-        rec = m.get(title) or {}
-        mine = images.character_for(title)
-        if mine and not (rec.get("file") and mine.endswith(rec["file"])):
-            return ""  # one you put there yourself
-        tried = set(rec.get("tried") or []) | (skip or set())
+        rec = _rec(m, title)
+        pics = self._pics(title, rec)
+        found = [x for x in pics if not x.get("own")]
+        need = 1 if more else WANT - len(found)
+        need = min(need, MAX_PICS - len(pics))
+        if need <= 0:
+            return []
+        tried = set(rec.get("tried") or []) | {x["id"] for x in pics if x.get("id")}
 
-        def nothing(why: str) -> str:
+        def nothing(why: str) -> list:
             m = _read()
-            m[title] = {**(m.get(title) or {}), "tried": sorted(x for x in tried if x), "none": True,
-                        "removed": False, "why": why, "v": SEARCH_V, "file": ""}
+            r = _rec(m, title)
+            m[title] = {**r, "tried": sorted(x for x in tried if x), "none": not r["pics"], "removed": False,
+                        "why": why, "v": SEARCH_V}
             _write(m)
-            return ""
+            return []
 
         tvdb = await self._tvdb(c, show)
         if not tvdb:
@@ -229,45 +273,45 @@ class Grabber:
         if not any(arts.get(k) for k, _ in KINDS):
             return nothing("fanart.tv has no character art for it")
         why: list = []
-        best, best_data, kind = None, b"", ""
-        for k, label in KINDS:
-            best, best_data = await self._pick(c, title, arts.get(k) or [], tried, why)
-            if best:
-                kind = label
-                break
-        if not best:
+        picks: list = []
+        for k, label in KINDS:  # character art first; clear art (characters with the logo) if that's short
+            if len(picks) < need:
+                picks += [(art, data, label) for art, data in
+                          await self._pick(c, title, arts.get(k) or [], tried, why, need - len(picks))]
+        if not picks:
+            if pics:
+                return nothing("No more good ones on fanart.tv")
             if not why:
                 return nothing("Nothing new on fanart.tv to try")
             common = sorted(set(why), key=why.count, reverse=True)[:2]
             return nothing(f"fanart.tv's pictures weren't good enough ({', '.join(common)})")
-        m = _read()
         DIR.mkdir(parents=True, exist_ok=True)
-        name = file_name(title)
-        old = images.character_for(title)
-        if old and not old.endswith(name):
-            try:
-                import os
-                os.remove(old)
-            except OSError:
-                pass
-        img = images._trim(Image.open(io.BytesIO(best_data)).convert("RGBA"))
-        img.save(DIR / name)
-        m[title] = {"id": best.get("id"), "file": name, "kind": kind, "likes": int(best.get("likes") or 0),
-                    "tried": sorted(x for x in tried | {best.get("id")} if x), "none": False, "v": SEARCH_V}
+        names = []
+        new = []
+        for art, data, kind in picks:
+            name = _next_name(title)
+            images._trim(Image.open(io.BytesIO(data)).convert("RGBA")).save(DIR / name)
+            names.append(name)
+            new.append({"file": name, "id": art.get("id"), "kind": kind, "own": False})
+            tried.add(art.get("id"))
+        m = _read()
+        r = _rec(m, title)
+        m[title] = {**r, "pics": r["pics"] + new, "tried": sorted(x for x in tried if x), "none": False,
+                    "removed": False, "why": "", "v": SEARCH_V}
         _write(m)
-        return name
+        return names
 
-    async def another(self, sid: str) -> str:
-        """A different cut-out for this show than the one it has (and any tried before)."""
+    async def another(self, sid: str) -> list[str]:
+        """One more cut-out for this show, different from the ones it has (and any tried before)."""
         if not self.key():
             raise RuntimeError("Add a fanart.tv API key first")
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": "Rerun"}) as c:
-            return await self.for_show(c, sid)
+            return await self.for_show(c, sid, more=True)
 
     def upload(self, sid: str, data: bytes) -> str:
-        """Your own cut-out for a show, dropped onto the page: it must be a picture with a see-through
-        background (else it would sit on the bar as a box). Trimmed of empty edges and kept as the show's
-        cut-out, in place of any found one; never replaced by the finder."""
+        """Your own cut-out for a show, dropped onto the page, added to its others: it must be a picture with
+        a see-through background (else it would sit on the bar as a box). Trimmed of empty edges, and never
+        replaced by the finder."""
         title = (self.app.catalog.shows.get(sid) or {}).get("title", "")
         if not title:
             raise ValueError("No such show")
@@ -285,34 +329,37 @@ class Grabber:
                              "Use a PNG cut-out of the character.")
         if max(im.size) < 120:
             raise ValueError("That picture is too small to look good on the screen.")
-        DIR.mkdir(parents=True, exist_ok=True)
-        old = images.character_for(title)
-        name = file_name(title)
-        if old and not old.endswith(name):
-            try:
-                import os
-                os.remove(old)
-            except OSError:
-                pass
-        im.save(DIR / name)
         m = _read()
-        m[title] = {"own": True, "none": False, "removed": False, "v": SEARCH_V}  # yours: never replaced
+        rec = _rec(m, title)
+        if len(self._pics(title, rec)) >= MAX_PICS:
+            raise ValueError(f"{title} already has {MAX_PICS} pictures. Remove one first.")
+        DIR.mkdir(parents=True, exist_ok=True)
+        name = _next_name(title)
+        im.save(DIR / name)
+        m[title] = {**rec, "pics": rec["pics"] + [{"file": name, "id": None, "kind": "character", "own": True}],
+                    "none": False, "removed": False, "why": "", "v": rec.get("v") or SEARCH_V}
         _write(m)
         return name
 
-    def remove(self, sid: str):
-        """Take this show's found cut-out away, and don't look again (it goes without a picture)."""
+    def remove(self, sid: str, file: str = ""):
+        """Take one of a show's pictures away (or, with no `file`, all of them). A found one isn't
+        fetched again; a show left with none isn't looked for again (it goes without a picture)."""
         title = (self.app.catalog.shows.get(sid) or {}).get("title", "")
         m = _read()
-        rec = m.get(title) or {}
-        f = images.character_for(title)
-        if f and ((rec.get("file") and f.endswith(rec["file"])) or rec.get("own")):  # found, or added on the page
+        rec = _rec(m, title)
+        pics = self._pics(title, rec)
+        gone = [x for x in pics if not file or x["file"] == file]
+        tried = set(rec.get("tried") or [])
+        for x in gone:
             try:
-                import os
-                os.remove(f)
+                os.remove(DIR / x["file"])
             except OSError:
                 pass
-        m[title] = {**rec, "file": "", "own": False, "none": True, "removed": True}
+            if x.get("id"):
+                tried.add(x["id"])
+        left = [x for x in rec["pics"] if x["file"] not in {g["file"] for g in gone}]
+        m[title] = {**rec, "pics": left, "tried": sorted(x for x in tried if x), "none": not left,
+                    "removed": not left or rec.get("removed", False)}
         _write(m)
 
     # ---- all the shows ----------------------------------------------------------------------
@@ -328,14 +375,17 @@ class Grabber:
     async def _run(self, only_new: bool):
         try:
             m = _read()
+
             def wanted(s: dict) -> bool:
-                rec = m.get(s.get("title", ""))
-                if images.character_for(s.get("title", "")) or (rec or {}).get("removed"):
+                title = s.get("title", "")
+                if title not in m:
+                    return True  # never looked for
+                rec = _rec(m, title)
+                if rec.get("removed") or only_new:
                     return False
-                if rec is None:
-                    return True
-                # found nothing before: look again with newer sources, but not every night
-                return not only_new and rec.get("none") and int(rec.get("v") or 1) < SEARCH_V
+                found = [x for x in self._pics(title, rec) if not x.get("own")]
+                # fewer than WANT found, or nothing: look again once with each newer search
+                return len(found) < WANT and int(rec.get("v") or 1) < SEARCH_V
             todo = [sid for sid, s in self.app.catalog.shows.items() if wanted(s)]
             self.progress["total"] = len(todo)
             async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": "Rerun"}) as c:
@@ -343,8 +393,7 @@ class Grabber:
                     title = self.app.catalog.shows[sid].get("title", "")
                     self.progress.update(step=title, done=i)
                     try:
-                        if await self.for_show(c, sid):
-                            self.progress["found"] += 1
+                        self.progress["found"] += len(await self.for_show(c, sid))
                     except PermissionError as e:
                         self.progress["error"] = str(e)
                         return
@@ -352,7 +401,7 @@ class Grabber:
                         log.info("Couldn't get a cut-out for %s: %s", title, e)
                     await asyncio.sleep(0.3)  # gently
             self.progress["done"] = self.progress["total"]
-            log.info("Character cut-outs: found %s of %s", self.progress["found"], self.progress["total"])
+            log.info("Character cut-outs: found %s for %s shows", self.progress["found"], self.progress["total"])
         except Exception as e:
             log.exception("Getting character cut-outs failed")
             self.progress["error"] = f"{e.__class__.__name__}: {e}"

@@ -247,7 +247,8 @@ async def sample(app, tag: str) -> str:
         n9 = n9_options(app.cfg.data)
         art = await images.artwork(app, nxt["id"]) if n9["poster"] else None
         layers = await asyncio.to_thread(images.nick2009_layers, nxt["title"], "", H,
-                                         images.character_for(nxt["title"]), art, n9["clear"], n9["poster"])
+                                         images.character_for(nxt["title"], random.randrange(1000)), art,
+                                         n9["clear"], n9["poster"])
         ov["anims"] = [{**layers, "t0": 1.0, "len": min(images.N9["len"], length - 1.5)}]
     else:
         theme = "" if use["name"] == "plain" else use["name"]

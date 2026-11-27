@@ -2350,22 +2350,22 @@ function cutoutsBox() {
         } }, "Find cut-outs for my shows"),
         status ? h("span", { class: p.error ? "error" : "muted" }, status) : null),
       found.length ? h("details", { class: "look-more" }, h("summary", null, plural(found.length, "show") + " with a cut-out"),
-        h("div", { class: "cut-grid" }, found.map((x) => droppable(h("div", { class: "cut", title: "Drop a PNG here to replace it" },
-          h("img", { src: `/api/characters/img/${encodeURIComponent(x.file)}?t=${Date.now()}`, alt: "", loading: "lazy" }),
+        h("div", { class: "cut-grid" }, found.map((x) => droppable(h("div", { class: "cut", title: "Drop a PNG here to add it" },
+          h("div", { class: "cut-pics" }, x.pics.map((pic) => h("figure", null,
+            h("img", { src: `/api/characters/img/${encodeURIComponent(pic.file)}?t=${Date.now()}`, alt: "", loading: "lazy",
+              title: pic.own ? "Yours" : pic.kind === "clear art" ? "From fanart.tv, with the show's logo" : "From fanart.tv" }),
+            h("button", { class: "cut-x", "aria-label": `Remove this picture of ${x.title}`, onclick: async () => {
+              try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}?file=${encodeURIComponent(pic.file)}`); load(); } catch (err) { toast(err.message, true); }
+            } }, "×")))),
           h("b", { title: x.title }, x.title),
-          x.kind === "clear art" ? h("small", { class: "muted" }, "With the show's logo") : null,
-          x.auto ? h("div", { class: "look-acts" },
-            h("button", { class: "btn quiet small", onclick: async (e) => {
+          h("small", { class: "muted" }, x.pics.length === 1 ? "1 picture" : `${x.pics.length} pictures, taking turns`),
+          h("div", { class: "look-acts" },
+            x.pics.length < 6 ? h("button", { class: "btn quiet small", onclick: async (e) => {
               e.target.disabled = true;
-              try { const res = await api("POST", `/api/characters/${encodeURIComponent(x.show)}/another`); toast(res.file ? "Swapped" : "No other good one on fanart.tv"); } catch (err) { toast(err.message, true); }
+              try { const res = await api("POST", `/api/characters/${encodeURIComponent(x.show)}/another`); toast(res.files && res.files.length ? "Found one more" : "No other good ones on fanart.tv"); } catch (err) { toast(err.message, true); }
               load();
-            } }, "Another"),
-            h("button", { class: "btn quiet small", onclick: async () => {
-              try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}`); load(); } catch (err) { toast(err.message, true); }
-            } }, "Remove")) : h("div", { class: "look-acts" }, h("small", { class: "muted" }, "Your own"), picker(x, "Replace"),
-              h("button", { class: "btn quiet small", onclick: async () => {
-                try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}`); load(); } catch (err) { toast(err.message, true); }
-              } }, "Remove"))), x)))) : null,
+            } }, "Find more") : null,
+            x.pics.length < 6 ? picker(x, "Add picture") : null)), x)))) : null,
       missing.length ? h("details", { class: "look-more" }, h("summary", null, plural(missing.length, "show") + " without one"),
         h("p", { class: "hint" }, "Add your own: drop a see-through PNG of the character onto a show, or use “Add picture”."),
         h("ul", { class: "cut-missing" }, missing.map((x) => droppable(h("li", null,

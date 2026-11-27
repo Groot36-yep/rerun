@@ -409,6 +409,8 @@ class ChannelStream:
             try:  # in the network's 2000s style, or in the colour of its logo
                 theme = chosen_style if chosen_style is not None else images.theme_for(tag, plan=bool(ch.get("plan")))
                 about = g["block"] or {}
+                # a show with several cut-outs: a different one from one airing to the next
+                pick = int((about.get("s") or item.get("s") or 0) // 60)
                 n9 = looks.n9_options(app.cfg.data)
                 want_art = theme not in images.ANIMATED or n9["poster"]
                 art = await images.artwork(app, about["img"]) \
@@ -419,13 +421,14 @@ class ChannelStream:
                     if length >= 5:
                         layers = await asyncio.to_thread(
                             images.nick2009_layers, g["title"], g["label"], H,
-                            images.character_for(g["title"]) if g["kind"] != "teaser" else None, art,
+                            images.character_for(g["title"], pick) if g["kind"] != "teaser" else None, art,
                             n9["clear"], n9["poster"])
                         anims.append({**layers, "t0": a, "len": length})
                     continue
                 banner = await asyncio.to_thread(images.up_next_banner, g["title"], H,
                                                  images.bug_accent(out.get("logo")), theme, art,
-                                                 about.get("img") or "", out.get("logo"), g["label"], g["short"])
+                                                 about.get("img") or "", out.get("logo"), g["label"], g["short"],
+                                                 pick)
                 if banner:
                     banners.append({"file": banner, "art": images.banner_art(banner), "t0": t0, "t1": t1,
                                     "motion": images.MOTION.get(theme, "left"), "place": images.PLACE.get(theme, "")})

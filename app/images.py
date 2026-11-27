@@ -888,13 +888,14 @@ def make_banner(title: str, height: int, accent: str | None = None) -> bytes:
 
 
 def up_next_banner(title: str, height: int, accent: str | None = None, theme: str = "", art: bytes | None = None,
-                   art_key: str = "", logo: str | None = None, label: str = "", short: str = "") -> str | None:
+                   art_key: str = "", logo: str | None = None, label: str = "", short: str = "",
+                   pick=None) -> str | None:
     """The banner's file, made once per title, size, colour, style, artwork and logo. `label` changes what
     it says instead of "Up next" ("Tonight at 8"), `short` the one word some styles have room for."""
     if not title:
         return None
     folder = BUG_DIR / "banners"
-    cut = character_for(title) if theme in ART_THEMES else None
+    cut = character_for(title, pick) if theme in ART_THEMES else None
     cut_v = f"{cut}:{int(os.path.getmtime(cut))}" if cut else ""
     key = f"{BANNER_V}:{title}:{height}:{accent}:{theme}:{art_key if art else ''}:{logo or ''}:{label}:{short}:{cut_v}"
     path = folder / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.png"
@@ -1368,14 +1369,33 @@ def _banner_nick_bar(title, bh, k, art=None, logo=None, parts=None):
 CHARACTERS = BUG_DIR / "custom" / "characters"
 
 
-def character_for(title: str) -> str | None:
-    """A cut-out of a show's character, if you've put one in Rerun's data folder under
-    bugs/custom/characters/, named after the show ("SpongeBob SquarePants.png", see-through around him)."""
+_NUMBERED = re.compile(r"^(.*?)\s*#\d+$")
+
+
+def characters_for(title: str) -> list[str]:
+    """A show's character cut-outs in Rerun's data folder under bugs/custom/characters/: named after the
+    show ("SpongeBob SquarePants.png", see-through around him), more of them numbered ("SpongeBob
+    SquarePants #2.png")."""
     if not CHARACTERS.is_dir():
-        return None
+        return []
     want = _slug(title)
-    return next((str(f) for f in CHARACTERS.iterdir()
-                 if f.suffix.lower() in (".png", ".webp") and _slug(f.stem) == want), None)
+    out = []
+    for f in sorted(CHARACTERS.iterdir(), key=lambda f: (len(f.stem), f.stem)):
+        if f.suffix.lower() not in (".png", ".webp"):
+            continue
+        n = _NUMBERED.match(f.stem)
+        if _slug(n.group(1) if n else f.stem) == want:
+            out.append(str(f))
+    return out
+
+
+def character_for(title: str, pick=None) -> str | None:
+    """One of a show's cut-outs: the first, or, with `pick` (a number that differs from one airing to the
+    next), each in turn, so the "Up next" isn't always the same character."""
+    found = characters_for(title)
+    if not found:
+        return None
+    return found[0] if pick is None else found[int(pick) % len(found)]
 
 
 # ---- Nickelodeon's 2009-2011 "Up next", recreated --------------------------------------------------
