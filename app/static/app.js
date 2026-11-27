@@ -2318,6 +2318,26 @@ function cutoutsBox() {
       : p.finished ? `Found ${plural(p.found, "new cut-out")} for ${plural(p.total, "show")} that had none.` : "";
     const found = r.items.filter((x) => x.file);
     const missing = r.items.filter((x) => !x.file);
+    // your own cut-out: pick a file, or drop one onto the show
+    const upload = async (x, file) => {
+      if (!file) return;
+      try {
+        const res = await fetch(`/api/characters/${encodeURIComponent(x.show)}/upload`, { method: "POST", body: file, headers: { "X-Rerun": "1" } });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Couldn't add that picture");
+        toast(`Added ${x.title}'s cut-out`);
+        load();
+      } catch (err) { toast(err.message, true); }
+    };
+    const picker = (x, label) => {
+      const input = h("input", { type: "file", accept: "image/png,image/webp", hidden: true, onchange: (e) => upload(x, e.target.files[0]) });
+      return h("span", null, input, h("button", { class: "btn quiet small", onclick: () => input.click() }, label));
+    };
+    const droppable = (el, x) => {
+      el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("drop-on"); });
+      el.addEventListener("dragleave", () => el.classList.remove("drop-on"));
+      el.addEventListener("drop", (e) => { e.preventDefault(); el.classList.remove("drop-on"); upload(x, e.dataTransfer.files[0]); });
+      return el;
+    };
     fill(box, head,
       h("p", { class: "hint" }, "Pictures from fanart.tv, made by its fans, checked for quality. Your own PNGs in bugs/custom/characters/ always win. New shows get one overnight. ",
         h("button", { class: "linkish", onclick: async () => {
@@ -2330,7 +2350,7 @@ function cutoutsBox() {
         } }, "Find cut-outs for my shows"),
         status ? h("span", { class: p.error ? "error" : "muted" }, status) : null),
       found.length ? h("details", { class: "look-more" }, h("summary", null, plural(found.length, "show") + " with a cut-out"),
-        h("div", { class: "cut-grid" }, found.map((x) => h("div", { class: "cut" },
+        h("div", { class: "cut-grid" }, found.map((x) => droppable(h("div", { class: "cut", title: "Drop a PNG here to replace it" },
           h("img", { src: `/api/characters/img/${encodeURIComponent(x.file)}?t=${Date.now()}`, alt: "", loading: "lazy" }),
           h("b", { title: x.title }, x.title),
           x.kind === "clear art" ? h("small", { class: "muted" }, "With the show's logo") : null,
@@ -2342,10 +2362,14 @@ function cutoutsBox() {
             } }, "Another"),
             h("button", { class: "btn quiet small", onclick: async () => {
               try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}`); load(); } catch (err) { toast(err.message, true); }
-            } }, "Remove")) : h("small", { class: "muted" }, "Your own"))))) : null,
+            } }, "Remove")) : h("div", { class: "look-acts" }, h("small", { class: "muted" }, "Your own"), picker(x, "Replace"),
+              h("button", { class: "btn quiet small", onclick: async () => {
+                try { await api("DELETE", `/api/characters/${encodeURIComponent(x.show)}`); load(); } catch (err) { toast(err.message, true); }
+              } }, "Remove"))), x)))) : null,
       missing.length ? h("details", { class: "look-more" }, h("summary", null, plural(missing.length, "show") + " without one"),
-        h("p", { class: "hint" }, "To give one of these a character, put a see-through PNG named after the show in bugs/custom/characters/ (or turn on the poster under the Nick 2009 style)."),
-        h("ul", { class: "cut-missing" }, missing.map((x) => h("li", null, h("b", null, x.title), " ", h("span", { class: "muted" }, x.why || "Not found"))))) : null);
+        h("p", { class: "hint" }, "Add your own: drop a see-through PNG of the character onto a show, or use “Add picture”."),
+        h("ul", { class: "cut-missing" }, missing.map((x) => droppable(h("li", null,
+          h("b", null, x.title), h("span", { class: "muted" }, x.why || "Not found"), picker(x, "Add picture")), x)))) : null);
   };
   load();
   return box;

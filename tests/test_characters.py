@@ -132,6 +132,53 @@ async def check_picking():
     print("picking: OK")
 
 
+def check_upload():
+    """Your own cut-out, dropped on the page: a see-through PNG is kept as the show's (and never replaced
+    by the finder); a picture with no see-through background is refused with the reason."""
+    cat = Catalog({"shows": {"i1": {"id": "i1", "title": "iCarly", "guids": {}}}, "episodes": {}})
+    g = characters.Grabber(SimpleNamespace(catalog=cat, secrets=SimpleNamespace(data={})))
+    assert g.upload("i1", png()) == "iCarly.png" and images.character_for("iCarly")
+    row = next(x for x in g.listing() if x["show"] == "i1")
+    assert row["own"] and not row["auto"], row
+    try:
+        g.upload("i1", png(alpha=False))
+        raise AssertionError("a picture with no see-through background was accepted")
+    except ValueError as e:
+        assert "see-through" in str(e)
+    g.remove("i1")
+    assert images.character_for("iCarly") is None
+    print("your own cut-outs: OK")
+
+
+def check_listen_failures():
+    """When hearing fails (the model can't load or every clip errors), nothing is filed as heard, and
+    the run stops with the reason instead of claiming it's done."""
+    from app import listen
+    clips = [{"id": f"c{i}", "title": f"Tape ({i})", "file": "/x.mp4", "in": 0, "dur": 30} for i in range(20)]
+    app = SimpleNamespace(catalog=SimpleNamespace(all_filler=lambda: clips, shows={}), streams=None)
+    L = listen.Listener(app)
+    L.heard = {}
+    L._load = lambda: object()
+
+    def boom(f):
+        raise PermissionError("[Errno 30] Read-only file system: '/home/me/.cache'")
+    L._hear = boom
+    L.progress["running"] = True
+    asyncio.run(L._run())
+    assert not L.heard, "failed clips were filed as heard"
+    assert "Read-only" in L.progress["error"] and L.progress["done"] < len(clips), L.progress
+    # and the analysis of what is heard
+    names = listen.known_shows(None) | {"icarly": "iCarly", "fairly oddparents": "The Fairly OddParents"}
+    a = listen.analyse("Now back to more Fairly Odd Paris on Nickelodeon.", "Tape (3)", names)
+    assert a["shows"] == ["The Fairly OddParents"] and a["role"] == "watching", a
+    assert listen.analyse("You can have the power of the force with the new Lego Star Wars minis.", "", names)["cat"] == "toy"
+    assert listen.analyse("Holiday Special. Monday at 8, only on Cartoon Network.", "WOC VHS Recording (5)", names)["cat"] == "promo"
+    assert listen.analyse("Make your portraits magical, all that and more.", "", names)["shows"] == [], "a phrase taken for a show"
+    print("listening: OK (failures aren't filed; kinds and shows read right)")
+
+
 check_judge()
+check_upload()
+check_listen_failures()
 asyncio.run(check_picking())
 print("ALL CHARACTER CHECKS PASSED")

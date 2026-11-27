@@ -1155,6 +1155,11 @@ class Schedules:
         except OSError:
             pass
 
+    def _guide_changed(self):
+        tell = getattr(self.app, "guide_changed", None)
+        if tell:
+            tell()
+
     def sig(self, ch: dict) -> str:
         return content_signature(ch, self.app.cfg.data.get("holidays"))
 
@@ -1169,6 +1174,7 @@ class Schedules:
             async with self.locks[ch["id"]]:
                 p.keep_until_current(now)
                 self.save(p)
+            self._guide_changed()
             try:
                 await self.ensure(ch, now + 6 * 3600)
             except Exception:
@@ -1198,6 +1204,7 @@ class Schedules:
                                      "en": 0, "img": "", "cats": [], "movie": False, "year": 0, "date": "",
                                      "rating": ""})
                 self.save(p)
+            self._guide_changed()
             if not current_ok:
                 await self.app.streams.stop_channel(ch["id"])  # anyone watching tunes straight into the new plan
             try:
@@ -1223,6 +1230,7 @@ class Schedules:
             if p.sig != sig:
                 if p.sig:
                     p.keep_until_current(now)
+                    self._guide_changed()
                 p.sig = sig
                 changed = True
             if p.end < now:

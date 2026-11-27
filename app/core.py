@@ -165,6 +165,24 @@ class App:
                     log.warning("Couldn't make the logo for %s: %s", ch.get("name"), e)
             await asyncio.sleep(600)
 
+    def guide_changed(self):
+        """Upcoming shows changed (a channel was edited, or planned again): ask Plex to read the guide
+        again, or its guide keeps the old listings and the shows don't match what's on. Batched: one
+        request a minute and a half after the last change."""
+        if getattr(self, "_guide_task", None) and not self._guide_task.done():
+            self._guide_task.cancel()
+
+        async def later():
+            await asyncio.sleep(90)
+            plex = self.plex()
+            if plex:
+                try:
+                    n = await asyncio.wait_for(plex.reload_guide(), 30)
+                    log.info("Asked Plex to reload the guide (%s DVR%s)", n, "" if n == 1 else "s")
+                except Exception as e:
+                    log.info("Couldn't ask Plex to reload the guide (%s)", e.__class__.__name__)
+        self._guide_task = asyncio.ensure_future(later())
+
     async def _listen_to_new(self):
         """After a library scan: listen to any commercials not heard yet (it waits until nobody's
         watching, see listen.Listener)."""

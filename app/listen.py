@@ -21,6 +21,7 @@ import asyncio
 import difflib
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -32,7 +33,7 @@ log = logging.getLogger("rerun.listen")
 MODEL = "base.en"
 HEARD = DATA_DIR / "commercials_heard.json"  # {clip id: {"k": what was heard, "text", "cat", "shows", "role"}}
 MODELS = DATA_DIR / "models"
-V = 1
+V = 2  # 2: the first version filed every clip it failed to hear as "Other"; those are heard again
 MAX_SECONDS = 75  # a commercial longer than this is heard only for its first 75 seconds
 
 # What kind of commercial: the kind with the most matches wins (earlier kinds win ties).
@@ -254,8 +255,13 @@ class Listener:
 
     def _load(self):
         if self._model is None:
-            from faster_whisper import WhisperModel
+            # The service can only write to its own data folder (your home folder is read-only to it), and
+            # the model's downloader keeps a cache in ~/.cache unless told otherwise: there, it failed.
             MODELS.mkdir(parents=True, exist_ok=True)
+            os.environ["HF_HOME"] = str(MODELS / "hf")
+            os.environ["XDG_CACHE_HOME"] = str(MODELS / "cache")
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+            from faster_whisper import WhisperModel
             # two threads, so the rest of the server keeps its share even while this runs
             self._model = WhisperModel(MODEL, device="cpu", compute_type="int8", cpu_threads=2,
                                        download_root=str(MODELS))
@@ -284,6 +290,15 @@ class Listener:
             self.progress["total"] = len(todo)
             names = known_shows(self.app.catalog)
             last_save = time.time()
+            failed, heard_any = 0, False
+            if todo:
+                self.progress["step"] = "Getting the listening model ready (the first time it's downloaded, about 145 MB)"
+                try:
+                    await asyncio.to_thread(self._load)
+                except Exception as e:
+                    log.exception("Couldn't load the listening model")
+                    self.progress["error"] = f"Couldn't get the listening model ready: {e.__class__.__name__}: {e}"[:300]
+                    return
             for i, f in enumerate(todo):
                 if self.stop:
                     break
@@ -293,9 +308,14 @@ class Listener:
                 self.progress.update(paused=False, done=i, step=f.get("title") or "")
                 try:
                     text = await asyncio.to_thread(self._hear, f)
-                except Exception as e:  # one bad clip doesn't stop the rest
-                    log.info("Couldn't listen to %s (%s)", f.get("title"), e.__class__.__name__)
-                    text = ""
+                except Exception as e:  # one bad clip doesn't stop the rest, and isn't filed as heard
+                    failed += 1
+                    log.warning("Couldn't listen to %s (%s: %s)", f.get("title"), e.__class__.__name__, e)
+                    if failed >= 5 and not heard_any:  # it's not the clips, it's the listening: stop and say why
+                        self.progress["error"] = f"Listening isn't working: {e.__class__.__name__}: {e}"[:300]
+                        break
+                    continue
+                heard_any = True
                 self.heard[f["id"]] = {"k": self._key(f), "text": text[:600], **analyse(text, f.get("title", ""), names)}
                 if time.time() - last_save > 20:
                     await asyncio.to_thread(atomic_write_json, HEARD, self.heard)
@@ -304,10 +324,10 @@ class Listener:
             ids = {f["id"] for f in self.clips()}
             self.heard = {k: v for k, v in self.heard.items() if k in ids}
             await asyncio.to_thread(atomic_write_json, HEARD, self.heard)
-            self.progress["done"] = self.progress["total"]
-            log.info("Listened to %s commercials", self.progress["total"])
-            if self.progress["total"]:
-                asyncio.ensure_future(self.app.schedules.replan_breaks())  # plan breaks again with what's known
+            if not self.progress["error"]:
+                self.progress["done"] = self.progress["total"]
+            log.info("Listened to %s commercials (%s couldn't be heard)", self.progress["total"] - failed, failed)
+            # Breaks planned from now on use what was heard; the ones already planned (and in the guide) stay.
         except Exception as e:
             log.exception("Listening to the commercials failed")
             self.progress["error"] = f"{e.__class__.__name__}: {e}"

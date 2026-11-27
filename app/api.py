@@ -1408,6 +1408,20 @@ async def characters_another(sid: str, app=Depends(signed_in)):
     return {"file": name}
 
 
+@router.post("/characters/{sid}/upload")
+async def characters_upload(sid: str, request: Request, app=Depends(signed_in)):
+    if sid not in app.catalog.shows:
+        raise HTTPException(404, "No such show")
+    data = await request.body()
+    if len(data) > 15_000_000:
+        raise HTTPException(400, "That picture is too big (15 MB at most)")
+    try:
+        name = await asyncio.to_thread(app.characters.upload, sid, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"file": name}
+
+
 @router.delete("/characters/{sid}")
 async def characters_remove(sid: str, app=Depends(signed_in)):
     if sid not in app.catalog.shows:

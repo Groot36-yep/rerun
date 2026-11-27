@@ -123,11 +123,13 @@ class Grabber:
         for sid, show in sorted(self.app.catalog.shows.items(), key=lambda kv: kv[1].get("title", "").lower()):
             f = images.character_for(show.get("title", ""))
             rec = m.get(show.get("title", "")) or {}
-            if f or rec.get("none"):
-                out.append({"show": sid, "title": show["title"], "auto": bool(f and rec.get("file") and f.endswith(rec["file"])),
-                            "file": f.split("/")[-1].split("\\")[-1] if f else "", "none": bool(rec.get("none") and not f),
-                            "kind": rec.get("kind", "character") if f else "",
-                            "why": "" if f else ("You removed it" if rec.get("removed") else rec.get("why") or "")})
+            # every show: one without a cut-out is listed too, so you can add your own
+            out.append({"show": sid, "title": show["title"], "auto": bool(f and rec.get("file") and f.endswith(rec["file"])),
+                        "file": f.split("/")[-1].split("\\")[-1] if f else "", "none": bool(rec.get("none") and not f),
+                        "kind": rec.get("kind", "character") if f else "",
+                        "own": bool(f and rec.get("own")),
+                        "why": "" if f else ("You removed it" if rec.get("removed") else rec.get("why")
+                                             or ("Not looked for yet" if not rec else ""))})
         return out
 
     # ---- fetching -----------------------------------------------------------------------------
@@ -262,19 +264,55 @@ class Grabber:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={"User-Agent": "Rerun"}) as c:
             return await self.for_show(c, sid)
 
+    def upload(self, sid: str, data: bytes) -> str:
+        """Your own cut-out for a show, dropped onto the page: it must be a picture with a see-through
+        background (else it would sit on the bar as a box). Trimmed of empty edges and kept as the show's
+        cut-out, in place of any found one; never replaced by the finder."""
+        title = (self.app.catalog.shows.get(sid) or {}).get("title", "")
+        if not title:
+            raise ValueError("No such show")
+        try:
+            im = Image.open(io.BytesIO(data))
+            im.load()
+        except Exception:
+            raise ValueError("That isn't a picture Rerun can read. Use a PNG.")
+        if im.mode not in ("RGBA", "LA") and not (im.mode == "P" and "transparency" in im.info):
+            raise ValueError("That picture has no see-through background, so it would show as a box. "
+                             "Use a PNG cut-out of the character.")
+        im = images._trim(im.convert("RGBA"))
+        if im.getchannel("A").getextrema()[0] > 200:
+            raise ValueError("That picture has no see-through background, so it would show as a box. "
+                             "Use a PNG cut-out of the character.")
+        if max(im.size) < 120:
+            raise ValueError("That picture is too small to look good on the screen.")
+        DIR.mkdir(parents=True, exist_ok=True)
+        old = images.character_for(title)
+        name = file_name(title)
+        if old and not old.endswith(name):
+            try:
+                import os
+                os.remove(old)
+            except OSError:
+                pass
+        im.save(DIR / name)
+        m = _read()
+        m[title] = {"own": True, "none": False, "removed": False, "v": SEARCH_V}  # yours: never replaced
+        _write(m)
+        return name
+
     def remove(self, sid: str):
         """Take this show's found cut-out away, and don't look again (it goes without a picture)."""
         title = (self.app.catalog.shows.get(sid) or {}).get("title", "")
         m = _read()
         rec = m.get(title) or {}
         f = images.character_for(title)
-        if f and rec.get("file") and f.endswith(rec["file"]):
+        if f and ((rec.get("file") and f.endswith(rec["file"])) or rec.get("own")):  # found, or added on the page
             try:
                 import os
                 os.remove(f)
             except OSError:
                 pass
-        m[title] = {**rec, "file": "", "none": True, "removed": True}
+        m[title] = {**rec, "file": "", "own": False, "none": True, "removed": True}
         _write(m)
 
     # ---- all the shows ----------------------------------------------------------------------
