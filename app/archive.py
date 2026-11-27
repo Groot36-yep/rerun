@@ -772,6 +772,7 @@ class Finder:
         if self.task and not self.task.done():
             raise RuntimeError("Already looking for commercials")
         self.stop = False
+        self.yt_refused, self._yt_said = 0, False
         self.progress = {"running": True, "step": "Starting…", "done": 0, "total": 0, "found": [], "error": "",
                          "log": []}
         self.task = asyncio.create_task(coro_fn(*args))
@@ -1243,8 +1244,9 @@ class Finder:
         keys, eras_seen = set(), set()
         try:
             self._register_folder()
+            self.yt_refused = 0
             for n, it in enumerate(items, 1):
-                if self.stop:
+                if self.stop or self._yt_blocked():
                     break
                 title = (it.get("title") or it["url"])[:120]
                 self._step(f"YouTube {n} of {len(items)}: downloading “{title[:60]}”", done=0, total=0)
@@ -1281,6 +1283,19 @@ class Finder:
             self.progress["running"] = False
             shutil.rmtree(OWN / "_youtube", ignore_errors=True)
 
+    def _yt_blocked(self) -> bool:
+        """Three videos in a row refused ("403: Forbidden", each after three tries): YouTube is refusing
+        this server for now, so the rest are left for next time instead of each failing the same way."""
+        if getattr(self, "yt_refused", 0) < 3:
+            return False
+        if not getattr(self, "_yt_said", False):
+            from . import youtube
+            self._yt_said = True
+            self._note("YouTube refused three videos in a row, so the rest were left for next time. "
+                       + (youtube.problems() or "It usually lets up within a few hours; the ones not "
+                          "downloaded are tried again then."))
+        return True
+
     def _dl_progress(self, done, total):
         self.progress.update(done=done, total=total)
 
@@ -1300,8 +1315,11 @@ class Finder:
                                                  f"{_safe_name(title)[:80]} [{vid}]", ff, self._dl_progress,
                                                  lambda: self.stop, max_height or youtube.MAX_HEIGHT)
         except Exception as e:
-            self._note(f"Couldn't download “{title[:60]}”: {str(e)[:160]}")
+            self._note(f"Couldn't download “{title[:60]}”: {str(e)[:260]}")
+            if re.search(r"\b403\b|forbidden", str(e), re.I):
+                self.yt_refused = getattr(self, "yt_refused", 0) + 1
             return 0, "", ""
+        self.yt_refused = 0
         title = (info.get("title") or title)[:120]
         desc = info.get("description") or ""
         if _GREEN.search(title):  # it would air as a green screen: it's for "Up next", laid over a show
@@ -1383,7 +1401,7 @@ class Finder:
                     self._note(f"No {label} bumper videos found on YouTube")
                     continue
                 for i, r in enumerate(picks, 1):
-                    if self.stop:
+                    if self.stop or self._yt_blocked():
                         break
                     self._step(f"{label} bumpers {i} of {len(picks)}: downloading “{r['title'][:60]}”", done=0, total=0)
                     got, _k, _e = await self._take_youtube(r, key, "", "none", key=key, folder=OWN / key / "bumpers",
@@ -1484,7 +1502,7 @@ class Finder:
                                        "matches": len(scored)})
         used = 0
         for _sc, r in scored[:25]:
-            if self.stop or used >= budget:
+            if self.stop or used >= budget or self._yt_blocked():
                 break
             self._step(f"{label} on YouTube: downloading “{r['title'][:60]}”", done=0, total=0)
             got, _k, _e = await self._take_youtube(r, key, era, holiday or "none")
@@ -1582,7 +1600,7 @@ class Finder:
             self.progress["found"].append({"network": f"25 Days of Christmas {'/'.join(map(str, years))} on YouTube",
                                            "matches": len(scored)})
             for _sc, yr, r in scored[:15]:
-                if self.stop or used >= budget:
+                if self.stop or used >= budget or self._yt_blocked():
                     break
                 self._step(f"25 Days on YouTube: downloading “{r['title'][:60]}”", done=0, total=0)
                 got, _k, _e = await self._take_youtube(r, "", era_tag(yr) or "", "christmas", key="25days",

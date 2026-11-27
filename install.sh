@@ -238,8 +238,12 @@ $SUDO find "$APP_DIR/app.new" -name __pycache__ -prune -exec rm -rf {} +
 [ -d "$APP_DIR/venv" ] || $SUDO python3 -m venv "$APP_DIR/venv"
 install_reqs() {
   $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check -r "$APP_DIR/requirements.txt" &&
-  # YouTube changes often and old copies of yt-dlp stop working, so every install and update gets the newest
-  { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check --upgrade yt-dlp || true; }
+  # YouTube changes often and old copies of yt-dlp stop working, so every install and update gets the newest,
+  # with its scripts for YouTube's JavaScript challenges ("[default]") and Deno to run them: without those,
+  # YouTube hands out only a few video links, and those often fail with "403: Forbidden"
+  { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check --upgrade "yt-dlp[default]" ||
+    $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check --upgrade yt-dlp || true; }
+  { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check --upgrade deno || true; }
   # listening to the commercials (speech-to-text, offline): optional, so a failure here doesn't stop the install
   { $SUDO "$APP_DIR/venv/bin/pip" install -q --disable-pip-version-check faster-whisper || true; }
 }

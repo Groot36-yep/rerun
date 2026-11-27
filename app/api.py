@@ -1296,6 +1296,7 @@ async def commercials_hide(body: dict, app=Depends(signed_in)):
 @router.get("/youtube")
 async def youtube_status(app=Depends(signed_in)):
     return {"available": youtube_mod.available(), "version": youtube_mod.version(), "js": youtube_mod.js_runtime(),
+            "problem": youtube_mod.problems(),
             "networks": [{"key": k, "label": v[0].replace(" / Fox Family", "")} for k, v in archive_mod.PROFILES.items()],
             "eras": list(archive_mod.ERAS)}
 
@@ -1697,6 +1698,8 @@ async def status(app=Depends(signed_in)):
         warnings.append(app.ffmpeg.encoder_status["message"])
     if app.scanner.progress.get("error"):
         warnings.append(app.scanner.progress["error"])
+    if youtube_mod.available() and youtube_mod.problems():
+        warnings.append("YouTube downloads: " + youtube_mod.problems())
     if not app.cfg.data["security"].get("lan_only", True):
         warnings.append("Rerun is answering devices outside your home network. Turn on “Home network only” "
                         "in Settings unless you meant to do this.")

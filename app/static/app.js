@@ -2094,7 +2094,7 @@ async function openYouTube(onStart) {
       resultsBox,
       h("h3", null, "What are they?"),
       kindBox,
-      st.js ? null : h("p", { class: "hint" }, "Tip: some YouTube videos need a JavaScript runtime on the server (deno or Node). Without one, a few may not download; see the README."),
+      st.problem ? h("p", { class: "hint warn" }, `YouTube downloads will often fail with “403: Forbidden”. ${st.problem}`) : null,
       foot);
     renderKind(); render(); showResults();
     query.focus();

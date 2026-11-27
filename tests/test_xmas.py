@@ -652,6 +652,57 @@ def check_youtube_rules():
             assert msg in str(e), (args, e)
     entry = youtube._entry({"id": "abc123XYZ", "title": "T", "duration": 61.4, "url": "abc123XYZ"})
     assert entry["url"] == "https://www.youtube.com/watch?v=abc123XYZ" and entry["duration"] == 61
+    # refusals are tried again, as other players; a private or removed video isn't
+    assert youtube.retryable("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    assert youtube.retryable("Requested format is not available")
+    assert not youtube.retryable("ERROR: [youtube] abc: Private video. Sign in if you've been granted access")
+    assert not youtube.retryable("Video unavailable. This video has been removed by the uploader")
+    if youtube.available():
+        import yt_dlp
+        tries, waits = [], []
+        real_dl, real_sleep = yt_dlp.YoutubeDL, youtube.time.sleep
+
+        class FakeDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download):
+                tries.append(((self.opts.get("extractor_args") or {}).get("youtube") or {}).get("player_client"))
+                if len(tries) < 3:
+                    raise yt_dlp.utils.DownloadError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+                f = self.opts["outtmpl"].replace(".%(ext)s", ".mp4")
+                open(f, "wb").close()
+                return {"title": "ok", "requested_downloads": [{"filepath": f}]}
+        try:
+            yt_dlp.YoutubeDL, youtube.time.sleep = FakeDL, waits.append
+            with tempfile.TemporaryDirectory() as d:
+                path, info = youtube.download("https://youtu.be/x", d, "v", "")
+                assert os.path.isfile(path) and info["title"] == "ok"
+            assert tries == [None, ["tv", "web_safari"], ["mweb", "web_embedded"]], tries
+            assert len(waits) == 4 + 8, "it should wait a little longer before each try"
+            tries.clear()
+
+            class Never(FakeDL):
+                def extract_info(self, url, download):
+                    tries.append(1)
+                    raise yt_dlp.utils.DownloadError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+            yt_dlp.YoutubeDL = Never
+            with tempfile.TemporaryDirectory() as d:
+                try:
+                    youtube.download("https://youtu.be/x", d, "v", "")
+                    raise AssertionError("a refused video counted as downloaded")
+                except RuntimeError as e:
+                    assert "403" in str(e) and not str(e).startswith("ERROR"), e
+                    assert ("rerun update" in str(e)) == bool(youtube.problems()), e
+            assert len(tries) == 3, tries
+        finally:
+            yt_dlp.YoutubeDL, youtube.time.sleep = real_dl, real_sleep
     print(f"YouTube rules: OK (yt-dlp {'installed ' + youtube.version() if youtube.available() else 'not installed'})")
 
 
