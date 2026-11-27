@@ -68,6 +68,28 @@ PRESETS: dict[str, dict] = {
     },
 }
 
+# Said in a commercial (as the listener heard it): words that make it that holiday's commercial, so it
+# stays off the air outside the season. Stricter than the title words above: "ghost", "monster" or
+# "holiday season" turn up in ordinary ads all year.
+SAID = {
+    "halloween": re.compile(r"hallowe'?en|trick[- ]or[- ]treat|halloweentown|spooktacular|boo-?tacular|"
+                            r"monster mash|happy haunting", re.I),
+    "thanksgiving": re.compile(r"thanksgiving", re.I),
+    "christmas": re.compile(r"christmas|x-?mas\b|\bsanta\b|happy holidays|hanukkah|chanukah|kwanzaa|north pole|"
+                            r"25 days of|stocking stuffers?|\bho,? ho,? ho\b|jingle bells|season'?s greetings", re.I),
+    "newyear": re.compile(r"happy new year|new year'?s (eve|day)", re.I),
+    "valentines": re.compile(r"valentine", re.I),
+    "stpatricks": re.compile(r"st\.? patrick|saint patrick", re.I),
+    "easter": re.compile(r"\beaster\b", re.I),
+    "july4": re.compile(r"fourth of july|4th of july", re.I),
+}
+
+
+def said_in(text: str) -> set[str]:
+    """The holidays a commercial talks about ("Get your Halloween costume at..." -> {"halloween"})."""
+    return {k for k, rx in SAID.items() if rx.search(text or "")}
+
+
 DEFAULT_HOLIDAYS = {
     key: {"enabled": True, "start": p["start"], "end": p["end"], "words": [], "mix": True}
     for key, p in PRESETS.items()

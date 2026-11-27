@@ -182,11 +182,39 @@ def _src(m: dict) -> dict:
     return {"f": m.get("file") or "", "p": m.get("part") or "", "a": bool(m.get("audio", True))}
 
 
+def clip_holidays(f: dict, heard: dict | None) -> set:
+    """The holidays a commercial or bumper belongs to, so it stays off the air outside their season: from
+    its folder ("halloween"), its name, or what the listener heard said in it ("...your Halloween
+    costume"). A clip from a tape recorded in October (or December) that hasn't been heard yet is counted
+    as Halloween's (or Christmas's) until it is: those breaks are full of them. Heard, and nothing said
+    about a holiday, it plays all year. (Without the listener, month tapes play all year, as before.)"""
+    heard = heard or {}
+    tags = {str(x).lower() for x in f.get("tags") or []}
+    got = tags & set(seasons.PRESETS)
+    title = f.get("title") or ""
+    h = archive.holiday_of(title)
+    if h:
+        got.add(h)
+    rec = heard.get(f.get("id")) or {}
+    if rec.get("text"):
+        got |= seasons.said_in(rec["text"])
+    elif heard and not rec.get("silent"):
+        months = (tags & {"october", "december"}) | ({archive.month_of(title)} - {None})
+        got |= {{"october": "halloween", "december": "christmas"}[m] for m in months}
+    return got
+
+
+def in_season(f: dict, heard: dict | None, active) -> bool:
+    hol = clip_holidays(f, heard)
+    return not hol or bool(hol & set(active))
+
+
 class Builder:
     def __init__(self, ch: dict, cat, state: dict, chapters, holidays: dict | None = None, heard: dict | None = None):
         self.ch = ch
         # what each commercial is about, from listening to it (see listen.py): {clip id: {"cat", "shows", "role"}}
         self.heard = heard or {}
+        self._hol_cache: dict = {}
         self.cat = cat
         self.st = state
         self.chapters = chapters
@@ -438,6 +466,17 @@ class Builder:
             return True, 3.0
         return bool(shows & self.airs), 1.0
 
+    def _hol(self, f: dict) -> set:
+        key = f.get("id")
+        got = self._hol_cache.get(key)
+        if got is None:
+            got = self._hol_cache[key] = clip_holidays(f, self.heard)
+        return got
+
+    def _in_season(self, f: dict, active: set) -> bool:
+        hol = self._hol(f)
+        return not hol or bool(hol & active)
+
     def _kind(self, f: dict) -> str:
         """The kind of commercial (cereal, toy, promo...), if it's been heard; "" if not."""
         rec = self.heard.get(f["id"])
@@ -478,7 +517,7 @@ class Builder:
             fits, want = self._fits(b, ctx)
             if not fits:
                 continue  # "you're watching iCarly" during SpongeBob
-            hol = tags & set(seasons.PRESETS)
+            hol = self._hol(b)
             if hol and not hol & active:
                 continue  # a Christmas bumper in July
             score = (3 if hol else 0) + _year_match(item_year(b), ctx, tags) - (5 if b["id"] in recent else 0) + want
@@ -502,8 +541,7 @@ class Builder:
         for f in self.filler:
             if not left <= f["dur"] <= left + OVERFILL_MAX:
                 continue
-            tags = {str(x).lower() for x in f.get("tags") or []}
-            if (tags & set(seasons.PRESETS)) - active and not tags & active:
+            if not self._in_season(f, active):
                 continue  # a Christmas commercial in July
             if not self._fits(f, ctx)[0]:
                 continue
@@ -530,7 +568,7 @@ class Builder:
             score += 4  # a Disney episode gets Disney commercials
         elif ctx.get("has_net") and tags & NETWORK_TAGS:
             score -= 2  # ...and a Cartoon Network show would rather have plain ads than Nick's
-        hol = tags & set(seasons.PRESETS)
+        hol = self._hol(f)
         if hol and hol & ({ctx["hol"]} if ctx.get("hol") else ctx.get("active", set())):
             score += 3 if ctx.get("hol") else 2  # Halloween ads around Halloween shows, or just in October
         if ctx.get("month") and ctx["month"] in tags:
@@ -557,9 +595,7 @@ class Builder:
         ctx = ctx or {}
         # Holiday commercials stay off the air outside their season, like holiday episodes.
         active = ctx.get("active", set())
-        pool = [f for f in self.filler
-                if not ({str(x).lower() for x in f.get("tags") or []} & set(seasons.PRESETS)) - active
-                or ({str(x).lower() for x in f.get("tags") or []} & active)]
+        pool = [f for f in self.filler if self._in_season(f, active)]
         rng.shuffle(pool)
         if self.heard:  # promos and bumpers that name a show only where they make sense
             pool = [f for f in pool if self._fits(f, ctx)[0]]

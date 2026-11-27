@@ -1810,7 +1810,8 @@ function previewAd(ad, labels = {}) {
     if (busy) timer = setTimeout(showHeard, 2500);
     fill(heard,
       h("p", { class: "hint" }, r.heard
-        ? [r.kind ? `Heard as: ${r.kind}` : "Heard", r.shows.length ? ` · about ${r.shows.join(", ")}` : ""].join("")
+        ? [r.kind ? `Heard as: ${r.kind}` : "Heard", r.shows.length ? ` · about ${r.shows.join(", ")}` : "",
+            (r.season || []).length ? ` · ${r.season.join(", ")} only (plays in season)` : ""].join("")
         : "Not listened to yet."),
       r.text ? h("blockquote", { class: "ad-said" }, r.text) : null,
       h("div", { class: "row" },

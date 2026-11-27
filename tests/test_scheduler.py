@@ -12,7 +12,7 @@ os.environ["RERUN_DATA"] = tempfile.mkdtemp()
 
 from app.catalog import Catalog  # noqa: E402
 from app.channels import normalize_channel, resolve, suggest  # noqa: E402
-from app.scheduler import OVERFILL_MAX, Builder, Playout, tz_offset  # noqa: E402
+from app.scheduler import OVERFILL_MAX, Builder, Playout, clip_holidays, in_season, tz_offset  # noqa: E402
 from app.seasons import DEFAULT_HOLIDAYS, matches  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -257,7 +257,10 @@ async def check_heard(cat):
     special = {ads[0]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "watching"},
                ads[1]["id"]: {"cat": "promo", "shows": ["Hey Arnold!"], "role": "next"},
                ads[2]["id"]: {"cat": "promo", "shows": ["Big Time Rush"], "role": "promo"},  # not on this channel
-               ads[3]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "promo"}}
+               ads[3]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "promo"},
+               # holiday ads nothing in their names gives away; heard, they stay off the air in January
+               ads[4]["id"]: {"cat": "store", "shows": [], "role": "", "text": "Get your Halloween costume today!"},
+               ads[5]["id"]: {"cat": "toy", "shows": [], "role": "", "text": "Put it on your list for Santa."}}
     heard.update(special)
     ch = normalize_channel({"id": "hn", "name": "Nick", "seed": 11, "commercials": {"enabled": True, "break_style": "chapters"},
                             "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"}]})
@@ -282,6 +285,7 @@ async def check_heard(cat):
                 seen["next"] += 1
                 assert "Hey Arnold" in on or (nxt and nxt["title"].startswith("Hey Arnold")), f"'up next Hey Arnold' in {on}"
             assert x["m"] != ads[2]["id"], "a promo for a show this channel doesn't play"
+            assert x["m"] not in (ads[4]["id"], ads[5]["id"]), "a holiday commercial (by what's said in it) out of season"
         # the kinds in each break: never the same kind twice running
         runs, run = [], []
         for x in items + [{"k": "c", "m": ""}]:  # each break on its own
@@ -293,6 +297,19 @@ async def check_heard(cat):
         for run in runs:
             assert not any(a == b_ and a != "promo" for a, b_ in zip(run, run[1:])), run
     assert seen["watching"], "the Rugrats bumper never played (during Rugrats it should)"
+    # which season a clip belongs to
+    hal = {"id": "h", "tags": ["nick"], "title": "Nick Breaks (October 2004) (12)"}
+    plain = {"id": "p", "tags": ["nick"], "title": "Nick Breaks (March 2004) (3)"}
+    assert clip_holidays(hal, None) == set(), "without the listener, October tapes play all year (as before)"
+    assert clip_holidays(hal, {"x": {}}) == {"halloween"}, "an October tape's clip not heard yet is out of season"
+    assert clip_holidays(hal, {"h": {"text": "Cheerios. Part of a complete breakfast."}}) == set()
+    assert clip_holidays(hal, {"h": {"silent": True}}) == set()
+    assert clip_holidays(plain, {"p": {"text": "Trick or treat! Halloween fun at Party City."}}) == {"halloween"}
+    assert clip_holidays({"id": "y", "tags": ["december"], "title": ""}, {"x": {}}) == {"christmas"}
+    assert clip_holidays({"id": "t", "tags": [], "title": "Spooky Halloween Ad"}, None) == {"halloween"}
+    assert not in_season(hal, {"x": {}}, ["thanksgiving"]) and in_season(hal, {"x": {}}, ["halloween"])
+    assert clip_holidays(plain, {"p": {"text": "This holiday season, a ghost story for the whole family."}}) == set(), \
+        "ordinary words ('holiday season', 'ghost') shouldn't shelve an ad"
     print(f"heard commercials: OK (you're-watching {seen['watching']}x, up-next {seen['next']}x, never out of place)")
 
 

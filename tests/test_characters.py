@@ -203,7 +203,7 @@ def check_listen_failures():
     # heard by the version that briefly called itself 3: not heard again after updating
     L.heard["c1"]["k"] = "3:" + L.heard["c1"]["k"].split(":", 1)[1]
     assert L.todo() == [], [f["id"] for f in L.todo()]
-    assert L.record("c3")["kind"] and L.record("nope") == {"heard": False, "text": "", "kind": "", "shows": [], "role": ""}
+    assert L.record("c3")["kind"] and L.record("nope") == {"heard": False, "text": "", "kind": "", "shows": [], "role": "", "season": []}
     # the sound comes from the clip's own file (a library clip says "file", not a planned item's "f"), and a
     # clip whose file can't be found isn't filed as heard-but-silent
     asked = []
