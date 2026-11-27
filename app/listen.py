@@ -26,7 +26,7 @@ import re
 import subprocess
 import time
 
-from . import seasons
+from . import airtimes, seasons
 from .store import DATA_DIR, atomic_write_json, read_json
 
 log = logging.getLogger("rerun.listen")
@@ -274,7 +274,8 @@ class Listener:
         rec = self.heard.get(cid) or {}
         return {"heard": bool(rec), "text": rec.get("text", ""), "kind": KIND_LABELS.get(rec.get("cat", ""), ""),
                 "shows": rec.get("shows") or [], "role": rec.get("role", ""),
-                "season": [seasons.PRESETS[k]["name"] for k in sorted(seasons.said_in(rec.get("text", "")))]}
+                "season": [seasons.PRESETS[k]["name"] for k in sorted(seasons.said_in(rec.get("text", "")))],
+                "when": airtimes.describe(airtimes.rule(rec.get("text", ""))) if rec.get("cat") == "promo" else ""}
 
     def _watching(self) -> bool:
         streams = getattr(self.app, "streams", None)

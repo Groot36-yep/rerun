@@ -7,6 +7,7 @@ import ipaddress
 import logging
 import os
 import random
+import shutil
 import socket
 import httpx
 import re
@@ -1201,6 +1202,47 @@ async def commercials_list(app=Depends(signed_in)):
                        "bumpers": tags.get("bumper", 0)},
             "stats": {"on_air": len(on_air), "seconds": round(sum(x["dur"] for x in on_air)),
                       "dupes": sum(1 for f in app.catalog.all_filler() if f.get("dup"))}}
+
+
+@router.get("/commercials/storage")
+async def commercials_storage(app=Depends(signed_in)):
+    """How much disk space the commercials take: what Rerun downloaded (by network), the files in your
+    own folders it plays them from, and what's left on the disk."""
+    def measure() -> dict:
+        own_root = os.path.realpath(str(OWN_COMMERCIALS))
+        by: dict[str, int] = {}
+        if os.path.isdir(own_root):
+            for root, _dirs, files in os.walk(own_root):
+                top = os.path.relpath(root, own_root).split(os.sep)[0]
+                for n in files:
+                    try:
+                        by[top] = by.get(top, 0) + os.path.getsize(os.path.join(root, n))
+                    except OSError:
+                        pass
+        yours, seen = 0, set()
+        for f in app.catalog.all_filler():  # a tape split into many commercials is one file, counted once
+            src = app.local_path(f.get("file") or "") or ""
+            if not src or src in seen or os.path.realpath(src).startswith(own_root + os.sep):
+                continue
+            seen.add(src)
+            try:
+                yours += os.path.getsize(src)
+            except OSError:
+                pass
+        disk = shutil.disk_usage(str(DATA_DIR))
+        return {"downloaded": sum(by.values()), "yours": yours, "free": disk.free, "disk": disk.total,
+                # (Rerun's own lists sit loose in the folder: a few KB, not a network)
+                "networks": sorted(({"key": k, "label": _storage_label(k), "bytes": b} for k, b in by.items()
+                                    if b and k != "."),
+                                   key=lambda x: -x["bytes"])}
+    return await asyncio.to_thread(measure)
+
+
+def _storage_label(key: str) -> str:
+    if key in archive_mod.PROFILES:
+        return archive_mod.PROFILES[key][0].replace(" / Fox Family", "")
+    return {"25days": "25 Days of Christmas", "youtube": "YouTube (no network)",
+            "_youtube": "Downloading now"}.get(key, key[:1].upper() + key[1:])
 
 
 def _tag_labels(tags) -> dict:

@@ -22,7 +22,7 @@ import tempfile
 import time
 
 from . import archive, images, looks, onair, seasons, trivia
-from .scheduler import in_season
+from .scheduler import airs_now, in_season
 from .channels import filler_pool, network_key, network_logo
 from .ffmpeg import RESOLUTIONS
 from .lineups import LINEUPS
@@ -605,7 +605,8 @@ class StreamManager:
         heard = listener.heard if listener else None
         active = seasons.active(self.app.cfg.data.get("holidays") or seasons.DEFAULT_HOLIDAYS, time.time())
         cands = [f for f in cached[1] if ("bumper" in (f.get("tags") or [])) == bumper and f["id"] != item.get("m")
-                 and f["dur"] >= need - 0.3 and not f.get("dup") and in_season(f, heard, active)]
+                 and f["dur"] >= need - 0.3 and not f.get("dup") and in_season(f, heard, active)
+                 and airs_now(f, heard, time.time())]
         random.shuffle(cands)
         cands.sort(key=lambda f: round(f["dur"] - need))  # the closest length first; equal ones shuffled
         for f in cands[:12]:

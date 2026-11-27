@@ -502,9 +502,19 @@ th { font: 600 10.5px var(--caps); letter-spacing: .15em; text-transform: upperc
 
 .ad-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 28px 40px; align-items: center;
   padding: 26px 30px; margin-bottom: 22px; background: var(--night); color: var(--cream); border-radius: 10px; }
-.ad-hero-count b { display: inline; font: 600 52px/1 var(--serif); font-variant-numeric: lining-nums tabular-nums; margin-right: 10px; }
-.ad-hero-count span { font-size: 17px; color: #e9dcc0; }
-.ad-hero-count p { margin: 10px 0 0; font-size: 14px; color: #b9ab92; }
+.ad-hero-count > b { display: inline; font: 600 52px/1 var(--serif); font-variant-numeric: lining-nums tabular-nums; margin-right: 10px; }
+.ad-hero-count > span { font-size: 17px; color: #e9dcc0; }
+.ad-hero-count > p { margin: 10px 0 0; font-size: 14px; color: #b9ab92; }
+.ad-space { margin-top: 10px; font-size: 14px; color: #b9ab92; }
+.ad-space summary { cursor: pointer; width: fit-content; }
+.ad-space summary:hover { color: #fff; }
+.ad-space-list { margin-top: 10px; display: grid; gap: 6px; min-width: 240px; }
+.ad-space-row { display: grid; grid-template-columns: 9em minmax(0, 1fr) auto; gap: 10px; align-items: center; color: #e9dcc0; }
+.ad-space-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-space-row i { display: block; height: 8px; border-radius: 2px; background: var(--mustard); }
+.ad-space-row i.yours { background: #3a9aa3; }
+.ad-space-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ad-space-list p { margin: 4px 0 0; font-size: 13px; }
 .qbar { display: flex; height: 22px; border-radius: 3px; overflow: hidden; gap: 2px; background: #2a231d; }
 .qbar i { display: block; min-width: 6px; }
 .qlegend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; }
@@ -561,7 +571,7 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 
 @media (max-width: 860px) {
   .ad-hero { grid-template-columns: 1fr; gap: 20px; padding: 22px 20px; }
-  .ad-hero-count b { font-size: 44px; }
+  .ad-hero-count > b { font-size: 44px; }
   .ad-hero-acts { flex-direction: row; flex-wrap: wrap; }
   .ad-hero-acts .btn { flex: 1 1 auto; }
   .ad-facets select { flex: 1 1 140px; }

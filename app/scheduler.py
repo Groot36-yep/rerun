@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 from . import seasons
-from . import archive
+from . import airtimes, archive
 from . import lineups, xmas
 from .channels import christmas_style, content_signature, filler_pool, network_key, resolve
 from .listen import norm as show_norm
@@ -209,12 +209,25 @@ def in_season(f: dict, heard: dict | None, active) -> bool:
     return not hol or bool(hol & set(active))
 
 
+def promo_rule(rec: dict | None) -> dict | None:
+    """When a heard commercial can air, if it's a network promo that names a day or "tonight" (see
+    airtimes). Only promos: a toy ad's "get yours today!" isn't a time."""
+    if not rec or rec.get("cat") != "promo" or not rec.get("text"):
+        return None
+    return airtimes.rule(rec["text"])
+
+
+def airs_now(f: dict, heard: dict | None, t: float) -> bool:
+    return airtimes.fits(promo_rule((heard or {}).get(f.get("id"))), t)
+
+
 class Builder:
     def __init__(self, ch: dict, cat, state: dict, chapters, holidays: dict | None = None, heard: dict | None = None):
         self.ch = ch
         # what each commercial is about, from listening to it (see listen.py): {clip id: {"cat", "shows", "role"}}
         self.heard = heard or {}
         self._hol_cache: dict = {}
+        self._when_cache: dict = {}
         self.cat = cat
         self.st = state
         self.chapters = chapters
@@ -452,6 +465,8 @@ class Builder:
         iCarly" only during iCarly, "up next, SpongeBob" only around SpongeBob, a promo only for a show
         this channel plays (best when it's on now or next). One that names no show always fits."""
         rec = self.heard.get(f["id"])
+        if rec and ctx and ctx.get("at") and not airtimes.fits(self._when(f, rec), ctx["at"]):
+            return False, 0.0  # "this Friday" on a Saturday, "tonight at 8" at 11pm
         if not rec or not rec.get("shows"):
             return True, 0.0
         shows = {show_norm(x) for x in rec["shows"]}
@@ -465,6 +480,13 @@ class Builder:
         if shows & here:
             return True, 3.0
         return bool(shows & self.airs), 1.0
+
+    def _when(self, f: dict, rec: dict) -> dict | None:
+        """When a heard promo can air (see airtimes); None for any time."""
+        key = f.get("id")
+        if key not in self._when_cache:
+            self._when_cache[key] = promo_rule(rec)
+        return self._when_cache[key]
 
     def _hol(self, f: dict) -> set:
         key = f.get("id")
@@ -493,7 +515,8 @@ class Builder:
         hol = self.ch.get("season") or next(
             (k for k in active if first.get("id") in self._holiday_ids(k)), None)
         return {"net": archive.tag_for_network(net), "has_net": bool(net), "era": archive.era_tag(year), "hol": hol,
-                "year": _int_year(year), "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower()}
+                "year": _int_year(year), "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower(),
+                "at": t}  # when the break airs (moved along break by break), for promos that name a day
 
     def _bumper(self, ctx: dict | None, room: float) -> dict | None:
         """A bumper or ident from the show's own network ("You're watching Disney Channel" before a Disney
@@ -717,6 +740,8 @@ class Builder:
 
     def _ads(self, items: list, pos: float, seconds: float, *, final: bool,
              ctx: dict | None = None) -> tuple[float, float]:
+        if ctx is not None:
+            ctx["at"] = pos
         chosen, left = self._pick_filler(seconds, ctx)
         for f in chosen:
             items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
@@ -855,6 +880,8 @@ class Builder:
                 if bp + acc in pods:
                     pos, carry = self._pod(items, pos, pods[bp + acc], share + carry)
                 else:
+                    if ctx is not None:
+                        ctx["at"] = pos
                     lead = self._bumper(ctx, min(15.0, (share + carry) / 4)) if bumpers and share + carry >= 60 else None
                     if lead:  # "we'll be right back" into the break
                         pos = self._put(items, pos, lead)

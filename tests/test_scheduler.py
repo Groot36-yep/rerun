@@ -12,7 +12,8 @@ os.environ["RERUN_DATA"] = tempfile.mkdtemp()
 
 from app.catalog import Catalog  # noqa: E402
 from app.channels import normalize_channel, resolve, suggest  # noqa: E402
-from app.scheduler import OVERFILL_MAX, Builder, Playout, clip_holidays, in_season, tz_offset  # noqa: E402
+from app.scheduler import OVERFILL_MAX, Builder, Playout, clip_holidays, in_season, promo_rule, tz_offset  # noqa: E402
+from app import airtimes  # noqa: E402
 from app.seasons import DEFAULT_HOLIDAYS, matches  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -260,7 +261,11 @@ async def check_heard(cat):
                ads[3]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "promo"},
                # holiday ads nothing in their names gives away; heard, they stay off the air in January
                ads[4]["id"]: {"cat": "store", "shows": [], "role": "", "text": "Get your Halloween costume today!"},
-               ads[5]["id"]: {"cat": "toy", "shows": [], "role": "", "text": "Put it on your list for Santa."}}
+               ads[5]["id"]: {"cat": "toy", "shows": [], "role": "", "text": "Put it on your list for Santa."},
+               # promos that name a day or "tonight": only in the days leading up, and that day before the time
+               ads[6]["id"]: {"cat": "promo", "shows": [], "role": "", "text": "An all-new special, this Friday at 8, only on Nick."},
+               ads[7]["id"]: {"cat": "promo", "shows": [], "role": "", "text": "A brand new movie tonight at 7."},
+               ads[8]["id"]: {"cat": "toy", "shows": [], "role": "", "text": "Get yours today!"}}  # a toy ad's "today" isn't a time
     heard.update(special)
     ch = normalize_channel({"id": "hn", "name": "Nick", "seed": 11, "commercials": {"enabled": True, "break_style": "chapters"},
                             "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"}]})
@@ -286,6 +291,12 @@ async def check_heard(cat):
                 assert "Hey Arnold" in on or (nxt and nxt["title"].startswith("Hey Arnold")), f"'up next Hey Arnold' in {on}"
             assert x["m"] != ads[2]["id"], "a promo for a show this channel doesn't play"
             assert x["m"] not in (ads[4]["id"], ads[5]["id"]), "a holiday commercial (by what's said in it) out of season"
+            if x["m"] in (ads[6]["id"], ads[7]["id"]):
+                seen["dated"] += 1
+                assert airtimes.fits(airtimes.rule(heard[x["m"]]["text"]), x["s"]), \
+                    f"{heard[x['m']]['text']!r} at {time.strftime('%a %H:%M', time.localtime(x['s']))}"
+            if x["m"] == ads[8]["id"]:
+                seen["today"] += 1
         # the kinds in each break: never the same kind twice running
         runs, run = [], []
         for x in items + [{"k": "c", "m": ""}]:  # each break on its own
@@ -297,6 +308,23 @@ async def check_heard(cat):
         for run in runs:
             assert not any(a == b_ and a != "promo" for a, b_ in zip(run, run[1:])), run
     assert seen["watching"], "the Rugrats bumper never played (during Rugrats it should)"
+    assert seen["dated"] and seen["today"], f"the dated promos / the toy ad never played ({seen})"
+    # when a promo can air, from what's said in it (2026-11-23 is a Monday)
+    mon = time.mktime((2026, 11, 23, 0, 0, 0, 0, 0, -1))
+    at = lambda d, hh: mon + d * 86400 + hh * 3600  # noqa: E731
+    fri = airtimes.rule("All-new SpongeBob, this Friday at 8, only on Nickelodeon")
+    assert [airtimes.fits(fri, at(d, 12)) for d in range(7)] == [True, True, True, True, True, False, False]
+    assert airtimes.fits(fri, at(4, 19.5)) and not airtimes.fits(fri, at(4, 21))
+    tonight = airtimes.rule("Catch Danny Phantom tonight at 7:30")
+    assert airtimes.fits(tonight, at(2, 19)) and not airtimes.fits(tonight, at(2, 20)) and not airtimes.fits(tonight, at(2, 2))
+    assert airtimes.rule("New episodes Fridays at 8") is None, "every Friday: any day"
+    assert airtimes.rule("Monday through Friday at 4, only on Nick") is None, "a run of days: any day"
+    sat = airtimes.rule("Saturday morning at 10, all-new Fairly OddParents")
+    assert sat["day"] == 5 and sat["until"] == 10.0
+    wknd = airtimes.rule("A marathon this weekend on Nick")
+    assert airtimes.fits(wknd, at(4, 21)) and not airtimes.fits(wknd, at(5, 9))
+    assert promo_rule({"cat": "toy", "text": "Get yours today!"}) is None
+    assert "Mon–Thu" in airtimes.describe(fri)
     # which season a clip belongs to
     hal = {"id": "h", "tags": ["nick"], "title": "Nick Breaks (October 2004) (12)"}
     plain = {"id": "p", "tags": ["nick"], "title": "Nick Breaks (March 2004) (3)"}

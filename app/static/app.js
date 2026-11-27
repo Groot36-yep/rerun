@@ -1811,7 +1811,8 @@ function previewAd(ad, labels = {}) {
     fill(heard,
       h("p", { class: "hint" }, r.heard
         ? [r.kind ? `Heard as: ${r.kind}` : "Heard", r.shows.length ? ` · about ${r.shows.join(", ")}` : "",
-            (r.season || []).length ? ` · ${r.season.join(", ")} only (plays in season)` : ""].join("")
+            (r.season || []).length ? ` · ${r.season.join(", ")} only (plays in season)` : "",
+            r.when ? ` · ${r.when}` : ""].join("")
         : "Not listened to yet."),
       r.text ? h("blockquote", { class: "ad-said" }, r.text) : null,
       h("div", { class: "row" },
@@ -1927,7 +1928,8 @@ async function viewCommercials() {
         h("b", null, on.length.toLocaleString()),
         h("span", null, on.length === 1 ? "commercial on the air" : "commercials on the air"),
         h("p", null, [time, data.stats.dupes ? `${plural(data.stats.dupes, "duplicate copy", "duplicate copies")} kept off` : null,
-          data.hidden ? `${data.hidden} removed by you` : null].filter(Boolean).join(". ") + ".")),
+          data.hidden ? `${data.hidden} removed by you` : null].filter(Boolean).join(". ") + "."),
+        spaceBox),
       on.length ? h("div", { class: "ad-hero-quality" },
         h("div", { class: "qbar", role: "img", "aria-label": QUALITIES.map(([n]) => `${n}: ${counts[n]}`).join(", ") },
           QUALITIES.filter(([n]) => counts[n]).map(([n, cls]) => h("i", { class: cls, style: { flexGrow: counts[n] } }))),
@@ -1976,10 +1978,29 @@ async function viewCommercials() {
       }, `${f.hidden ? "Put back" : "Remove"} all ${list.length} shown`) : null);
   };
 
+  // How much disk space they take, measured after the list is up (it walks the folders, so it can take
+  // a moment): downloads by network, your own folders, and what's left.
+  const spaceBox = h("div", { class: "ad-space" });
+  const gbText = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(0, Math.round(b / 1e6))} MB`;
+  const loadSpace = async () => {
+    let s;
+    try { s = await api("GET", "/api/commercials/storage"); } catch (x) { fill(spaceBox); return; }
+    const used = s.downloaded + s.yours;
+    const top = Math.max(1, s.yours, ...s.networks.map((n) => n.bytes));
+    fill(spaceBox, h("details", null,
+      h("summary", null, `${gbText(used)} on disk · ${gbText(s.free)} free`),
+      h("div", { class: "ad-space-list" },
+        s.networks.map((n) => h("div", { class: "ad-space-row" },
+          h("span", null, n.label), h("i", { style: { width: `${Math.max(2, Math.round((100 * n.bytes) / top))}%` } }), h("b", null, gbText(n.bytes)))),
+        s.yours ? h("div", { class: "ad-space-row" }, h("span", null, "Your own folders"), h("i", { class: "yours", style: { width: `${Math.max(2, Math.round((100 * s.yours) / top))}%` } }), h("b", null, gbText(s.yours))) : null,
+        h("p", null, s.networks.length ? "Rerun's downloads can be deleted network by network under “Find more commercials” › Already downloaded." : "Rerun hasn't downloaded any yet."))));
+  };
+
   const load = async () => {
     try { data = await api("GET", "/api/commercials"); } catch (x) { fill(grid, h("p", { class: "error" }, x.message)); return; }
     renderBar();
     render();
+    loadSpace();
   };
   // A search in progress shows as a strip at the top of the page; the list reloads when it's done.
   let timer = null, wasRunning = false;
