@@ -621,6 +621,20 @@ def check_logo_filter():
 def check_youtube_rules():
     """The YouTube downloader's checks and naming (no internet needed)."""
     from app import youtube
+
+    class Said:  # why a tape was skipped, in words
+        def __init__(self):
+            self.notes = []
+
+        def _note(self, msg):
+            self.notes.append(msg)
+    s = Said()
+    archive.Finder._note_skip(s, "A tape", {"dupes": 7})
+    archive.Finder._note_skip(s, "A tape", {"dupes": 0})
+    archive.Finder._note_skip(s, "A tape", {"dupes": 2, "why": "only 240 lines of real picture"})
+    assert "already have all 7" in s.notes[0], s.notes
+    assert "where one commercial ends" in s.notes[1], s.notes
+    assert s.notes[2].endswith("only 240 lines of real picture"), s.notes
     assert archive.network_in("Nickelodeon Commercials Summer 2003") == "nick"
     assert archive.network_in("Nick Jr. Bumpers 2004") == "nickjr"
     assert archive.network_in("Boomerang Channel Bumpers") == "boomerang"

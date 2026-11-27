@@ -981,8 +981,9 @@ class Finder:
             for d in kept:
                 d.unlink(missing_ok=True)
                 (d.parent / (d.name + ".clips.json")).unlink(missing_ok=True)
-            self._note(f"Skipped “{title[:70]}”: no clear commercials in it")
+            self._note_skip(title, tape)
             return 0
+        tape.pop("why", None)
         tape["files"] = [d.name for d in kept]
         tape["bytes"] = sum(d.stat().st_size for d in kept)
         idx = self.index()
@@ -991,6 +992,16 @@ class Finder:
         had = f", {tape['dupes']} you already had" if tape["dupes"] else ""
         self._note(f"Added {tape['clips']} commercials from “{title[:70]}” ({quality_label(tape['q'])} picture{had})")
         return tape["bytes"]
+
+    def _note_skip(self, title: str, tape: dict):
+        """Say why nothing was kept from a tape, in words."""
+        why = tape.get("why") or "no cuts"
+        if tape.get("dupes") and why == "no cuts":
+            why = f"you already have all {tape['dupes']} of its commercials"
+        elif why == "no cuts":
+            why = ("couldn't tell where one commercial ends and the next begins (no black frames or "
+                   "silence between them)")
+        self._note(f"Skipped “{title[:70]}”: {why}")
 
     async def _file_clips(self, dest, title: str, cand: dict, names: list[str], tape: dict,
                           airing: dict | None = None, clips: list[dict] | None = None) -> bool:
@@ -1001,12 +1012,13 @@ class Finder:
             self._step(f"Finding the commercials in “{title[:60]}”", done=0, total=0)
             clips = await asyncio.to_thread(find_clips_ex, ff, str(dest))
         if not clips:
+            tape.setdefault("why", "no cuts")
             return False
         q = await asyncio.to_thread(probe_video, ff, str(dest))
         mid = clips[len(clips) // 2]
         q["eh"] = await asyncio.to_thread(effective_height, ff, str(dest), q["h"], mid["s"], min(20.0, mid["d"]))
         if self.min_height and q["eh"] and q["eh"] < self.min_height:
-            self._note(f"Skipped “{title[:60]}”: only {q['eh']} lines of real picture")
+            tape["why"] = f"only {q['eh']} lines of real picture (your lowest is {self.min_height})"
             return False
         q["score"] = quality_score(q)
         if names and len(names) == len(clips):  # the uploader listed the ads in order
@@ -1366,8 +1378,12 @@ class Finder:
         else:
             dest.unlink(missing_ok=True)
         if not tape["clips"]:
-            self._note(f"Skipped “{title[:60]}”: no clear commercials in it")
+            for d in kept:  # all of them ones you already have: the file isn't kept
+                d.unlink(missing_ok=True)
+                (d.parent / (d.name + ".clips.json")).unlink(missing_ok=True)
+            self._note_skip(title, tape)
             return 0, key, tape_era
+        tape.pop("why", None)
         tape["files"] = [d.name for d in kept]
         tape["bytes"] = sum(d.stat().st_size for d in kept if d.exists())
         idx = self.index()
