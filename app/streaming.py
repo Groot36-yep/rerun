@@ -17,6 +17,7 @@ import asyncio
 import random
 import logging
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -80,6 +81,36 @@ async def _drain(reader: asyncio.StreamReader, buf: bytearray, limit: int = 1638
                 del buf[: len(buf) - limit]
     except Exception:
         return
+
+
+# What ffmpeg says when the graphics chip can't decode a video (AV1 on older Intel chips, say). It
+# doesn't stop after that: it keeps running and makes nothing.
+_CHIP_REFUSED = re.compile(r"Function not implemented|Failed setup for format vaapi|hwaccel initiali[sz]ation returned error|"
+                           r"No support for codec \S+ profile|Failed to get HW surface format", re.I)
+FIRST_DATA_LIMIT = 30.0
+
+
+async def _first_data(proc, err: bytearray, chip: bool, limit: float = FIRST_DATA_LIMIT) -> bytes:
+    """A piece's first output, or b"" (and ffmpeg stopped) if none comes within `limit` seconds, or, when
+    the chip decodes, as soon as ffmpeg says the chip refused the video: waiting out the limit then froze
+    the channel for 30 seconds a try."""
+    read = asyncio.ensure_future(proc.stdout.read(65536))
+    deadline = time.monotonic() + limit
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            done, _ = await asyncio.wait({read}, timeout=min(0.2, left))
+            if done:
+                return read.result()
+            if chip and _CHIP_REFUSED.search(bytes(err[-4000:]).decode("utf-8", "replace")):
+                break
+    finally:
+        if not read.done():
+            read.cancel()
+    await _kill(proc)
+    return b""
 
 
 async def _kill(proc):
@@ -652,6 +683,8 @@ class StreamManager:
                 stand = self._stand_in(st.cid, item, plan["offset"] + dur)
                 if stand:
                     item, src, swapped = stand[0], stand[1], True
+        if src:  # what kind of video it is (looked up once, off the main thread): see FFmpeg.chip_decodes
+            await asyncio.to_thread(self.ffmpeg.codec_of, src)
         card_cmd = None
         if item.get("k") == "q":  # "Guess the show!"
             try:
@@ -695,11 +728,7 @@ class StreamManager:
                 st.seg_proc = proc
                 err = bytearray()
                 err_task = asyncio.create_task(_drain(proc.stderr, err))
-                try:
-                    first = await asyncio.wait_for(proc.stdout.read(65536), 30)
-                except asyncio.TimeoutError:
-                    first = b""
-                    await _kill(proc)
+                first = await _first_data(proc, err, chip=kind == "media" and "-hwaccel" in cmd)
                 if first:
                     spinup, delivered = time.time() - spawned, True
                     self.app.diag.piece(st.number, kind, spinup, lead, burst, dur, True)
@@ -723,6 +752,16 @@ class StreamManager:
                 if kind == "media" and has_audio and "matches no streams" in msg:
                     has_audio = False
                     cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, False, hw_decode,
+                                                overlay=ov, gpu=True)
+                    continue
+                if kind == "media" and hw_decode and "-hwaccel" in cmd and _CHIP_REFUSED.search(msg):
+                    # a kind of video the chip can't decode at all (AV1 on older Intel chips): straight to
+                    # the processor, and every file of that kind from now on
+                    codec = self.ffmpeg.chip_refused(src, msg)
+                    log.info("Decoding %s on the processor (the graphics chip can't decode %s)",
+                             item.get("t") or src, codec or "it")
+                    hw_decode = False
+                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio, False,
                                                 overlay=ov, gpu=True)
                     continue
                 if kind == "media" and "-hwaccel_output_format" in cmd:

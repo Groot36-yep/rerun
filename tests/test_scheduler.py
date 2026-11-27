@@ -387,7 +387,45 @@ def check_gpu_chain():
     ff.encoder_status = {"using": "none", "ok": True}
     c = ff.media_cmd("/m/show.mkv", 0, 30, s, 3, True, gpu=True)
     assert "vaapi" not in " ".join(c), "a machine without Quick Sync was given its filters"
+    # a kind of video the chip can't decode (AV1 on an i5-7500): once refused, never sent to the chip again
+    ff.encoder_status = {"using": "vaapi", "ok": True}
+    ff._codecs.update({"/m/yt.mp4": "av1", "/m/yt2.mp4": "av1", "/m/hi10.mkv": "h264", "/m/ok.mkv": "h264"})
+    assert "-hwaccel" in ff.media_cmd("/m/yt.mp4", 0, 30, s, 3, True, gpu=True)
+    msg = "[vist#0:0/av1 @ 0x5] [dec:av1 @ 0x5] Error submitting packet to decoder: Function not implemented"
+    assert ff.chip_refused("/m/yt.mp4", msg) == "av1"
+    for f in ("/m/yt.mp4", "/m/yt2.mp4"):
+        c = ff.media_cmd(f, 0, 30, s, 3, True, gpu=True)
+        assert "-hwaccel" not in c and "h264_vaapi" in c, c  # decoded by the processor, still encoded on the chip
+    ff.chip_refused("/m/hi10.mkv", "[dec:h264 @ 0x5] No support for codec h264 profile 110")
+    assert "-hwaccel" not in ff.media_cmd("/m/hi10.mkv", 0, 30, s, 3, True, gpu=True)
+    assert "-hwaccel" in ff.media_cmd("/m/ok.mkv", 0, 30, s, 3, True, gpu=True), "one odd H.264 file took all H.264 off the chip"
     print("graphics chip chain: OK")
+
+
+async def check_chip_refusal_is_quick():
+    """ffmpeg that says the chip can't decode a video and then just sits there (as it does with AV1 on
+    older Intel chips) is stopped at once, not after 30 seconds of a frozen channel."""
+    from app.streaming import _first_data
+    script = ("import sys, time; sys.stderr.write('[dec:av1 @ 0x5] Error submitting packet to decoder: "
+              "Function not implemented\\n'); sys.stderr.flush(); time.sleep(60)")
+    for chip, most in ((True, 3.0), (False, None)):
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE)
+        from app.streaming import _drain
+        err = bytearray()
+        asyncio.create_task(_drain(proc.stderr, err))
+        t0 = time.monotonic()
+        got = await _first_data(proc, err, chip=chip, limit=4.0)
+        took = time.monotonic() - t0
+        assert got == b"" and proc.returncode is not None, "the stuck ffmpeg was left running"
+        if most:
+            assert took < most, f"took {took:.1f}s to notice the chip refused it"
+        else:
+            assert took >= 3.9, "gave up early without the chip being involved"
+    proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import sys; sys.stdout.write('data')",
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    assert await _first_data(proc, bytearray(), chip=True) == b"data"
+    print("chip refusal noticed at once: OK")
 
 
 async def main():
@@ -587,6 +625,7 @@ async def main():
     await check_heard(cat)
     await check_break_ends(cat)
     check_gpu_chain()
+    await check_chip_refusal_is_quick()
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])

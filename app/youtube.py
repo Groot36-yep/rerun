@@ -154,7 +154,12 @@ def download(url: str, folder: str, name: str, ffmpeg: str, on_progress=None, st
         if on_progress and d.get("status") == "downloading":
             on_progress(int(d.get("downloaded_bytes") or 0), int(d.get("total_bytes") or d.get("total_bytes_estimate") or 0))
 
-    fmt = f"bv*[height<={max_height}]+ba/b[height<={max_height}]/bv*+ba/b"
+    # Not AV1 when there's a choice: YouTube serves most videos as AV1, which most servers' graphics
+    # chips (Intel's before 2020) can't decode, so the processor would have to; H.264 and VP9 decode on the
+    # chip. Same picture, same lines.
+    h = max_height
+    fmt = (f"bv*[height<={h}][vcodec!^=av01]+ba/b[height<={h}][vcodec!^=av01]/"
+           f"bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b")
     last: Exception | None = None
     for n, (clients, _why) in enumerate(ATTEMPTS):
         if n and stop():

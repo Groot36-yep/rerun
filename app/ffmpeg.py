@@ -19,6 +19,9 @@ log = logging.getLogger("rerun.ffmpeg")
 RESOLUTIONS = {"480p": (854, 480), "720p": (1280, 720), "1080p": (1920, 1080)}
 FPS = "30000/1001"
 GOP = 60
+# Kinds of video every VA-API chip decodes; when one refuses a file of these, it's that file (an odd
+# variant, like 10-bit H.264), not the kind (see FFmpeg.chip_refused)
+EVERYDAY_CODECS = {"h264", "hevc", "mpeg2video", "mpeg4", "vc1", "vp8", "vp9", "mjpeg"}
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -100,6 +103,13 @@ class FFmpeg:
         self.gpu_why = ""
         self.cpu_frames: set[str] = set()
         self.scale_opts = ""
+        self._codecs: dict[str, str] = {}
+        self.no_chip_files: set[str] = set()
+        try:
+            from .store import DATA_DIR, read_json
+            self.no_chip: set[str] = set(read_json(DATA_DIR / "chip_no_decode.json", []) or [])
+        except Exception:
+            self.no_chip = set()
 
     def _run(self, *args) -> str:
         try:
@@ -170,6 +180,57 @@ class FFmpeg:
         if len(self.cpu_frames) > 5000:
             self.cpu_frames.clear()
         self.cpu_frames.add(src)
+
+    # ---- kinds of video the chip can't decode ----------------------------------------------
+    # Older Intel chips decode H.264, HEVC and VP9 but not AV1, which is what YouTube serves most videos
+    # as. Given one anyway, ffmpeg doesn't fail: it sits there making nothing. So each file's kind is
+    # looked up (once) before it plays, and a kind the chip turned down once is decoded by the processor
+    # from then on (remembered across restarts).
+    def codec_of(self, src: str) -> str:
+        """The video codec of a file ("h264", "av1"...), or "" if unknown (or not a local file)."""
+        if not src or src.startswith(("http://", "https://")):
+            return ""
+        got = self._codecs.get(src)
+        if got is None:
+            got = ""
+            try:
+                r = subprocess.run([self.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                    "stream=codec_name", "-of", "csv=p=0", "file:" + src],
+                                   capture_output=True, text=True, timeout=10, errors="replace")
+                got = (r.stdout.strip().splitlines() or [""])[0].strip().lower()
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if len(self._codecs) > 20000:
+                self._codecs.clear()
+            self._codecs[src] = got
+        return got
+
+    def chip_decodes(self, src: str) -> bool:
+        if self.encoder_status.get("using") not in ("vaapi", "vaapi_lp"):
+            return True  # no chip in use: nothing to decide
+        if src in self.no_chip_files:
+            return False
+        codec = self.codec_of(src)
+        return not codec or codec not in self.no_chip
+
+    def chip_refused(self, src: str, msg: str = "") -> str:
+        """The chip couldn't decode this file: this file goes to the processor, and, for a kind the chip
+        either decodes or doesn't (AV1), every file of its kind. The everyday kinds (H.264, HEVC...) are
+        only ever this one file: the chip refuses an odd variant (10-bit H.264), not the kind."""
+        if len(self.no_chip_files) > 5000:
+            self.no_chip_files.clear()
+        self.no_chip_files.add(src)
+        m = re.search(r"\[dec:(\w+)", msg or "")
+        codec = (m.group(1).lower() if m else "") or self.codec_of(src)
+        if codec and codec not in self.no_chip and codec not in EVERYDAY_CODECS:
+            self.no_chip.add(codec)
+            log.info("The graphics chip can't decode %s video; the processor decodes it from now on", codec)
+            try:
+                from .store import DATA_DIR, atomic_write_json
+                atomic_write_json(DATA_DIR / "chip_no_decode.json", sorted(self.no_chip))
+            except Exception:
+                pass
+        return codec
 
     def _filter_help(self, name: str) -> str:
         return self._run("-h", f"filter={name}")
@@ -304,6 +365,9 @@ class FFmpeg:
         ov = overlay or {}
         # `gpu`: the picture stays on the graphics chip from decoding to encoding where this machine can
         # (only live channels ask: they go back to the old way for a file it fails on)
+        # a kind of video the chip can't decode (AV1 on chips before 2020's) is decoded by the processor:
+        # tried on the chip, ffmpeg would sit there making nothing, and the channel would freeze
+        hw_decode = hw_decode and self.chip_decodes(src)
         on_chip = gpu and self.full_gpu(src, hw_decode)
         args = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
                 *self._hw_prefix(s, hw, hw_decode, on_chip)]
