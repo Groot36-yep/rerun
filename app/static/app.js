@@ -2499,7 +2499,10 @@ async function viewSettings() {
   const renderEnc = () => {
     const e = s.encoder;
     fill(enc, h("div", { class: "notice " + (e.ok && !e.message ? "ok" : "") },
-      e.ok ? (e.message || `Encoding with ${e.label || e.using} — working.${e.using !== "none" ? " The processor is left free for everything else." : ""}`) : e.message || "The encoder hasn't been tested yet."));
+      e.ok ? (e.message || `Encoding with ${e.label || e.using} — working.${e.using !== "none" ? " The processor is left free for everything else." : ""}`) : e.message || "The encoder hasn't been tested yet."),
+      e.ok && e.using && e.using.startsWith("vaapi") ? h("p", { class: "hint" }, e.gpu_frames
+        ? "Shows are decoded, sized and encoded all on the graphics chip."
+        : `Shows are decoded and encoded on the graphics chip, but sized by the processor${e.gpu_why ? ` (the chip-only way didn't work here: ${e.gpu_why})` : ""}.`) : null);
   };
   renderEnc();
   const sec = { ...s.security, extra_networks: [...s.security.extra_networks] };

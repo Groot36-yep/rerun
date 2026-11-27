@@ -662,7 +662,7 @@ class StreamManager:
             cmd, kind = card_cmd, "card"
         elif src:
             cmd, kind = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
-                                              overlay=ov), "media"
+                                              overlay=ov, gpu=True), "media"
         else:
             text = (st.name if (item.get("k") == "x" and not item.get("t")) or item.get("k") == "q"
                     else f"{st.name}\n\nWe'll be right back")
@@ -718,12 +718,20 @@ class StreamManager:
                 if kind == "media" and has_audio and "matches no streams" in msg:
                     has_audio = False
                     cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, False, hw_decode,
-                                                overlay=ov)
+                                                overlay=ov, gpu=True)
+                    continue
+                if kind == "media" and "-hwaccel_output_format" in cmd:
+                    # the chip couldn't take this file all the way (a kind it can't decode, most likely):
+                    # its pictures go through the processor, decoded on the chip where it can
+                    log.info("Sizing %s on the processor (%s)", item.get("t") or src, msg[-160:] or "no details")
+                    self.ffmpeg.cpu_frames_for(src)
+                    cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
+                                                hw_decode, overlay=ov, gpu=True)
                     continue
                 if kind == "media" and hw_decode and self.ffmpeg.encoder_status.get("using") not in (None, "none"):
                     hw_decode = False  # some files only decode on the processor; try that before giving up
                     cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio, False,
-                                                overlay=ov)
+                                                overlay=ov, gpu=True)
                     continue
                 if kind == "card":
                     log.warning("Couldn't show the trivia card (%s)", msg[-200:] or "unknown error")
@@ -742,7 +750,7 @@ class StreamManager:
                                 item.get("t") or src, msg[-200:] or "unknown error")
                     ov = None
                     cmd = self.ffmpeg.media_cmd(src, item.get("in", 0) + plan["offset"], dur, s, burst, has_audio,
-                                                hw_decode, overlay=None)
+                                                hw_decode, overlay=None, gpu=True)
                     continue
                 if kind == "media":
                     log.warning("Couldn't play %s: %s", item.get("t") or src, msg[-300:] or "unknown error")

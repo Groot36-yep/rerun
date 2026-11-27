@@ -314,6 +314,37 @@ def check_cushion():
     print(f"cushion: OK (never below {low:.1f}s ahead)")
 
 
+def check_gpu_chain():
+    """On a Quick Sync machine whose self test passed, a live piece stays on the graphics chip from
+    decoding to encoding; with a logo or banner it's sized there and drawn over by the processor; a file
+    the chip couldn't take, previews, and machines without it keep the old way."""
+    from app.ffmpeg import FFmpeg
+    ff = FFmpeg()
+    ff.major, ff.filters = 7, {"overlay", "deinterlace_vaapi", "scale_vaapi", "pad_vaapi"}
+    ff.encoder_status = {"using": "vaapi", "ok": True}
+    ff.gpu_frames, ff.scale_opts = True, ":force_original_aspect_ratio=decrease:force_divisible_by=2"
+    s = {"resolution": "720p", "hwaccel": "vaapi"}
+    cmd = ff.media_cmd("/m/show.mkv", 10, 30, s, 3, True, gpu=True)
+    vf = cmd[cmd.index("-vf") + 1]
+    assert "-hwaccel_output_format" in cmd and vf.startswith("deinterlace_vaapi") and "pad_vaapi" in vf, vf
+    assert "hwupload" not in vf and "bwdif" not in vf, vf
+    logo = os.path.join(tempfile.mkdtemp(), "logo.png")
+    open(logo, "wb").write(b"x")
+    cmd = ff.media_cmd("/m/show.mkv", 10, 30, s, 3, True, overlay={"logo": logo}, gpu=True)
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "scale_vaapi" in graph and "hwdownload,format=nv12" in graph and graph.endswith("hwupload[v]"), graph
+    for c in (ff.media_cmd("/m/show.mkv", 10, 30, s, 3, True),            # a preview: the old way
+              ff.media_cmd("/m/show.mkv", 10, 30, s, 3, True, False, gpu=True)):  # decoding on the chip failed
+        assert "-hwaccel_output_format" not in c and "bwdif" in c[c.index("-vf") + 1], c
+    ff.cpu_frames_for("/m/old.avi")
+    c = ff.media_cmd("/m/old.avi", 0, 30, s, 3, True, gpu=True)
+    assert "-hwaccel_output_format" not in c and "-hwaccel" in c, "a file the chip couldn't take tried it again"
+    ff.encoder_status = {"using": "none", "ok": True}
+    c = ff.media_cmd("/m/show.mkv", 0, 30, s, 3, True, gpu=True)
+    assert "vaapi" not in " ".join(c), "a machine without Quick Sync was given its filters"
+    print("graphics chip chain: OK")
+
+
 async def main():
     cat = make_catalog()
 
@@ -510,6 +541,7 @@ async def main():
     check_split()
     await check_heard(cat)
     await check_break_ends(cat)
+    check_gpu_chain()
 
     print("suggestions:", [s["name"] for s in suggest(cat, [])])
     print("programs:", [(x["key"], x["weight"]) for x in resolve(nick, cat)])

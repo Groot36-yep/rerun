@@ -94,6 +94,12 @@ class FFmpeg:
         self.font = next((f for f in FONT_CANDIDATES if os.path.exists(f)), "")
         self.encoder_status = {"requested": "none", "using": "none", "label": ENCODER_LABELS["none"], "ok": False,
                                "message": "Not tested yet"}
+        # Keeping the picture on the graphics chip from decoding to encoding (see gpu_fit): on once the
+        # self test has seen the whole chain work on this machine. Files it failed on go the old way.
+        self.gpu_frames = False
+        self.gpu_why = ""
+        self.cpu_frames: set[str] = set()
+        self.scale_opts = ""
 
     def _run(self, *args) -> str:
         try:
@@ -136,13 +142,83 @@ class FFmpeg:
         return ["-c:v", "libx264", "-preset", "superfast", "-profile:v", "high", "-level:v", "4.1", *rate,
                 "-keyint_min", str(GOP), "-sc_threshold", "0", "-bf", "2"]
 
-    def _hw_prefix(self, s: dict, hw: str, decode: bool = False) -> list[str]:
+    def _hw_prefix(self, s: dict, hw: str, decode: bool = False, frames: bool = False) -> list[str]:
         if hw not in ("vaapi", "vaapi_lp"):
             return ["-hwaccel", "cuda"] if hw == "nvenc" and decode else []
         args = ["-init_hw_device", f"vaapi=va:{render_device(s.get('vaapi_device'))}", "-filter_hw_device", "va"]
-        # Decoding on the graphics chip too takes most of the work off the processor. Frames come back to
-        # memory for the picture filters, and anything the chip can't decode is decoded normally.
-        return args + (["-hwaccel", "vaapi", "-hwaccel_device", "va"] if decode else [])
+        # Decoding on the graphics chip too takes most of the work off the processor. Without `frames`,
+        # frames come back to memory for the picture filters, and anything the chip can't decode is decoded
+        # normally; with it, they stay on the chip for gpu_fit.
+        if not decode:
+            return args
+        return args + ["-hwaccel", "vaapi", "-hwaccel_device", "va",
+                       *(["-hwaccel_output_format", "vaapi"] if frames else [])]
+
+    def gpu_fit(self, W: int, H: int) -> str:
+        """Deinterlace and size the picture on the graphics chip (frames decoded there stay there)."""
+        return f"deinterlace_vaapi=auto=1,scale_vaapi=w={W}:h={H}{self.scale_opts}:format=nv12"
+
+    def gpu_pad(self, W: int, H: int) -> str:
+        return f"pad_vaapi=w={W}:h={H}:x=(ow-iw)/2:y=(oh-ih)/2,setsar=1,fps={FPS}"
+
+    def full_gpu(self, src: str, hw_decode: bool) -> bool:
+        return (self.gpu_frames and hw_decode and src not in self.cpu_frames
+                and self.encoder_status.get("using") in ("vaapi", "vaapi_lp"))
+
+    def cpu_frames_for(self, src: str):
+        """A file the graphics chip couldn't take all the way: its pictures go through the processor."""
+        if len(self.cpu_frames) > 5000:
+            self.cpu_frames.clear()
+        self.cpu_frames.add(src)
+
+    def _filter_help(self, name: str) -> str:
+        return self._run("-h", f"filter={name}")
+
+    async def _gpu_frames_test(self, s: dict, hw: str, W: int, H: int) -> str:
+        """Run the whole chip-only chain on a short sample; "" if it works, else why not."""
+        need = [f for f in ("deinterlace_vaapi", "scale_vaapi", "pad_vaapi") if f not in self.filters]
+        if need:
+            return f"this ffmpeg has no {', '.join(need)}"
+        helptext = await asyncio.to_thread(self._filter_help, "scale_vaapi")
+        if "force_original_aspect_ratio" not in helptext:
+            return "this ffmpeg's scale_vaapi can't keep the picture's shape"
+        self.scale_opts = ":force_original_aspect_ratio=decrease" + (
+            ":force_divisible_by=2" if "force_divisible_by" in helptext else "")
+        import tempfile
+        fd, sample = tempfile.mkstemp(suffix=".ts", prefix="rerun-gpu-")
+        os.close(fd)
+        base = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
+        tries = [
+            # a 4:3 SD picture, made on the chip, like most old shows
+            [*base, *self._hw_prefix(s, hw), "-f", "lavfi", "-i", f"testsrc2=s=720x480:r={FPS}", "-t", "2",
+             "-vf", "format=nv12,hwupload", *self._video_codec(s, hw), "-f", "mpegts", sample],
+            # all on the chip, as a plain piece plays
+            [*base, *self._hw_prefix(s, hw, True, True), "-i", sample,
+             "-vf", f"{self.gpu_fit(W, H)},{self.gpu_pad(W, H)}", *self._video_codec(s, hw), "-f", "null", "-"],
+            # sized on the chip, drawn over by the processor, as a piece with a logo or banner plays
+            [*base, *self._hw_prefix(s, hw, True, True), "-i", sample,
+             "-vf", f"{self.gpu_fit(W, H)},hwdownload,format=nv12,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                    f"fps={FPS},{self._vf_tail(hw)}", *self._video_codec(s, hw), "-f", "null", "-"],
+        ]
+        try:
+            for args in tries:
+                proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL,
+                                                            stderr=asyncio.subprocess.PIPE)
+                try:
+                    _, err = await asyncio.wait_for(proc.communicate(), 30)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    return "the test took too long"
+                if proc.returncode:
+                    return err.decode(errors="replace").strip()[-200:] or "the test failed"
+            return ""
+        except OSError as e:
+            return str(e)
+        finally:
+            try:
+                os.remove(sample)
+            except OSError:
+                pass
 
     def _vf_tail(self, hw: str) -> str:
         return "format=nv12,hwupload" if hw in ("vaapi", "vaapi_lp") else "format=yuv420p"
@@ -184,6 +260,16 @@ class FFmpeg:
             log.warning("Encoder test failed for %s: %s", hw, err.decode(errors="replace").strip()[-300:])
         if not status["ok"]:
             status["message"] = "ffmpeg couldn't encode video. Check that ffmpeg is installed."
+        self.gpu_frames, self.gpu_why = False, ""
+        if status["using"] in ("vaapi", "vaapi_lp"):
+            why = await self._gpu_frames_test(s, status["using"], W, H)
+            self.gpu_frames, self.gpu_why = not why, why
+            if why:
+                log.warning("Keeping pictures on the graphics chip didn't work, so the processor sizes them: %s", why)
+            else:
+                log.info("Decoding, sizing and encoding all on the graphics chip")
+        status["gpu_frames"] = self.gpu_frames
+        status["gpu_why"] = self.gpu_why
         self.encoder_status = status
         return status
 
@@ -208,7 +294,7 @@ class FFmpeg:
                 "-f", "mpegts", "pipe:1"]
 
     def media_cmd(self, src: str, offset: float, duration: float, s: dict, burst: float, has_audio: bool,
-                  hw_decode: bool = True, overlay: dict | None = None) -> list[str]:
+                  hw_decode: bool = True, overlay: dict | None = None, gpu: bool = False) -> list[str]:
         """One piece of a show or commercial, as live TV. `overlay` can add the network's logo in the
         corner ("logo": a picture file) and the "Up next" banner ("banner": a picture file, shown from t0 to
         t1 seconds into the piece, fading in as it slides in from the left). Both sit inside the picture
@@ -216,7 +302,11 @@ class FFmpeg:
         hw = self.encoder_status.get("using") or "none"
         W, H = RESOLUTIONS.get(s.get("resolution"), RESOLUTIONS["720p"])
         ov = overlay or {}
-        args = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", *self._hw_prefix(s, hw, hw_decode)]
+        # `gpu`: the picture stays on the graphics chip from decoding to encoding where this machine can
+        # (only live channels ask: they go back to the old way for a file it fails on)
+        on_chip = gpu and self.full_gpu(src, hw_decode)
+        args = [self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+                *self._hw_prefix(s, hw, hw_decode, on_chip)]
         args += self._input_pacing(burst)
         if src.startswith(("http://", "https://")):
             args += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
@@ -241,10 +331,13 @@ class FFmpeg:
         banners = [b for b in banners if can and os.path.isfile(b.get("file") or "")]
         fit = f"bwdif=mode=send_frame:parity=auto:deint=interlaced,scale={W}:{H}:force_original_aspect_ratio=decrease"
         tail = f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS},{self._vf_tail(hw)}"
+        if on_chip:  # sized on the chip; anything drawn over it is drawn by the processor, then sent back
+            fit = f"{self.gpu_fit(W, H)},hwdownload,format=nv12"
         tpl = ov.get("template") if can and os.path.isfile((ov.get("template") or {}).get("file") or "") else None
         anims = [a for a in ov.get("anims") or [] if can and os.path.isfile(a.get("bar") or "")]
         if not (logo or banners or tpl or anims):
-            args += ["-map", "0:v:0", "-vf", f"{fit},{tail}"]
+            vf = f"{self.gpu_fit(W, H)},{self.gpu_pad(W, H)}" if on_chip else f"{fit},{tail}"
+            args += ["-map", "0:v:0", "-vf", vf]
         else:
             graph, cur = [f"[0:v:0]{fit}[pic]"], "pic"
             if logo:  # a still picture, held for the whole piece
