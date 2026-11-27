@@ -33,7 +33,10 @@ log = logging.getLogger("rerun.listen")
 MODEL = "base.en"
 HEARD = DATA_DIR / "commercials_heard.json"  # {clip id: {"k": what was heard, "text", "cat", "shows", "role"}}
 MODELS = DATA_DIR / "models"
-V = 3  # 2 and 3: earlier versions filed clips they never got the sound of as "Other"; those are heard again
+V = 2  # 2: the first version filed every clip it failed to hear as "Other"; those are heard again
+# Versions before the fix of 2026-11-27 couldn't find any clip's file, and filed each as heard, with nothing
+# said, as "Other". Those (an empty text without "silent") are heard again, and only those: the ones that
+# were heard properly aren't. A clip that really has nothing said in it is marked "silent", so it isn't.
 MAX_SECONDS = 75  # a commercial longer than this is heard only for its first 75 seconds
 
 # What kind of commercial: the kind with the most matches wins (earlier kinds win ties).
@@ -224,7 +227,11 @@ class Listener:
         return self.app.catalog.all_filler()
 
     def todo(self) -> list[dict]:
-        return [f for f in self.clips() if (self.heard.get(f["id"]) or {}).get("k") != self._key(f)]
+        """Only what hasn't been heard yet: new commercials, changed ones, and ones that came out empty
+        before the fix. Everything already heard is left alone."""
+        def done(rec: dict | None, f: dict) -> bool:
+            return bool(rec) and rec.get("k") == self._key(f) and bool(rec.get("text") or rec.get("silent"))
+        return [f for f in self.clips() if not done(self.heard.get(f["id"]), f)]
 
     def summary(self) -> dict:
         clips = self.clips()
@@ -234,7 +241,7 @@ class Listener:
             if rec:
                 k = "bumper" if "bumper" in (f.get("tags") or []) else rec.get("cat", "other")
                 kinds[k] = kinds.get(k, 0) + 1
-        return {"available": available(), "heard": sum(1 for f in clips if f["id"] in self.heard), "total": len(clips),
+        return {"available": available(), "heard": len(clips) - len(self.todo()), "total": len(clips),
                 "kinds": [{"key": k, "label": KIND_LABELS.get(k, k), "count": n}
                           for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])],
                 "progress": self.progress}
@@ -335,7 +342,8 @@ class Listener:
                         break
                     continue
                 heard_any = True
-                self.heard[f["id"]] = {"k": self._key(f), "text": text[:600], **analyse(text, f.get("title", ""), names)}
+                self.heard[f["id"]] = {"k": self._key(f), "text": text[:600], **analyse(text, f.get("title", ""), names),
+                                       **({} if text else {"silent": True})}
                 if time.time() - last_save > 20:
                     await asyncio.to_thread(atomic_write_json, HEARD, self.heard)
                     last_save = time.time()

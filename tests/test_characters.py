@@ -189,6 +189,17 @@ def check_listen_failures():
     L.progress["running"] = True
     asyncio.run(L._run(list(clips)))
     assert all(r["text"].startswith("Lucky") for r in L.heard.values()), "listening to all again missed some"
+    # only what's new is heard: a new commercial, and ones the old versions filed empty; not the rest
+    L.heard["c7"] = {**L.heard["c7"], "text": "", "cat": "other"}              # filed empty by the old bug
+    L.heard["c8"] = {**L.heard["c8"], "text": "", "cat": "other", "silent": True}  # really has nothing said
+    clips.append({"id": "new1", "title": "Tape (99)", "file": "/x.mp4", "in": 0, "dur": 30})
+    assert [f["id"] for f in L.todo()] == ["c7", "new1"], [f["id"] for f in L.todo()]
+    assert L.summary()["heard"] == len(clips) - 2
+    L._hear = lambda f: ""
+    L.progress["running"] = True
+    asyncio.run(L._run())
+    assert L.todo() == [] and L.heard["new1"]["silent"], "a commercial with nothing said is asked again and again"
+    clips.pop()
     assert L.record("c3")["kind"] and L.record("nope") == {"heard": False, "text": "", "kind": "", "shows": [], "role": ""}
     # the sound comes from the clip's own file (a library clip says "file", not a planned item's "f"), and a
     # clip whose file can't be found isn't filed as heard-but-silent
