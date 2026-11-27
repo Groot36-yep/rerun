@@ -773,3 +773,5 @@ button.chip { font: inherit; font-size: 14px; color: inherit; }
 .cut-x { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 15px; line-height: 1; cursor: pointer; opacity: 0; }
 .cut-pics figure:hover .cut-x, .cut-x:focus-visible { opacity: 1; }
 .cut-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.ad-heard { margin-top: 4px; }
+.ad-said { margin: 6px 0 10px; padding: 8px 12px; border-left: 3px solid var(--line, #3a4a60); max-height: 120px; overflow: auto; font-size: 13px; opacity: .85; }

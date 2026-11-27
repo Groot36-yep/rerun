@@ -33,7 +33,7 @@ log = logging.getLogger("rerun.listen")
 MODEL = "base.en"
 HEARD = DATA_DIR / "commercials_heard.json"  # {clip id: {"k": what was heard, "text", "cat", "shows", "role"}}
 MODELS = DATA_DIR / "models"
-V = 2  # 2: the first version filed every clip it failed to hear as "Other"; those are heard again
+V = 3  # 2 and 3: earlier versions filed clips they never got the sound of as "Other"; those are heard again
 MAX_SECONDS = 75  # a commercial longer than this is heard only for its first 75 seconds
 
 # What kind of commercial: the kind with the most matches wins (earlier kinds win ties).
@@ -239,15 +239,30 @@ class Listener:
                           for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])],
                 "progress": self.progress}
 
-    def start(self) -> bool:
+    def start(self, again: bool = False, ids: list[str] | None = None) -> bool:
+        """Listen to the ones not heard yet; with `again`, to every one of them once more (what was heard
+        before stays in use until each is heard again); with `ids`, to just those."""
         if self.progress["running"]:
             return False
         if not available():
             raise RuntimeError("The listening part isn't installed. Run 'rerun update' to add it.")
+        if ids:
+            want = {str(i) for i in ids}
+            todo = [f for f in self.clips() if f["id"] in want]
+            if not todo:
+                raise LookupError("No such commercial")
+        else:
+            todo = self.clips() if again else None
         self.stop = False
         self.progress.update(running=True, done=0, total=0, step="Starting", error="", paused=False)
-        self.task = asyncio.create_task(self._run())
+        self.task = asyncio.create_task(self._run(todo))
         return True
+
+    def record(self, cid: str) -> dict:
+        """What was heard in one commercial."""
+        rec = self.heard.get(cid) or {}
+        return {"heard": bool(rec), "text": rec.get("text", ""), "kind": KIND_LABELS.get(rec.get("cat", ""), ""),
+                "shows": rec.get("shows") or [], "role": rec.get("role", "")}
 
     def _watching(self) -> bool:
         streams = getattr(self.app, "streams", None)
@@ -270,13 +285,17 @@ class Listener:
     def _hear(self, f: dict) -> str:
         """What's said in one clip."""
         import numpy as np
-        src = self.app.media_input(f)
+        # a library clip says "file"/"part"; media_input reads a planned item's "f"/"p"
+        src = self.app.media_input({"f": f.get("file") or "", "p": f.get("part") or "", "m": f.get("id") or ""})
         if not src:
-            return ""
+            raise FileNotFoundError("Can't find the file")
         dur = min(float(f.get("dur") or MAX_SECONDS), MAX_SECONDS)
         cmd = [self.app.ffmpeg.ffmpeg, "-nostdin", "-loglevel", "error", "-ss", f"{float(f.get('in') or 0):.3f}",
                "-t", f"{dur:.3f}", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"]
-        raw = subprocess.run(cmd, capture_output=True, timeout=120).stdout
+        run = subprocess.run(cmd, capture_output=True, timeout=120)
+        raw = run.stdout
+        if run.returncode and not raw:
+            raise RuntimeError(f"Couldn't read its sound: {run.stderr.decode(errors='replace').strip()[-200:]}")
         if len(raw) < 16000:  # under half a second of sound
             return ""
         audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
@@ -284,9 +303,9 @@ class Listener:
                                                   condition_on_previous_text=False)
         return " ".join(s.text.strip() for s in segments).strip()
 
-    async def _run(self):
+    async def _run(self, todo: list[dict] | None = None):
         try:
-            todo = self.todo()
+            todo = self.todo() if todo is None else todo
             self.progress["total"] = len(todo)
             names = known_shows(self.app.catalog)
             last_save = time.time()

@@ -1351,12 +1351,23 @@ async def listen_status(app=Depends(signed_in)):
 
 
 @router.post("/listen/run")
-async def listen_run(app=Depends(signed_in)):
+async def listen_run(body: dict | None = None, app=Depends(signed_in)):
+    """{"again": true} hears every commercial once more; {"ids": [...]} just those."""
+    body = body or {}
+    if app.listener.progress["running"]:
+        raise HTTPException(409, "Already listening. Stop it first, or wait until it's done.")
     try:
-        app.listener.start()
+        app.listener.start(again=bool(body.get("again")), ids=[str(i) for i in body.get("ids") or []])
     except RuntimeError as e:
         raise HTTPException(400, str(e))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
     return app.listener.summary()
+
+
+@router.get("/listen/{cid}")
+async def listen_one(cid: str, app=Depends(signed_in)):
+    return app.listener.record(cid)
 
 
 @router.post("/listen/stop")

@@ -1787,6 +1787,7 @@ function fmtDur(s) {
 }
 
 function previewAd(ad, labels = {}) {
+  const heard = h("div", { class: "ad-heard" });
   modal((box, close) => {
     fill(box, h("h2", { style: { margin: "0 0 12px" } }, ad.title || "Commercial"),
       h("video", { class: "ad-video", src: `/api/commercials/${ad.id}/preview.mp4`, controls: true, autoplay: true, playsinline: true }),
@@ -1794,8 +1795,32 @@ function previewAd(ad, labels = {}) {
         h("span", { class: `q-pill ${qualityClass(ad)}` }, quality(ad) || "Unknown"), fmtDur(ad.dur),
         ad.tags.map((t) => labels[t] || t).join(", ") || null),
       h("p", { class: "hint" }, `Picture: ${qualityText(ad.q)}`),
+      heard,
       h("div", { class: "row end" }, h("button", { class: "btn quiet", onclick: close }, "Close")));
   });
+  // what was heard in it, and hearing it again if that came out wrong
+  let timer = null;
+  const showHeard = async () => {
+    clearTimeout(timer);
+    let r, st;
+    try { [r, st] = await Promise.all([api("GET", `/api/listen/${encodeURIComponent(ad.id)}`), api("GET", "/api/listen")]); } catch (x) { return; }
+    if (!heard.isConnected) return;  // closed
+    if (!st.available) { fill(heard); return; }
+    const busy = st.progress.running;
+    if (busy) timer = setTimeout(showHeard, 2500);
+    fill(heard,
+      h("p", { class: "hint" }, r.heard
+        ? [r.kind ? `Heard as: ${r.kind}` : "Heard", r.shows.length ? ` · about ${r.shows.join(", ")}` : ""].join("")
+        : "Not listened to yet."),
+      r.text ? h("blockquote", { class: "ad-said" }, r.text) : null,
+      h("div", { class: "row" },
+        h("button", { class: "btn quiet small", disabled: busy, onclick: async () => {
+          try { await api("POST", "/api/listen/run", { ids: [ad.id] }); toast("Listening to it again"); } catch (x) { toast(x.message, true); }
+          showHeard();
+        } }, r.heard ? "Listen again" : "Listen to it"),
+        busy ? h("span", { class: "muted" }, st.progress.total === 1 ? "Listening…" : "Busy listening to the others") : null));
+  };
+  showHeard();
 }
 
 const SOURCE_NAMES = { found: "Found online", folder: "Your folders", plex: "Plex" };
@@ -1832,6 +1857,10 @@ function listenBox() {
       h("div", { class: "row" },
         p.running ? h("button", { class: "btn", onclick: async () => { await api("POST", "/api/listen/stop"); toast("Stopping after this one"); load(); } }, "Stop")
           : r.heard < r.total ? h("button", { class: "btn primary", onclick: async () => { try { await api("POST", "/api/listen/run"); load(); } catch (x) { toast(x.message, true); } } }, "Listen now") : null,
+        !p.running && r.heard ? h("button", { class: "btn quiet", title: "Hear every commercial once more and sort them again. What was heard before stays in use until each one is redone.", onclick: async () => {
+          if (!confirm(`Listen to all ${plural(r.total, "commercial")} again? It runs only while nobody's watching and can take a while.`)) return;
+          try { await api("POST", "/api/listen/run", { again: true }); toast("Listening to them all again"); load(); } catch (x) { toast(x.message, true); }
+        } }, "Listen to all again") : null,
         h("span", { class: p.error ? "error" : "muted" }, status)),
       r.kinds.length ? h("div", { class: "listen-kinds" }, r.kinds.map((k) => h("span", { class: "chip" }, `${k.label} · ${k.count}`))) : null);
   };

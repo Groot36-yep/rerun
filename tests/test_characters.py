@@ -175,6 +175,32 @@ def check_listen_failures():
     asyncio.run(L._run())
     assert not L.heard, "failed clips were filed as heard"
     assert "Read-only" in L.progress["error"] and L.progress["done"] < len(clips), L.progress
+    # listening again: every clip once more, or just one; until then, what was heard before stays
+    L._hear = lambda f: "Kix cereal, kid tested, mother approved." if f["id"] != "c3" else "Buy the new Lego set today."
+    L.progress["running"] = True
+    asyncio.run(L._run())
+    assert len(L.heard) == len(clips) and L.heard["c3"]["cat"] == "toy", L.heard["c3"]
+    assert L.todo() == [], "everything was heard, yet some are still to do"
+    L.heard["c5"]["text"] = "old"
+    L._hear = lambda f: "Lucky Charms, they're magically delicious."
+    L.progress["running"] = True
+    asyncio.run(L._run([f for f in clips if f["id"] == "c3"]))
+    assert L.heard["c3"]["cat"] == "cereal" and L.heard["c5"]["text"] == "old", "listening to one redid others"
+    L.progress["running"] = True
+    asyncio.run(L._run(list(clips)))
+    assert all(r["text"].startswith("Lucky") for r in L.heard.values()), "listening to all again missed some"
+    assert L.record("c3")["kind"] and L.record("nope") == {"heard": False, "text": "", "kind": "", "shows": [], "role": ""}
+    # the sound comes from the clip's own file (a library clip says "file", not a planned item's "f"), and a
+    # clip whose file can't be found isn't filed as heard-but-silent
+    asked = []
+    app.media_input = lambda item: asked.append(item) or None
+    del L._hear
+    try:
+        L._hear(clips[0])
+        raise AssertionError("a clip with no file was heard as silence")
+    except FileNotFoundError:
+        pass
+    assert asked[0]["f"] == "/x.mp4", asked
     # and the analysis of what is heard
     names = listen.known_shows(None) | {"icarly": "iCarly", "fairly oddparents": "The Fairly OddParents"}
     a = listen.analyse("Now back to more Fairly Odd Paris on Nickelodeon.", "Tape (3)", names)
