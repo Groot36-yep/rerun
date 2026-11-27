@@ -229,8 +229,11 @@ class Listener:
     def todo(self) -> list[dict]:
         """Only what hasn't been heard yet: new commercials, changed ones, and ones that came out empty
         before the fix. Everything already heard is left alone."""
+        def same(k: str, f: dict) -> bool:  # the same clip, whichever version heard it (one briefly said 3)
+            return k.split(":", 1)[-1] == self._key(f).split(":", 1)[-1]
+
         def done(rec: dict | None, f: dict) -> bool:
-            return bool(rec) and rec.get("k") == self._key(f) and bool(rec.get("text") or rec.get("silent"))
+            return bool(rec) and same(rec.get("k") or "", f) and bool(rec.get("text") or rec.get("silent"))
         return [f for f in self.clips() if not done(self.heard.get(f["id"]), f)]
 
     def summary(self) -> dict:
