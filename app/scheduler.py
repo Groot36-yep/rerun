@@ -25,7 +25,7 @@ from . import seasons
 from . import airtimes, archive
 from . import lineups, xmas
 from .channels import christmas_style, content_signature, filler_pool, network_key, resolve
-from .listen import norm as show_norm
+from .listen import break_place, norm as show_norm
 from .networks import family_for
 from .xmasdata import title_info
 
@@ -228,6 +228,8 @@ class Builder:
         self.heard = heard or {}
         self._hol_cache: dict = {}
         self._when_cache: dict = {}
+        self._place_cache: dict = {}
+        self._break_places: set = set()  # "into"/"out" clips already in the break being made
         self.cat = cat
         self.st = state
         self.chapters = chapters
@@ -471,6 +473,8 @@ class Builder:
             return True, 0.0
         shows = {show_norm(x) for x in rec["shows"]}
         cur, nxt = (ctx or {}).get("cur") or "", (ctx or {}).get("nxt") or ""
+        if (ctx or {}).get("closing") and self._place(f) == "out":
+            return nxt in shows, 5.0  # "now back to Rugrats" leads into the next show: only if that's Rugrats
         here = {x for x in (cur, nxt) if x}
         role = rec.get("role")
         if role == "watching":
@@ -480,6 +484,14 @@ class Builder:
         if shows & here:
             return True, 3.0
         return bool(shows & self.airs), 1.0
+
+    def _place(self, f: dict) -> str:
+        """Where in a break a heard clip belongs: "into" (first), "out" (last), or "" (anywhere)."""
+        key = f.get("id") if isinstance(f, dict) else f
+        got = self._place_cache.get(key)
+        if got is None:
+            got = self._place_cache[key] = break_place((self.heard.get(key) or {}).get("text", ""))
+        return got
 
     def _when(self, f: dict, rec: dict) -> dict | None:
         """When a heard promo can air (see airtimes); None for any time."""
@@ -518,7 +530,7 @@ class Builder:
                 "year": _int_year(year), "active": set(active), "month": time.strftime("%B", time.localtime(t)).lower(),
                 "at": t}  # when the break airs (moved along break by break), for promos that name a day
 
-    def _bumper(self, ctx: dict | None, room: float) -> dict | None:
+    def _bumper(self, ctx: dict | None, room: float, where: str = "out") -> dict | None:
         """A bumper or ident from the show's own network ("You're watching Disney Channel" before a Disney
         show, a Nick splat going into a Nick break), or None. On a mixed channel each show gets its own
         network's; a show from a network with no bumpers gets none rather than someone else's. In season,
@@ -537,6 +549,9 @@ class Builder:
             tags = {str(x).lower() for x in b.get("tags") or []}
             if not tags & nets or b["dur"] > room:
                 continue
+            place = self._place(b)
+            if place and place != where:
+                continue  # "now back to the show" going into a break, or "we'll be right back" coming out
             fits, want = self._fits(b, ctx)
             if not fits:
                 continue  # "you're watching iCarly" during SpongeBob
@@ -566,6 +581,8 @@ class Builder:
                 continue
             if not self._in_season(f, active):
                 continue  # a Christmas commercial in July
+            if self._place(f):
+                continue  # "we'll be right back" / "now back to": they have their own places
             if not self._fits(f, ctx)[0]:
                 continue
             key = (f["id"] in recent, round(f["dur"] - left), -(self._ad_score(f, ctx) if ctx else 0))
@@ -642,7 +659,12 @@ class Builder:
                     break
                 if f["id"] in used or (not allow_recent and f["id"] in recent) or (mix and same_again(f)):
                     continue
+                place = self._place(f)
+                if place and place in self._break_places:
+                    continue  # one "we'll be right back" and one "now back to" a break
                 if f["dur"] <= remaining:
+                    if place:
+                        self._break_places.add(place)
                     chosen.append(f)
                     kinds.append(self._kind(f))
                     used.add(f["id"])
@@ -731,6 +753,7 @@ class Builder:
 
     # ---- putting a block together ---------------------------------------------------
     def _content(self, items: list, m: dict, start_in: float, length: float, pos: float) -> float:
+        self._break_places = set()  # the next break is a new one
         title = m.get("title", "")
         if m.get("artist"):
             title = f"{m['artist']} – {title}"
@@ -742,6 +765,8 @@ class Builder:
              ctx: dict | None = None) -> tuple[float, float]:
         if ctx is not None:
             ctx["at"] = pos
+        if ctx is not None:
+            ctx["closing"] = final  # the break before the next show, not back to this one
         chosen, left = self._pick_filler(seconds, ctx)
         for f in chosen:
             items.append({"s": pos, "e": pos + f["dur"], "k": "f", "m": f["id"], "in": f.get("in", 0),
@@ -868,7 +893,7 @@ class Builder:
         bumpers = prog["kind"] != "music" and not first_in
         quizzed = False  # one trivia question a show, in its first break
         if bumpers:  # the network's ident right before the show starts
-            intro = self._bumper(ctx, min(20.0, ad_time / 3))
+            intro = self._bumper(ctx, min(20.0, ad_time / 3), "out")
             if intro:
                 pos = self._put(items, pos, intro)
                 carry -= intro["dur"]
@@ -882,7 +907,7 @@ class Builder:
                 else:
                     if ctx is not None:
                         ctx["at"] = pos
-                    lead = self._bumper(ctx, min(15.0, (share + carry) / 4)) if bumpers and share + carry >= 60 else None
+                    lead = self._bumper(ctx, min(15.0, (share + carry) / 4), "into") if bumpers and share + carry >= 60 else None
                     if lead:  # "we'll be right back" into the break
                         pos = self._put(items, pos, lead)
                         carry -= lead["dur"]
@@ -921,14 +946,14 @@ class Builder:
         ctx = self._break_context(prog, media, t) if self.filler or self.bumpers else None
         items: list[dict] = []
         pos = t
-        intro = self._bumper(ctx, 20.0)
+        intro = self._bumper(ctx, 20.0, "out")
         if intro:
             pos = self._put(items, pos, intro)
         first = min(part, max(10.0, m["dur"] / 2))
         start_in = min(max(0.0, m["dur"] * 0.1), max(0.0, m["dur"] - 2 * first))  # skip the cold open
         pos = self._content(items, m, start_in, first, pos)
         for last in (False, True):
-            lead = self._bumper(ctx, 15.0)
+            lead = self._bumper(ctx, 15.0, "into")
             if lead:
                 pos = self._put(items, pos, lead)
             pos, _ = self._ads(items, pos, 50.0 if not last else 70.0, final=last, ctx=ctx)
@@ -995,7 +1020,19 @@ class Builder:
             while b > a and run[b - 1]["m"] in bumper:
                 b -= 1
             middle = run[a:b]
-            if len(middle) > 2 and not any(x.get("aired") for x in middle):
+            if any(x.get("aired") for x in middle):  # a recorded break replayed as it aired keeps its order
+                i = j
+                continue
+            # "we'll be right back" right after the bumpers going in; "now back to the show" last of all,
+            # right before the show
+            into = [x for x in middle if self._place(x["m"]) == "into"]
+            outs = [x for x in middle if self._place(x["m"]) == "out"]
+            moved = bool(into or outs)
+            if moved:
+                middle = [x for x in middle if x not in into and x not in outs]
+                run = run[:a] + into + middle + run[b:] + outs
+                a, b = a + len(into), a + len(into) + len(middle)
+            if len(middle) > 2:
                 out: list = []
                 while middle:  # the kind with the most still to place goes next, if it isn't the last one's
                     last = kind(out[-1]) if out else (kind(run[a - 1]) if a else "")
@@ -1004,7 +1041,9 @@ class Builder:
                     k = max(ok, key=lambda n: (left.get(kind(middle[n]), 0), -n)) if ok else 0
                     out.append(middle.pop(k))
                 run[a:b] = out
-                pos = run[0]["s"]
+                moved = True
+            if moved:
+                pos = items[i]["s"]  # where the break starts (its first item may have moved)
                 for x in run:
                     d = x["e"] - x["s"]
                     x["s"], x["e"] = pos, pos + d

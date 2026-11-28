@@ -130,9 +130,10 @@ def christmas_style(ch: dict) -> str:
 
 
 # Bump when the way schedules are built changes, so an update rebuilds them (from the show on now).
-SCHEDULE_VERSION = 6  # 2: bumpers and idents in their own places, Christmas and 25 Days channels; 3: Saturday mornings; 4: breaks between shows
+SCHEDULE_VERSION = 7  # 2: bumpers and idents in their own places, Christmas and 25 Days channels; 3: Saturday mornings; 4: breaks between shows
 # 5: holiday commercials found by what's said in them (and unheard October/December tape clips) stay out of season
 # 6: promos that name a day ("this Friday", "tonight at 8") air only in the days leading up to it
+# 7: "we'll be right back" clips open a break and "now back to the show" ones close it, one of each at most
 
 
 def content_signature(ch: dict, holidays: dict | None = None) -> str:

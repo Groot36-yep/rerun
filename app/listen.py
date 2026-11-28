@@ -97,7 +97,33 @@ _PROMO = re.compile(r"all[- ]new|new episodes?|brand[- ]new|premiere|\btonight\b
 _NETWORK = re.compile(r"only on|right here on|\bon (nickelodeon|nick|nicktoons|nick jr|nick at nite|cartoon network|"
                       r"disney channel|disney|toon disney|playhouse disney|abc family|boomerang|the n|fox kids|"
                       r"kids'? ?wb|teen nick|disney xd|pbs kids)\b|\bnick at nite\b|\bteam nick\b", re.I)
-_TAPE = re.compile(r"\(\d+\)\s*$")  # "ABC Family Commercial Breaks (December 12, 2008) (56)": a clip of a tape
+# Where in a break a clip belongs, from what's said in it: "we'll be right back" goes first, going into
+# the break; "now back to the show" last, coming out of it.
+_INTO = re.compile(r"(we'?ll|we will) be right back|\bbe right back\b|don'?t go away|stay right there|"
+                   r"after (the|this|these) (break|messages|commercials?)|more .{0,40} after (the|this) break", re.I)
+_OUT = re.compile(r"\bnow,? back to\b|\bback to (the|our) (show|movie|program)\b|\band now,? back\b|"
+                  r"let'?s get back to|\bwe now return\b|\bnow,? (we )?return to\b|\bwelcome back to\b", re.I)
+_TAPE = re.compile(r"\(\d+\)\s*$")
+
+
+def break_place(text: str) -> str:
+    """ "into" for a clip that leads into a break ("we'll be right back"), "out" for one that comes out of
+    it ("now back to SpongeBob"), "" for one that can go anywhere (or says both).
+
+    A clip cut from a tape often runs a commercial and the network's line together ("...Charlotte's Web,
+    December 15. Welcome back to Cartoon Network's Holiday Rush."), so the line counts where it belongs:
+    "back to" in the last third of what's said, "be right back" in the first third. The same words in the
+    middle of a movie trailer ("welcome back to Hogwarts") don't."""
+    text = text or ""
+    n = len(text)
+
+    def at(rx, first: bool) -> bool:
+        for m in rx.finditer(text):
+            if n < 160 or (m.start() <= 0.35 * n if first else m.start() >= 0.65 * n):
+                return True
+        return False
+    into, out = at(_INTO, True), at(_OUT, False)
+    return "into" if into and not out else "out" if out and not into else ""  # "ABC Family Commercial Breaks (December 12, 2008) (56)": a clip of a tape
 
 
 def norm(name: str) -> str:

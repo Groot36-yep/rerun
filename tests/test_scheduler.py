@@ -14,6 +14,7 @@ from app.catalog import Catalog  # noqa: E402
 from app.channels import normalize_channel, resolve, suggest  # noqa: E402
 from app.scheduler import OVERFILL_MAX, Builder, Playout, clip_holidays, in_season, promo_rule, tz_offset  # noqa: E402
 from app import airtimes  # noqa: E402
+from app.listen import break_place  # noqa: E402
 from app.seasons import DEFAULT_HOLIDAYS, matches  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -265,7 +266,11 @@ async def check_heard(cat):
                # promos that name a day or "tonight": only in the days leading up, and that day before the time
                ads[6]["id"]: {"cat": "promo", "shows": [], "role": "", "text": "An all-new special, this Friday at 8, only on Nick."},
                ads[7]["id"]: {"cat": "promo", "shows": [], "role": "", "text": "A brand new movie tonight at 7."},
-               ads[8]["id"]: {"cat": "toy", "shows": [], "role": "", "text": "Get yours today!"}}  # a toy ad's "today" isn't a time
+               ads[8]["id"]: {"cat": "toy", "shows": [], "role": "", "text": "Get yours today!"},  # a toy ad's "today" isn't a time
+               # where in a break: going into it, and coming back out of it
+               ads[9]["id"]: {"cat": "promo", "shows": [], "role": "", "text": "Stick around, we'll be right back!"},
+               ads[10]["id"]: {"cat": "promo", "shows": [], "role": "", "text": "And now, back to the show!"},
+               ads[11]["id"]: {"cat": "promo", "shows": ["Rugrats"], "role": "watching", "text": "Now back to Rugrats!"}}
     heard.update(special)
     ch = normalize_channel({"id": "hn", "name": "Nick", "seed": 11, "commercials": {"enabled": True, "break_style": "chapters"},
                             "rules": [{"type": "filter", "media": "shows", "network": "Nickelodeon"}]})
@@ -306,9 +311,43 @@ async def check_heard(cat):
                 runs.append(run)
                 run = []
         for run in runs:
+            ads_only = [k for k in run if k != "promo"]  # (promos may be pinned first or last)
+            top = Counter(ads_only).most_common(1)
+            if top and top[0][1] > (len(ads_only) + 1) // 2:
+                continue  # can't be helped (three cereal ads in a break of four)
             assert not any(a == b_ and a != "promo" for a, b_ in zip(run, run[1:])), run
+        # "we'll be right back" opens a break (after any bumpers), "now back to" closes it, one each at most
+        into, outs = ads[9]["id"], {ads[10]["id"], ads[11]["id"]}
+        bumpers = {f["id"] for f in cat.all_filler() if "bumper" in (f.get("tags") or [])}
+        k = 0
+        while k < len(items):
+            if items[k]["k"] != "f":
+                k += 1
+                continue
+            j = k
+            while j < len(items) and items[j]["k"] == "f":
+                j += 1
+            run = [x["m"] for x in items[k:j]]
+            after = items[j] if j < len(items) else None  # what the break leads into
+            if into in run:
+                seen["into"] += 1
+                assert all(m in bumpers for m in run[:run.index(into)]), f"'be right back' in the middle of a break: {run}"
+            for o in outs & set(run):
+                seen["out"] += 1
+                assert run[-1] == o, f"'now back to' in the middle of a break: {run}"
+            assert sum(m in outs for m in run) <= 1, run
+            if ads[11]["id"] in run and after is None:
+                nb = next((bb for bb in p.blocks if bb["s"] >= blk["e"]), None)
+                assert nb and nb["title"].startswith("Rugrats"), "'now back to Rugrats' before another show"
+            elif ads[11]["id"] in run:
+                assert show_of(after) == "Rugrats", f"'now back to Rugrats' before {show_of(after)}"
+            k = j
     assert seen["watching"], "the Rugrats bumper never played (during Rugrats it should)"
     assert seen["dated"] and seen["today"], f"the dated promos / the toy ad never played ({seen})"
+    assert seen["into"] and seen["out"], f"the 'be right back' / 'back to the show' clips never played ({seen})"
+    assert break_place("Stick around, we'll be right back!") == "into"
+    assert break_place("And now, back to SpongeBob!") == "out" and break_place("Get yours today!") == ""
+    assert break_place("We'll be right back. And now, back to the show!") == "", "says both: anywhere"
     # when a promo can air, from what's said in it (2026-11-23 is a Monday)
     mon = time.mktime((2026, 11, 23, 0, 0, 0, 0, 0, -1))
     at = lambda d, hh: mon + d * 86400 + hh * 3600  # noqa: E731
